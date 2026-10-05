@@ -1,0 +1,24 @@
+# Personal data: tokens, PINs, IPs, task history. Never commit these.
+config.json
+session.json
+history.json
+busybar_todoist.json
+*.log
+.webview/
+old/
+
+# Environments and build output
+.venv/
+.venv-build/
+build/
+dist/
+__pycache__/
+*.pyc
+*.tmp
+
+# Editors / OS
+.vscode/
+.idea/
+.claude/
+Thumbs.db
+desktop.ini

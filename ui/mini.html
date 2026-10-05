@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Busyist timer</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  body { background: var(--surface); }
+  .mini {
+    position: absolute; inset: 0; display: flex; align-items: center; gap: 14px;
+    padding: 0 16px 0 14px; border: 1px solid var(--line); cursor: grab;
+    background: linear-gradient(90deg, var(--phase-soft), transparent 55%), var(--surface);
+  }
+  .mini:active { cursor: grabbing; }
+  .m-ring { position: relative; width: 76px; height: 76px; flex: none; }
+  .m-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .m-ring circle { fill: none; stroke-width: 7; }
+  .m-ring .track { stroke: var(--track); }
+  body[data-phase="idle"] .m-ring .progress { opacity: 0; }
+  .m-ring .progress { stroke: var(--phase); stroke-linecap: round; transition: stroke-dashoffset .9s linear, stroke .3s; }
+  .m-time {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font: 650 17px/1 "Segoe UI Variable Display", "Segoe UI", sans-serif;
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+  }
+  body[data-phase="paused"] .m-time { animation: blink 1.6s ease-in-out infinite; }
+  .m-body { flex: 1; min-width: 0; }
+  .m-phase {
+    display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--phase);
+  }
+  .m-phase .sep { color: var(--faint); font-weight: 600; letter-spacing: 0; text-transform: none; }
+  .m-task {
+    font-size: 14px; font-weight: 600; line-height: 1.3; margin-top: 3px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .m-project { font-size: 11.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m-actions {
+    position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; opacity: 0;
+    transition: opacity .15s; background: var(--surface); border-radius: 8px; padding: 2px;
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  .mini:hover .m-actions { opacity: 1; }
+  .m-actions button {
+    width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--muted); display: grid; place-items: center; cursor: pointer;
+  }
+  .m-actions button:hover { background: var(--surface-3); color: var(--ink); }
+  .m-actions svg { width: 13px; height: 13px; }
+</style>
+</head>
+<body data-phase="idle">
+<svg width="0" height="0" style="position:absolute">
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="5.5" y="4" width="4.5" height="16" rx="1.3"/><rect x="14" y="4" width="4.5" height="16" rx="1.3"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+</svg>
+<div class="mini pywebview-drag-region" id="mini" title="Drag to move · double-click to open Busyist">
+  <div class="m-ring">
+    <svg viewBox="0 0 80 80">
+      <circle class="track" cx="40" cy="40" r="33"/>
+      <circle class="progress" id="mProgress" cx="40" cy="40" r="33"/>
+    </svg>
+    <div class="m-time" id="mTime">--:--</div>
+  </div>
+  <div class="m-body">
+    <div class="m-phase"><span id="mPhase">Focus</span><span class="sep" id="mRound"></span></div>
+    <div class="m-task" id="mTask">No task</div>
+    <div class="m-project" id="mProject"></div>
+  </div>
+  <div class="m-actions">
+    <button id="mPause" title="Pause"><svg><use id="mPauseIcon" href="#i-pause"/></svg></button>
+    <button id="mStop" title="Stop"><svg><use href="#i-stop"/></svg></button>
+    <button id="mOpen" title="Open Busyist"><svg><use href="#i-open"/></svg></button>
+    <button id="mHide" title="Hide mini timer"><svg><use href="#i-x"/></svg></button>
+  </div>
+</div>
+<script src="mini.js"></script>
+</body>
+</html>
