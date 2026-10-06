@@ -37,7 +37,8 @@ menu, and starts it.
 ## Using it
 
 - **Pick a task**: click the tray tomato or press the hotkey (default **Ctrl+Alt+P**), then click a
-  task or use ↑ ↓ and Enter. The bar starts its interval timer.
+  task or use ↑ ↓ and Enter. The bar starts its interval timer, the window goes to the tray and
+  the mini timer takes over.
 - **The hotkey cycles**: window → mini timer only → everything in the tray → window again. If the
   window is open but behind other apps, the hotkey brings it to the front first.
 - **Saved filters**: the tabs above the list are Todoist filter queries you name yourself

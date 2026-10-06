@@ -762,6 +762,9 @@ class App:
             threading.Thread(target=self.finish, args=(old, "replaced"), daemon=True).start()
         threading.Thread(target=self._label_task, args=(self.session,), daemon=True).start()
         self.wake.set()
+        # Out of the way for the focus block; the mini timer takes over.
+        if self.main:
+            hide_window(self.main)
         self.show_mini()
         return {"via": self.bar.via}
 
