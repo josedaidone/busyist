@@ -38,6 +38,8 @@ menu, and starts it.
 
 - **Pick a task**: click the tray tomato or press the hotkey (default **Ctrl+Alt+P**), then click a
   task or use ↑ ↓ and Enter. The bar starts its interval timer.
+- **The hotkey cycles**: window → mini timer only → everything in the tray → window again. If the
+  window is open but behind other apps, the hotkey brings it to the front first.
 - **Saved filters**: the tabs above the list are Todoist filter queries you name yourself
   ("Today", "Deep work", "Quick wins"...). **+** adds one; the pencil, or a double-click on a tab,
   edits, reorders or deletes it. **Ctrl+1–9** switches between them.
@@ -50,7 +52,8 @@ menu, and starts it.
   - starting a task adds a label (default `@pomodoro`, which can be removed again when the
     session ends);
   - finished pomodoros are logged as a comment on the task;
-  - when the session ends you can complete the task in one click.
+  - when the session ends you can complete the task in one click; it drops off the list, the
+    filter reloads, and the ✓ counter in the header shows how many tasks you completed today.
 - Closing or minimizing the window sends it to the tray. Busyist starts with Windows; turn that
   off in Settings.
 

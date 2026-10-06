@@ -165,6 +165,9 @@ function renderChrome() {
   chip.textContent = "";
   chip.append("🍅 ", el("b", "", String(today.pomodoros)), today.pomodoros === 1 ? " pomodoro today" : " pomodoros today");
   if (today.minutes) chip.append(" · " + duration(today.minutes));
+  const done = $("completed");
+  done.textContent = "";
+  done.append("✓ ", el("b", "", String(today.completed)), " completed");
 
   const bar = state.bar;
   $("barChip").className = "chip" + (bar.ok === true ? " ok" : bar.ok === false ? " bad" : "");
@@ -563,8 +566,11 @@ $("endedComplete").onclick = async () => {
   const result = await api.complete(e.task.id);
   if (!result.ok) return toast(result.error, true);
   toast("Completed in Todoist ✓");
-  await poll();
+  // drop it at once, then reload so the filter shows what Todoist now has
+  tasks = tasks.filter((t) => t.id !== e.task.id);
   renderTasks();
+  await poll();
+  loadTasks(true);
 };
 $("endedAgain").onclick = async () => {
   const e = state.ended;

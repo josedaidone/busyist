@@ -1,8 +1,9 @@
 """
 Busyist: Todoist -> BUSY Bar pomodoros, as a Windows tray app.
 
-Click the tray tomato (or press the hotkey, default Ctrl+Alt+P), pick a task
-from Todoist, and the BUSY Bar runs its standard interval timer. While it runs:
+Click the tray tomato (or press the hotkey, default Ctrl+Alt+P, which cycles
+window -> mini timer -> tray), pick a task from Todoist, and the BUSY Bar
+runs its standard interval timer. While it runs:
 
   * the window and an always-on-top mini timer show the task, the
     phase and the countdown; the tray icon shows the minutes left;
@@ -59,7 +60,7 @@ ICON_PATH = RES_DIR / "busyist.ico"
 DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
 CONFIG_PATH = DATA_DIR / "config.json"
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
-HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions, for the "today" count
+HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"
 
@@ -604,10 +605,11 @@ class App:
         done = [h for h in self.history if h.get("date") == today]
         count = sum(h.get("pomodoros", 0) for h in done)
         minutes = sum(h.get("minutes", 0) for h in done)
+        completed = sum(1 for h in done if h.get("completed"))
         if self.session:
             count += self.session.get("done", 0)
             minutes += self.session.get("done", 0) * self.session["work_ms"] // 60000
-        return {"pomodoros": count, "minutes": minutes}
+        return {"pomodoros": count, "minutes": minutes, "completed": completed}
 
     def state(self) -> dict:
         with self.lock:
@@ -763,6 +765,23 @@ class App:
         self.show_mini()
         return {"via": self.bar.via}
 
+    def complete_task(self, task_id: str) -> None:
+        """Close the task in Todoist and count it in today's history."""
+        self.todoist.close(task_id)
+        with self.lock:
+            task = self.tasks.pop(task_id, None) or (self.ended and self.ended["task"]) or {}
+            if self.ended and self.ended["task"]["id"] == task_id:
+                self.ended = None
+            self.history.append({
+                "date": date.today().isoformat(),
+                "task_id": task_id,
+                "content": task.get("content", ""),
+                "completed": True,
+                "ended_at": datetime.now().isoformat(timespec="seconds"),
+            })
+            self.history = self.history[-500:]
+            write_json(HISTORY_PATH, self.history)
+
     def _label_task(self, session: dict) -> None:
         label = session["label"]
         if not label:
@@ -854,6 +873,24 @@ class App:
             return
         show_window(self.main)
         self._js(self.main, "App.onShown(%s)" % json.dumps(focus_search))
+
+    def cycle_windows(self) -> None:
+        """
+        The hotkey: window -> mini timer -> tray -> window. A window that is
+        open but buried under others comes to the front first.
+        """
+        if not self.main:
+            return
+        if window_shown(self.main):
+            if not window_focused(self.main):
+                self.show_main(focus_search=True)
+                return
+            hide_window(self.main)
+            self.show_mini()
+        elif self.mini_shown:
+            self.hide_mini()
+        else:
+            self.show_main(focus_search=True)
 
     def show_mini(self) -> None:
         if self.mini:
@@ -998,7 +1035,7 @@ class App:
 
         self.tray = self.make_tray()
         threading.Thread(target=self.tray.run, daemon=True, name="tray").start()
-        self.hotkey = GlobalHotkey(lambda: self.show_main(focus_search=True))
+        self.hotkey = GlobalHotkey(self.cycle_windows)
         try:
             self.bind_hotkey()
         except AppError as err:
@@ -1062,13 +1099,7 @@ class Api:
         return self._do(self._app.control, str(action))
 
     def complete(self, task_id):
-        def go():
-            self._app.todoist.close(str(task_id))
-            with self._app.lock:
-                if self._app.ended and self._app.ended["task"]["id"] == task_id:
-                    self._app.ended = None
-                self._app.tasks.pop(task_id, None)
-        return self._do(go)
+        return self._do(self._app.complete_task, str(task_id))
 
     def dismiss_ended(self):
         with self._app.lock:
@@ -1148,6 +1179,20 @@ def hide_window(window: webview.Window) -> None:
     hwnd = _hwnd(window)
     if hwnd:
         ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+
+
+def window_shown(window: webview.Window) -> bool:
+    """On screen: visible and not minimized."""
+    hwnd = _hwnd(window)
+    user32 = ctypes.windll.user32
+    return bool(hwnd and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd))
+
+
+def window_focused(window: webview.Window) -> bool:
+    hwnd = _hwnd(window)
+    user32 = ctypes.windll.user32
+    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND  # the default int truncates on 64-bit
+    return bool(hwnd and user32.GetForegroundWindow() == hwnd.value)
 
 
 def show_window(window: webview.Window) -> None:
