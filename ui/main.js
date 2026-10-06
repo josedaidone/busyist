@@ -551,7 +551,6 @@ $("autostart").onchange = () => { pomo.autostart = $("autostart").checked; chang
 // ------------------------------------------------------------- controls
 
 async function control(action) {
-  if (action === "stop" && !confirm("Stop the session? Finished pomodoros are still logged.")) return;
   const result = await api.control(action);
   if (!result.ok) toast(result.error, true);
   poll();
