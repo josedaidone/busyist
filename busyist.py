@@ -38,6 +38,7 @@ import webbrowser
 from datetime import date, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx2
 import pystray
@@ -64,6 +65,7 @@ DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
 CONFIG_PATH = DATA_DIR / "config.json"
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
+TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"
 UPDATES_DIR = DATA_DIR / "updates"  # downloaded installers
@@ -82,6 +84,7 @@ DEFAULTS = {
     "todoist_token": "",
     "filters": [],  # [{"name": ..., "query": ...}], the task lists to pick from
     "active_filter": "",
+    "use_busybar": False,  # off: the timer runs on this PC, no bar needed
     "busybar_ip": "",
     "busybar_pin": "",
     "usb_fallback": True,
@@ -255,9 +258,44 @@ def plain_text(content: str) -> str:
 # ---------------------------------------------------------------- BUSY Bar ---
 
 
+class LocalClock:
+    """
+    Stands in for the bar when there is none: the same snapshot calls, kept
+    in memory and in timer.json so a restart picks the timer up again.
+
+    A snapshot already says everything about a timer (timer_state does the
+    arithmetic), so holding the last one written is all a clock needs to do.
+    """
+
+    def __init__(self):
+        saved = read_json(TIMER_PATH, None)
+        try:
+            self._snap = types.BusySnapshot.model_validate(saved)
+        except Exception:
+            self._snap = types.BusySnapshot(
+                snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=LOCAL_SETTINGS),
+                snapshot_timestamp_ms=0,
+            )
+
+    def busy_snapshot(self) -> types.BusySnapshot:
+        return self._snap
+
+    def busy_snapshot_set(self, snap: types.BusySnapshot) -> None:
+        self._snap = snap
+        write_json(TIMER_PATH, snap.model_dump(mode="json"))
+
+    def busy_profile(self, slot: str) -> SimpleNamespace:
+        return SimpleNamespace(id="local", busy_bar_settings=LOCAL_SETTINGS)
+
+
+# What a local snapshot carries where a bar's would name its theme.
+LOCAL_SETTINGS = types.BusyBarSettings(theme="busy", show_work_phase_only=False, trigger_smart_home=False)
+
+
 class Bar:
     """
-    The BUSY Bar over Wi-Fi and/or USB, whichever answers.
+    The BUSY Bar over Wi-Fi and/or USB, whichever answers, or a clock on
+    this PC when the bar is turned off in Settings.
 
     Every call goes through `run`, which holds one lock (the bar takes the
     freshest snapshot as the truth, so two writers racing would be bad) and
@@ -269,6 +307,11 @@ class Bar:
         self.lock = threading.RLock()
         self.via: str | None = None
         self._clients: dict[tuple, BusyBar] = {}
+        self.local = LocalClock()
+
+    @property
+    def is_local(self) -> bool:
+        return not self.cfg["use_busybar"]
 
     def routes(self) -> list[tuple[str, str, str | None]]:
         found = []
@@ -306,6 +349,10 @@ class Bar:
 
     def run(self, fn):
         with self.lock:
+            if self.is_local:
+                result = fn(self.local)
+                self.via = "This PC"
+                return result
             routes = self.routes()
             if not routes:
                 raise AppError("Set the BUSY Bar's Wi-Fi address in Settings, or allow USB.")
@@ -380,7 +427,7 @@ class Bar:
             live = bar.busy_snapshot()
             variant = live.snapshot
             if isinstance(variant, types.BusySnapshotNotStarted):
-                raise AppError("No session is running on the bar.")
+                raise AppError("No session is running.")
             update: dict = {"is_paused": paused}
             if paused:
                 # Freeze what is actually left now, not what the stored
@@ -401,7 +448,7 @@ class Bar:
             live = bar.busy_snapshot()
             variant = live.snapshot
             if not isinstance(variant, types.BusySnapshotInterval):
-                raise AppError("No interval session is running on the bar.")
+                raise AppError("No interval session is running.")
             settings = variant.interval_settings
             following = (timer_state(live).interval or 0) + 1
             # Index cycles*2-1 is where a session ends; it is never run.
@@ -564,7 +611,12 @@ def tray_image(view: dict | None) -> Image.Image:
 class App:
     def __init__(self):
         self.cfg = dict(DEFAULTS)
-        self.cfg.update(read_json(CONFIG_PATH, {}))
+        saved = read_json(CONFIG_PATH, {})
+        self.cfg.update(saved)
+        if saved and "use_busybar" not in saved:
+            # Set up before the bar was optional, so set up for one.
+            self.cfg["use_busybar"] = True
+            write_json(CONFIG_PATH, self.cfg)
         self.todoist = Todoist(self.cfg)
         self.bar = Bar(self.cfg)
         self.lock = threading.RLock()  # guards everything below
@@ -729,7 +781,7 @@ class App:
                     k: self.session[k] for k in ("task", "started_at", "done", "label_added")
                 },
                 "ended": self.ended,
-                "bar": {"ok": self.bar_ok, "via": self.bar.via, "error": self.bar_error},
+                "bar": {"ok": self.bar_ok, "via": self.bar.via, "error": self.bar_error, "local": self.bar.is_local},
                 "today": self.today_stats(),
                 "pomodoro": {k: self.cfg[k] for k in ("work_minutes", "rest_minutes", "cycles", "autostart")},
                 "label": self.cfg["focus_label"],
@@ -759,7 +811,9 @@ class App:
                 self.update_tray()
             except Exception:
                 log.exception("engine")
-            self.wake.wait(max(2, int(self.cfg.get("poll_seconds", 5))))
+            # Reading the local clock costs nothing, so follow it closely.
+            poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
+            self.wake.wait(poll)
             self.wake.clear()
 
     def follow_session(self) -> None:
@@ -810,7 +864,8 @@ class App:
             try:
                 self.todoist.comment(
                     task["id"],
-                    f"🍅 × {done} ({minutes} min focus) on BUSY Bar, ended {datetime.now():%Y-%m-%d %H:%M}",
+                    f"🍅 × {done} ({minutes} min focus){'' if session.get('local') else ' on BUSY Bar'}, "
+                    f"ended {datetime.now():%Y-%m-%d %H:%M}",
                 )
             except AppError as err:
                 problems.append(f"Couldn't log the pomodoros: {err}")
@@ -975,6 +1030,7 @@ class App:
                     "interval": 0,
                     "label": self.cfg["focus_label"].strip(),
                     "label_added": False,
+                    "local": self.bar.is_local,
                 }
                 write_json(SESSION_PATH, self.session)
                 self.recovering = False
@@ -1058,11 +1114,14 @@ class App:
         merged = dict(self.cfg, **clean)
         for key in ("work_minutes", "rest_minutes"):
             if not PHASE_MIN <= merged[key] <= PHASE_MAX:
-                raise AppError(f"The bar runs phases of {PHASE_MIN} to {PHASE_MAX} minutes.")
+                raise AppError(f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.")
         if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
-            raise AppError(f"The bar runs {CYCLES_MIN} to {CYCLES_MAX} rounds.")
+            raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
         old_hotkey = self.cfg["hotkey"]
-        bar_changed = any(self.cfg.get(k) != merged.get(k) for k in ("busybar_ip", "busybar_pin", "usb_fallback"))
+        bar_changed = any(self.cfg.get(k) != merged.get(k)
+                          for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"))
+        if merged["use_busybar"] != self.cfg["use_busybar"] and self.session:
+            raise AppError("Stop the running session before switching between the bar and this PC.")
         if merged["hotkey"] != old_hotkey:
             try:
                 self.bind_hotkey(merged["hotkey"])
@@ -1377,6 +1436,8 @@ class Api:
 
     def test_bar(self):
         def go():
+            if self._app.bar.is_local:
+                raise AppError("The BUSY Bar is turned off; the timer runs on this PC.")
             self._app.bar.reset()
             version = self._app.bar.run(lambda bar: bar.version())
             return {"via": self._app.bar.via, "version": getattr(version, "version", "")}

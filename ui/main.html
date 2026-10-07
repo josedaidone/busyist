@@ -139,6 +139,11 @@
 
     <div class="section">
       <h4>BUSY Bar</h4>
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="use_busybar" id="s_use_busybar"><span class="knob"></span>Run the timer on a BUSY Bar</label>
+      </div>
+      <div class="help hidden" id="noBarHelp">Off: the timer runs in Busyist on this PC, with the mini timer and tray icon as the countdown.</div>
+      <div id="barFields">
       <div class="two">
         <div class="field">
           <label for="s_busybar_ip">Wi-Fi address</label>
@@ -154,6 +159,7 @@
       </div>
       <button type="button" class="btn" id="testBar">Test connection</button>
       <div class="test-result" id="testResult"></div>
+      </div>
     </div>
 
     <div class="section">
@@ -164,7 +170,7 @@
           <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
           <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
         </div>
-        <div class="field">
+        <div class="field" id="pollField">
           <label for="s_poll_seconds">Check the bar every</label>
           <input class="input" id="s_poll_seconds" name="poll_seconds" type="number" min="2" max="60">
           <div class="help">seconds</div>
