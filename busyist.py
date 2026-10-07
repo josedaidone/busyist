@@ -20,12 +20,14 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import hashlib
 import json
 import logging
 import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -47,6 +49,7 @@ from PIL import Image, ImageDraw, ImageFont
 APP = "Busyist"
 __version__ = "1.0.0"
 REPO_URL = "https://github.com/josedaidone/busyist"
+RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged Busyist.exe
 SOURCE_DIR = Path(__file__).resolve().parent
@@ -63,6 +66,9 @@ SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart pi
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"
+UPDATES_DIR = DATA_DIR / "updates"  # downloaded installers
+UPDATE_MARK = DATA_DIR / "update.json"  # the version an update was installing, checked on the next start
+SETUP_LOG = DATA_DIR / "update-setup.log"
 
 log = logging.getLogger(APP)
 
@@ -91,6 +97,7 @@ DEFAULTS = {
     "notifications": True,
     "launch_at_login": True,
     "open_on_finish": True,
+    "auto_update": True,
 }
 
 # What the bar accepts (busylib checks the same bounds).
@@ -419,6 +426,99 @@ def phase_ms(interval: int, settings: types.BusySnapshotIntervalSettings) -> int
     return settings.interval_work_ms if interval % 2 == 0 else settings.interval_rest_ms
 
 
+# ----------------------------------------------------------------- updates ---
+
+UPDATE_EVERY = 6 * 3600  # seconds between checks for a new release
+# Only a copy Setup installed can update itself (by running the next Setup);
+# Setup leaves its uninstaller next to the exe. A portable copy only hears
+# that there is a new version.
+UPDATABLE = FROZEN and (Path(sys.executable).parent / "unins000.exe").exists()
+
+
+def version_tuple(text: str) -> tuple[int, ...] | None:
+    """'v1.2.0' or '1.2.0' -> (1, 2, 0); None if it isn't a version."""
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", text.strip())
+    return tuple(int(x) for x in match.group(1).split(".")) if match else None
+
+
+def github_open(url: str, timeout: float = 20, api: bool = False):
+    headers = {"User-Agent": f"{APP}/{__version__}"}
+    if api:
+        headers["Accept"] = "application/vnd.github+json"
+    try:
+        return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
+    except urllib.error.HTTPError as err:
+        raise AppError(f"GitHub answered {err.code}.")
+    except OSError as err:
+        raise AppError(f"Can't reach GitHub ({getattr(err, 'reason', err)}).")
+
+
+def latest_release() -> dict | None:
+    """The newest published release if it is newer than this copy, else None."""
+    try:
+        with github_open(RELEASES_API, api=True) as response:
+            release = json.loads(response.read())
+    except (OSError, ValueError) as err:
+        raise AppError(f"Couldn't read the latest release from GitHub ({err}).")
+    tag = release.get("tag_name") or ""
+    if (version_tuple(tag) or ()) <= version_tuple(__version__):
+        return None
+    version = tag.lstrip("v")
+    assets = {a.get("name"): a for a in release.get("assets", [])}
+    setup = assets.get(f"Busyist-Setup-{version}.exe")
+    sums = assets.get("SHA256SUMS.txt")
+    return {
+        "version": version,
+        "url": release.get("html_url") or REPO_URL + "/releases/latest",
+        "setup": setup and {"name": setup["name"], "url": setup["browser_download_url"]},
+        "sums": sums and sums["browser_download_url"],
+    }
+
+
+def download_setup(release: dict) -> Path:
+    """Download a release's installer and check it against its SHA256SUMS."""
+    setup = release["setup"]
+    if not setup or not release["sums"]:
+        raise AppError(f"Release {release['version']} has no installer to update with.")
+    try:
+        with github_open(release["sums"]) as response:
+            sums = response.read().decode("ascii", "replace")
+    except OSError as err:
+        raise AppError(f"Couldn't download the release checksums ({err}).")
+    expected = next((parts[0].lower() for parts in map(str.split, sums.splitlines())
+                     if parts[1:] == [setup["name"]]), None)
+    if not expected:
+        raise AppError("The release's checksums don't list its installer.")
+    UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    path = UPDATES_DIR / setup["name"]
+    part = path.with_suffix(".part")
+    digest = hashlib.sha256()
+    try:
+        with github_open(setup["url"], timeout=60) as response, part.open("wb") as out:
+            while chunk := response.read(1 << 16):
+                digest.update(chunk)
+                out.write(chunk)
+    except OSError as err:
+        part.unlink(missing_ok=True)
+        raise AppError(f"The download failed ({err}).")
+    if digest.hexdigest() != expected:
+        part.unlink(missing_ok=True)
+        raise AppError("The downloaded installer doesn't match the release's checksum; not installing it.")
+    part.replace(path)
+    return path
+
+
+def app_dir_writable() -> bool:
+    """Whether this user can replace the program files without an admin prompt."""
+    probe = Path(sys.executable).parent / f".{APP}-write-test"
+    try:
+        probe.write_bytes(b"")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 # --------------------------------------------------------------- tray icon ---
 
 FOCUS_RGB, REST_RGB, PAUSE_RGB, IDLE_RGB = (228, 67, 50), (47, 158, 107), (224, 160, 40), (222, 60, 48)
@@ -487,6 +587,14 @@ class App:
         self.mini_shown = False
         self.tray: pystray.Icon | None = None
         self.instance_socket: socket.socket | None = None
+        self.update: dict | None = None  # a newer release, once one is found
+        self.update_error = ""
+        self.update_failed = ""  # a version whose Setup ran and failed: no automatic retry this run
+        self.updating = False
+        self.update_wake = threading.Event()
+        # Installing silently needs a Setup-installed copy this user can write
+        # to; an all-users install would raise an admin prompt out of nowhere.
+        self.can_auto_update = UPDATABLE and app_dir_writable()
         self._migrate_filters()
 
     # -------------------------------------------------------------- filters
@@ -627,6 +735,7 @@ class App:
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
                 "needs_setup": not self.cfg.get("todoist_token"),
+                "update": self.update_view(),
             }
 
     # --------------------------------------------------------- engine loop
@@ -731,6 +840,117 @@ class App:
             if self.cfg["open_on_finish"]:
                 self.show_main()
         self.hide_mini()
+
+    # ------------------------------------------------------------ updates
+
+    def update_view(self) -> dict | None:
+        with self.lock:
+            if not self.update:
+                return None
+            return {
+                "version": self.update["version"],
+                "url": self.update["url"],
+                "installable": UPDATABLE,
+                "busy": self.updating,
+                "error": self.update_error,
+            }
+
+    def updater(self) -> None:
+        """Check for a new release now and then; install it when nothing is going on."""
+        self.update_wake.wait(10)  # let the tray icon come up first
+        self.report_update()
+        self.update_wake.wait(50)
+        # Setup has finished with any installer left from the last update by now.
+        shutil.rmtree(UPDATES_DIR, ignore_errors=True)
+        checked = 0.0
+        while not self.quitting:
+            if time.time() - checked > UPDATE_EVERY:
+                checked = time.time()
+                try:
+                    self.check_for_update()
+                except AppError as err:
+                    log.info("update check: %s", err)
+            if self.cfg["auto_update"] and self.can_auto_update and self.idle_for_update():
+                try:
+                    self.install_update()
+                except AppError as err:
+                    log.warning("update: %s", err)  # kept in update_error; retried at the next check
+            self.update_wake.wait(60)
+            self.update_wake.clear()
+
+    def idle_for_update(self) -> bool:
+        """Nothing to interrupt: no session, no summary waiting, window closed."""
+        with self.lock:
+            if not self.update or self.update_error or self.updating or self.session or self.ended:
+                return False
+            if self.update["version"] == self.update_failed:
+                return False
+        return not (self.main and window_shown(self.main))
+
+    def check_for_update(self) -> dict:
+        found = latest_release()
+        with self.lock:
+            new = bool(found) and (not self.update or self.update["version"] != found["version"])
+            self.update = found
+            if not found or found["version"] != self.update_failed:
+                self.update_error = ""
+        if found:
+            log.info("Busyist %s is available", found["version"])
+        if new and not (self.cfg["auto_update"] and self.can_auto_update):
+            self.notify("Update available", f"Busyist {found['version']} is out. Open Busyist → Settings to update.")
+        if self.tray:
+            self.tray.update_menu()
+        return {"update": self.update_view()}
+
+    def install_update(self) -> None:
+        """Download the new Setup, start it silently and quit; it starts the app again."""
+        with self.lock:
+            release = self.update
+            if not release:
+                raise AppError("There's no update to install.")
+            if not UPDATABLE:
+                raise AppError("Only an installed Busyist can update itself; download the new version from GitHub.")
+            if self.updating:
+                raise AppError("The update is already on its way.")
+            self.updating, self.update_error = True, ""
+        try:
+            path = download_setup(release)
+            write_json(UPDATE_MARK, {"from": __version__, "to": release["version"]})
+            log.info("installing Busyist %s from %s", release["version"], path)
+            # /RELAUNCH=1 makes Setup start Busyist again when it is done,
+            # whether or not the update went through.
+            subprocess.Popen(
+                [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1", f"/LOG={SETUP_LOG}"],
+                close_fds=True,
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            )
+        except (AppError, OSError) as err:
+            UPDATE_MARK.unlink(missing_ok=True)
+            message = str(err) if isinstance(err, AppError) else f"Couldn't start the installer ({err})."
+            with self.lock:
+                self.updating, self.update_error = False, message
+            raise AppError(message)
+        # Setup replaces files this process has open, so get out of its way.
+        # Free the instance port at once so the copy Setup starts can claim it.
+        if self.instance_socket:
+            self.instance_socket.close()
+        threading.Timer(1.0, self.quit).start()
+
+    def report_update(self) -> None:
+        """After an update restart, say whether it worked."""
+        mark = read_json(UPDATE_MARK, None)
+        if not mark:
+            return
+        UPDATE_MARK.unlink(missing_ok=True)
+        if mark.get("to") == __version__:
+            log.info("updated from %s to %s", mark.get("from"), __version__)
+            self.notify(APP, f"Updated to version {__version__}.")
+        else:
+            log.warning("the update to %s didn't install; see %s", mark.get("to"), SETUP_LOG)
+            with self.lock:
+                self.update_failed = str(mark.get("to"))
+                self.update_error = f"Updating to {mark.get('to')} didn't work (details in {SETUP_LOG.name})."
+            self.notify(APP, f"Couldn't update to version {mark.get('to')}.")
 
     # ------------------------------------------------------------ actions
 
@@ -931,6 +1151,7 @@ class App:
     def quit(self) -> None:
         self.quitting = True
         self.wake.set()
+        self.update_wake.set()
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:
@@ -996,6 +1217,23 @@ class App:
         def nothing(icon, item):
             pass
 
+        def update_line(item):
+            with self.lock:
+                version = self.update and self.update["version"]
+            return f"Install update {version}" if UPDATABLE else f"Download update {version}"
+
+        def get_update(icon, item):
+            if not UPDATABLE:
+                webbrowser.open(self.update["url"])
+                return
+
+            def go():
+                try:
+                    self.install_update()
+                except AppError as err:
+                    self.notify(APP, str(err))
+            threading.Thread(target=go, daemon=True).start()
+
         menu = pystray.Menu(
             pystray.MenuItem("Open Busyist", lambda i, it: self.show_main(), default=True),
             pystray.MenuItem(lambda it: f"Pick a task ({self.cfg['hotkey']})", lambda i, it: self.show_main(True)),
@@ -1007,6 +1245,7 @@ class App:
             pystray.MenuItem("Stop", act("stop"), visible=lambda it: running()),
             pystray.MenuItem("Mini timer", toggle_mini, checked=lambda it: self.mini_shown),
             pystray.Menu.SEPARATOR,
+            pystray.MenuItem(update_line, get_update, visible=lambda it: bool(self.update) and not self.updating),
             pystray.MenuItem("Quit", lambda i, it: self.quit()),
         )
         return pystray.Icon("busyist", tray_image(None), APP, menu)
@@ -1045,6 +1284,8 @@ class App:
             log.warning("%s", err)
             self.notify(APP, f"{err} Change it in Settings.")
         threading.Thread(target=self.engine, daemon=True).start()
+        if FROZEN:  # from source, git is the updater
+            threading.Thread(target=self.updater, daemon=True, name="updater").start()
         threading.Thread(target=listen_for_second_launch, args=(self,), daemon=True).start()
 
         def ready():
@@ -1116,7 +1357,14 @@ class Api:
 
     def get_settings(self):
         cfg = self._app.cfg
-        return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR))
+        return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR),
+                    can_auto_update=self._app.can_auto_update)
+
+    def check_update(self):
+        return self._do(self._app.check_for_update)
+
+    def install_update(self):
+        return self._do(self._app.install_update)
 
     def open_data_folder(self):
         os.startfile(DATA_DIR)

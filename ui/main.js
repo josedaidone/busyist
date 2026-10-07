@@ -174,6 +174,24 @@ function renderChrome() {
   $("barText").textContent = bar.ok === true ? `BUSY Bar · ${bar.via}` : bar.ok === false ? "Bar offline" : "Looking for the bar";
   $("barChip").title = bar.ok === false ? bar.error : "";
   $("hotkeyHint").textContent = state.hotkey ? state.hotkey.replace(/\b\w/g, (c) => c.toUpperCase()) : "";
+
+  const u = state.update;
+  $("updateChip").classList.toggle("hidden", !u);
+  if (u) $("updateChip").textContent = u.busy ? "Updating…" : `Update ${u.version}`;
+  if ($("drawer").classList.contains("on")) renderUpdate();
+}
+
+function renderUpdate() {
+  const u = state && state.update;
+  const btn = $("installUpdate");
+  btn.classList.toggle("hidden", !u);
+  $("releaseNotes").classList.toggle("hidden", !u);
+  if (!u) return;
+  btn.textContent = u.busy ? "Installing…" : u.installable ? `Install ${u.version}` : `Download ${u.version}`;
+  btn.disabled = u.busy;
+  const out = $("updateResult");
+  out.className = "test-result " + (u.error ? "bad" : "ok");
+  out.textContent = u.error || (u.busy ? "Downloading the update…" : `Busyist ${u.version} is available. Installing it restarts Busyist.`);
 }
 
 function renderEnded() {
@@ -591,6 +609,9 @@ async function openSettings() {
   $("testResult").textContent = "";
   $("aboutVersion").textContent = "Busyist " + s.version;
   $("aboutData").textContent = s.data_dir;
+  $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
+  $("updateResult").textContent = "";
+  renderUpdate();
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
   setTimeout(() => (s.todoist_token ? $("s_focus_label") : $("s_todoist_token")).focus(), 220);
@@ -614,6 +635,33 @@ $("openSettings").onclick = openSettings;
 $("openData").onclick = () => api.open_data_folder();
 $("openRepo").onclick = () => api.open_repo();
 $("closeSettings").onclick = closeSettings;
+$("updateChip").onclick = async () => {
+  await openSettings();
+  setTimeout(() => $("installUpdate").scrollIntoView({ block: "nearest", behavior: "smooth" }), 250);
+};
+$("checkUpdate").onclick = async () => {
+  const out = $("updateResult");
+  out.className = "test-result";
+  out.textContent = "Checking GitHub…";
+  $("checkUpdate").disabled = true;
+  const result = await api.check_update();
+  $("checkUpdate").disabled = false;
+  if (!result.ok) { out.className = "test-result bad"; out.textContent = result.error; return; }
+  await poll();
+  if (!result.update) { out.className = "test-result ok"; out.textContent = "You have the latest version."; }
+};
+$("installUpdate").onclick = async () => {
+  const u = state && state.update;
+  if (!u) return;
+  if (!u.installable) return api.open_url(u.url);
+  if (state.session && !confirm("Busyist restarts to update. The session keeps running on the bar and picks up again after the restart. Update now?")) return;
+  $("installUpdate").disabled = true;
+  $("installUpdate").textContent = "Installing…";
+  const result = await api.install_update();
+  if (!result.ok) { await poll(); return toast(result.error, true); }
+  toast(`Installing Busyist ${u.version}. It restarts by itself.`);
+};
+$("releaseNotes").onclick = () => state && state.update && api.open_url(state.update.url);
 $("cancelSettings").onclick = closeSettings;
 $("scrim").onclick = () => {
   if (editing !== undefined) closeFilterEditor();

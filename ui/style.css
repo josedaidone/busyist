@@ -120,6 +120,8 @@ body[data-phase="idle"] { --phase: var(--faint); --phase-soft: transparent; }
 .chip.ok .led { background: var(--rest); box-shadow: 0 0 0 3px var(--rest-soft); }
 .chip.bad .led { background: var(--focus); box-shadow: 0 0 0 3px var(--focus-soft); }
 .chip.bad { cursor: help; }
+.chip.update { cursor: pointer; font: inherit; font-size: 12.5px; color: var(--rest); border-color: var(--rest); background: var(--rest-soft); }
+.chip.update:hover { filter: brightness(1.08); }
 
 /* ---------------------------------------------------------------- body */
 .body {
@@ -389,4 +391,7 @@ kbd {
 
 body[data-phase="idle"] .ring .progress { opacity: 0; }
 .about p { margin: 0 0 10px; }
+.about .input-row { margin-bottom: 10px; flex-wrap: wrap; }
+.about .test-result { margin: -4px 0 10px; }
+.about .test-result:empty { display: none; }
 .about code { font-size: 11.5px; word-break: break-all; }

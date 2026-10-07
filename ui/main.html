@@ -29,6 +29,7 @@
     <span class="chip" id="today" title="Finished pomodoros today"></span>
     <span class="chip" id="completed" title="Tasks completed from Busyist today"></span>
     <div class="spacer"></div>
+    <button class="chip update hidden" id="updateChip" title="A new version of Busyist is out"></button>
     <span class="chip" id="barChip"><span class="led"></span><span id="barText">Looking for the bar</span></span>
     <button class="icon-btn" id="openSettings" title="Settings"><svg><use href="#i-gear"/></svg></button>
   </header>
@@ -173,12 +174,19 @@
         <label class="switch"><input type="checkbox" name="notifications"><span class="knob"></span>Notify at breaks and when a session ends</label>
         <label class="switch"><input type="checkbox" name="open_on_finish"><span class="knob"></span>Open this window when a session finishes</label>
         <label class="switch"><input type="checkbox" name="launch_at_login"><span class="knob"></span>Start Busyist when I sign in to Windows</label>
+        <label class="switch" id="autoUpdateRow"><input type="checkbox" name="auto_update"><span class="knob"></span>Install updates automatically when no session is running</label>
       </div>
     </div>
 
     <div class="section about">
       <h4>About</h4>
       <p class="help"><b id="aboutVersion">Busyist</b> · unofficial; not affiliated with BUSY or Todoist.</p>
+      <div class="input-row">
+        <button type="button" class="btn primary hidden" id="installUpdate"></button>
+        <button type="button" class="btn" id="checkUpdate">Check for updates</button>
+        <button type="button" class="btn ghost hidden" id="releaseNotes">What's new</button>
+      </div>
+      <div class="test-result" id="updateResult"></div>
       <div class="input-row">
         <button type="button" class="btn" id="openData">Open data folder</button>
         <button type="button" class="btn ghost" id="openRepo">GitHub</button>
