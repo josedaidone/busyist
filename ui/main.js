@@ -608,7 +608,7 @@ async function openSettings() {
     else input.value = s[input.name] ?? "";
   }
   $("testResult").textContent = "";
-  blockedApps = [...(s.blocked_apps || [])];
+  blockedApps = (s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
   showBarFields();
@@ -631,22 +631,46 @@ function showBarFields() {
 }
 $("s_use_busybar").onchange = showBarFields;
 
-// The apps closed during focus, as edited here; saved with the rest.
+// The apps kept away during focus, as edited here; saved with the rest.
+// Each is {id, name, exes, on, action: "close"|"hide", custom}; the presets
+// come from Python and can only be switched, apps added here can be removed.
 const MAX_BLOCKED_APPS = 20;
 let blockedApps = [];
 
 function renderBlockedApps() {
-  const box = $("blockedApps");
-  box.replaceChildren();
-  if (!blockedApps.length) box.append(el("span", "empty-note", "No apps listed."));
-  blockedApps.forEach((name, i) => {
-    const chip = el("span", "chip", name);
-    const x = el("button", "", "×");
-    x.type = "button";
-    x.title = "Remove " + name;
-    x.onclick = () => { blockedApps.splice(i, 1); renderBlockedApps(); };
-    chip.append(x);
-    box.append(chip);
+  const list = $("blockedApps");
+  list.replaceChildren();
+  blockedApps.forEach((app, i) => {
+    const row = el("div", "app-row" + (app.on ? "" : " off"));
+
+    const label = el("label", "switch");
+    const check = el("input");  // no name: formValues() leaves it alone
+    check.type = "checkbox";
+    check.checked = app.on;
+    check.onchange = () => { app.on = check.checked; row.classList.toggle("off", !app.on); };
+    label.append(check, el("span", "knob"), el("span", "", app.name), el("span", "exe", app.exes[0]));
+    label.title = app.exes.join(", ");
+
+    const action = el("select", "action");
+    for (const [value, text] of [["close", "Close"], ["hide", "Hide to tray"]]) {
+      const opt = el("option", "", text);
+      opt.value = value;
+      action.append(opt);
+    }
+    action.value = app.action;
+    action.onchange = () => { app.action = action.value; };
+
+    row.append(label, action);
+    if (app.custom) {
+      const x = el("button", "remove", "×");
+      x.type = "button";
+      x.title = "Remove " + app.name;
+      x.onclick = () => { blockedApps.splice(i, 1); renderBlockedApps(); };
+      row.append(x);
+    } else {
+      row.append(el("span"));
+    }
+    list.append(row);
   });
   $("blockedAppsFields").classList.toggle("muted", !$("s_block_apps").checked);
 }
@@ -657,10 +681,17 @@ function addBlockedApp() {
   if (!name) return;
   if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
   const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
-  if (blockedApps.some((n) => key(n) === key(name))) { input.value = ""; return; }
-  if (blockedApps.length >= MAX_BLOCKED_APPS) return toast(`Keep the blocked apps under ${MAX_BLOCKED_APPS}.`, true);
-  blockedApps.push(name);
+  const known = blockedApps.find((a) => a.exes.some((e) => key(e) === key(name)));
   input.value = "";
+  if (known) { known.on = true; return renderBlockedApps(); }  // already listed: just switch it on
+  if (blockedApps.filter((a) => a.custom).length >= MAX_BLOCKED_APPS) {
+    return toast(`Keep the added apps under ${MAX_BLOCKED_APPS}.`, true);
+  }
+  const exe = /\.exe$/i.test(name) ? name : name + ".exe";
+  blockedApps.push({
+    id: "custom:" + key(exe), name: exe.replace(/\.exe$/i, "").split(".")[0] || exe,
+    exes: [exe], on: true, action: "close", custom: true,
+  });
   renderBlockedApps();
 }
 $("addBlockedAppBtn").onclick = addBlockedApp;

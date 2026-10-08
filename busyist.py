@@ -101,14 +101,30 @@ DEFAULTS = {
     "launch_at_login": True,
     "open_on_finish": True,
     "auto_update": True,
-    # Close these apps while a work phase is running (issue #1). Off by
-    # default for other users; WhatsApp Desktop runs as WhatsApp.Root.exe
-    # today, WhatsApp.exe on older builds.
+    # Keep distracting apps away while a work phase runs (issue #1). Off by
+    # default for other users. The list is APP_PRESETS (each switchable)
+    # plus apps added by hand; normalize_blocked_apps() fills it in.
     "block_apps": False,
-    "blocked_apps": ["WhatsApp.Root.exe", "WhatsApp.exe"],
+    "blocked_apps": [],
 }
 
-MAX_BLOCKED_APPS = 20
+MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
+
+# Apps offered in Settings, each with its own switch: (id, name, program
+# names, default action, on by default). "close" ends the app; "hide" sends
+# its windows to the tray as their X would, so it stays signed in and online.
+APP_PRESETS = [
+    # WhatsApp Desktop runs as WhatsApp.Root.exe today, WhatsApp.exe on older builds.
+    ("whatsapp", "WhatsApp", ["WhatsApp.Root.exe", "WhatsApp.exe"], "close", True),
+    ("slack", "Slack", ["Slack.exe"], "hide", False),
+    ("discord", "Discord", ["Discord.exe"], "hide", False),
+    ("telegram", "Telegram", ["Telegram.exe"], "close", False),
+    ("signal", "Signal", ["Signal.exe"], "close", False),
+    ("spotify", "Spotify", ["Spotify.exe"], "close", False),
+    ("steam", "Steam", ["steam.exe"], "close", False),
+    ("epic", "Epic Games", ["EpicGamesLauncher.exe"], "close", False),
+]
+APP_ACTIONS = ("close", "hide")
 
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
@@ -620,6 +636,7 @@ class App:
         self.cfg = dict(DEFAULTS)
         saved = read_json(CONFIG_PATH, {})
         self.cfg.update(saved)
+        self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -1190,7 +1207,7 @@ class App:
                 value = str(value).strip()
             clean[key] = value
         if "blocked_apps" in changes:
-            clean["blocked_apps"] = self._clean_app_list(changes["blocked_apps"])
+            clean["blocked_apps"] = clean_blocked_apps(changes["blocked_apps"])
         merged = dict(self.cfg, **clean)
         for key in ("work_minutes", "rest_minutes"):
             if not PHASE_MIN <= merged[key] <= PHASE_MAX:
@@ -1217,23 +1234,6 @@ class App:
         self.blocker.poke()  # pick up a changed list or switch straight away
         if self.tray:
             self.tray.update_menu()
-
-    @staticmethod
-    def _clean_app_list(values) -> list[str]:
-        """Trim, drop blanks and case-insensitive duplicates, cap the length."""
-        out: list[str] = []
-        for raw in values or []:
-            name = str(raw).strip()
-            if not name:
-                continue
-            if "/" in name or "\\" in name:
-                raise AppError("App names are just the program, like WhatsApp.exe.")
-            if any(name.lower() == kept.lower() for kept in out):
-                continue
-            out.append(name)
-            if len(out) > MAX_BLOCKED_APPS:
-                raise AppError(f"Keep the blocked apps under {MAX_BLOCKED_APPS}.")
-        return out
 
     def apply_launch_at_login(self) -> None:
         """Make the Windows sign-in entry match the setting."""
@@ -1866,15 +1866,123 @@ def app_key(name: str) -> str:
     return name[:-4] if name.endswith(".exe") else name
 
 
+def normalize_blocked_apps(raw) -> list[dict]:
+    """
+    The app list as Settings shows it: every preset (in APP_PRESETS order,
+    with the saved switch and action), then the apps added by hand.
+
+    Presets take their name and program names from the code, so a fix there
+    reaches existing configs. The first version of this setting saved bare
+    program names; those turn the matching preset on, or become hand-added.
+    """
+    saved: dict[str, dict] = {}
+    custom: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, str):
+            name = item.strip()
+            preset = next((p for p in APP_PRESETS if app_key(name) in {app_key(e) for e in p[2]}), None)
+            item = {"id": preset[0], "on": True} if preset else {"exes": [name], "on": True, "custom": True}
+        if not isinstance(item, dict):
+            continue
+        if item.get("custom"):
+            exe = str((item.get("exes") or [""])[0]).strip()
+            if not exe:
+                continue
+            custom.append({
+                "id": "custom:" + app_key(exe),
+                "name": str(item.get("name") or exe_label(exe)),
+                "exes": [exe],
+                "on": bool(item.get("on", True)),
+                "action": item.get("action") if item.get("action") in APP_ACTIONS else "close",
+                "custom": True,
+            })
+        elif item.get("id"):
+            saved[str(item["id"])] = item
+    out = []
+    for pid, name, exes, action, on in APP_PRESETS:
+        mine = saved.get(pid, {})
+        out.append({
+            "id": pid, "name": name, "exes": list(exes),
+            "on": bool(mine.get("on", on)),
+            "action": mine.get("action") if mine.get("action") in APP_ACTIONS else action,
+            "custom": False,
+        })
+    taken = {app_key(e) for entry in out for e in entry["exes"]}
+    for entry in custom:
+        key = app_key(entry["exes"][0])
+        if key not in taken:
+            taken.add(key)
+            out.append(entry)
+    return out
+
+
+def clean_blocked_apps(values) -> list[dict]:
+    """Check the list Settings sent, then normalize it; AppError if it's wrong."""
+    if not isinstance(values, list) or not all(isinstance(item, dict) for item in values):
+        raise AppError("The app list didn't come through; try again.")
+    hand = 0
+    for item in values:
+        if item.get("custom"):
+            exe = str((item.get("exes") or [""])[0]).strip()
+            if not exe:
+                raise AppError("Type the program name, like Slack.exe.")
+            if "/" in exe or "\\" in exe:
+                raise AppError("App names are just the program, like WhatsApp.exe.")
+            hand += 1
+    if hand > MAX_BLOCKED_APPS:
+        raise AppError(f"Keep the added apps under {MAX_BLOCKED_APPS}.")
+    return normalize_blocked_apps(values)
+
+
+def exe_label(image: str) -> str:
+    """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
+    stem = image[:-4] if image.lower().endswith(".exe") else image
+    return stem.split(".")[0] or stem
+
+
+WM_CLOSE = 0x0010
+GW_OWNER = 4
+_ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+
+def close_windows(pids: set[int]) -> set[int]:
+    """
+    Ask the visible top-level windows of these processes to close, as their
+    X button would. Apps that live in the tray (Slack, Discord) just hide and
+    stay signed in. Returns the pids that had a window to close.
+    """
+    user32 = ctypes.windll.user32
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+    user32.GetWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+    user32.GetWindow.restype = ctypes.wintypes.HWND
+    user32.PostMessageW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+                                    ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    user32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, ctypes.wintypes.LPARAM]
+    closed: set[int] = set()
+
+    def visit(hwnd, _):
+        pid = ctypes.wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, GW_OWNER):
+            if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
+                closed.add(pid.value)
+        return True
+
+    user32.EnumWindows(_ENUM_WINDOWS_PROC(visit), 0)
+    return closed
+
+
 class AppBlocker:
     """
-    Keeps the listed apps closed while a work phase runs (issue #1).
+    Keeps the listed apps away while a work phase runs (issue #1).
 
     The thread sleeps on an Event outside focus, so it costs nothing when
     there is no session or the switch is off; App.notify_focus() and
-    save_settings() poke it. During focus it looks every TICK seconds and
-    ends any listed process in this user's session. Nothing is relaunched
-    when focus ends.
+    save_settings() poke it. During focus it looks every TICK seconds:
+    "close" apps are ended (only in this user's session), "hide" apps get
+    their windows closed to the tray so they stay online. Nothing is
+    relaunched or reopened when focus ends.
     """
 
     TICK = 1.5
@@ -1912,35 +2020,45 @@ class AppBlocker:
             self.wake.clear()
 
     def enforce(self, focus: dict) -> None:
-        wanted = {app_key(n): n for n in self.app.cfg.get("blocked_apps") or []}
+        wanted: dict[str, dict] = {}
+        for entry in self.app.cfg.get("blocked_apps") or []:
+            if entry.get("on"):
+                for exe in entry["exes"]:
+                    wanted[app_key(exe)] = entry
         if not wanted:
             return
-        alive = set()
+        alive: set[int] = set()
+        to_hide: dict[int, dict] = {}
         for pid, image in list_processes():
             alive.add(pid)
-            key = app_key(image)
-            if key not in wanted or pid in self._denied:
+            entry = wanted.get(app_key(image))
+            if entry is None or pid in self._denied:
                 continue
             if self._session is not None and process_session(pid) != self._session:
-                continue  # another user's process: not ours to close
+                continue  # another user's process: not ours to touch
+            if entry["action"] == "hide":
+                to_hide[pid] = entry
+                continue
             error = terminate_process(pid)
             if error:
                 self._denied.add(pid)
                 log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
                 continue
             log.info("closed %s (pid %d) during focus", image, pid)
-            self._toast(key, image, focus)
+            self._toast(entry, "blocked", focus)
         self._denied &= alive  # forget pids that are gone, so a reused pid is tried
+        if to_hide:
+            for pid in close_windows(set(to_hide)):
+                log.info("hid %s (pid %d) to the tray during focus", to_hide[pid]["name"], pid)
+                self._toast(to_hide[pid], "hidden", focus)
 
-    def _toast(self, key: str, image: str, focus: dict) -> None:
+    def _toast(self, entry: dict, what: str, focus: dict) -> None:
         now = time.monotonic()
-        if now - self._toasted.get(key, -self.TOAST_EVERY) < self.TOAST_EVERY:
+        if now - self._toasted.get(entry["id"], -self.TOAST_EVERY) < self.TOAST_EVERY:
             return
-        self._toasted[key] = now
-        label = image[:-4] if image.lower().endswith(".exe") else image
-        label = label.split(".")[0] or label  # WhatsApp.Root -> WhatsApp
+        self._toasted[entry["id"]] = now
         until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
-        self.app.notify("Focus", f"{label} is blocked until {until}")
+        self.app.notify("Focus", f"{entry['name']} is {what} until {until}")
 
 
 # -------------------------------------------------------------- startup ---
