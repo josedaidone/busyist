@@ -101,7 +101,14 @@ DEFAULTS = {
     "launch_at_login": True,
     "open_on_finish": True,
     "auto_update": True,
+    # Close these apps while a work phase is running (issue #1). Off by
+    # default for other users; WhatsApp Desktop runs as WhatsApp.Root.exe
+    # today, WhatsApp.exe on older builds.
+    "block_apps": False,
+    "blocked_apps": ["WhatsApp.Root.exe", "WhatsApp.exe"],
 }
+
+MAX_BLOCKED_APPS = 20
 
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
@@ -628,6 +635,9 @@ class App:
         self.snap: types.BusySnapshot | None = None
         self.bar_ok: bool | None = None
         self.bar_error = ""
+        self.bar_fails = 0  # consecutive failed polls; blocking fails open at 3
+        self._focus_active = False
+        self.focus_hooks: list = []  # called (off App.lock) when focus flips
         self.ended: dict | None = None
         self.history: list[dict] = read_json(HISTORY_PATH, [])
         self.wake = threading.Event()
@@ -648,6 +658,10 @@ class App:
         # to; an all-users install would raise an admin prompt out of nowhere.
         self.can_auto_update = UPDATABLE and app_dir_writable()
         self._migrate_filters()
+        # Closes distracting apps during focus (issue #1); idle until a work
+        # phase starts, so nothing runs when the feature is off.
+        self.blocker = AppBlocker(self)
+        self.focus_hooks.append(self.blocker.poke)
 
     # -------------------------------------------------------------- filters
 
@@ -790,6 +804,56 @@ class App:
                 "update": self.update_view(),
             }
 
+    # ----------------------------------------------------------- focus
+
+    def focus(self) -> dict:
+        """
+        Whether a work phase is running right now, worked out from the same
+        snapshot follow_session() uses. Shared by the app and site blockers
+        (issues #1 and #2): active means an interval session, in a work phase,
+        not paused, not finished. `ends_at_ms` is when the current work phase
+        ends, so toasts and the block page can show "until 14:25".
+
+        Blocking fails open: a bar that can't be read for three polls in a row
+        counts as "no focus", so a lost connection never leaves apps blocked.
+        """
+        off = {"active": False, "task": "", "ends_at_ms": 0}
+        with self.lock:
+            session, snap = self.session, self.snap
+            if not session or snap is None:
+                return off
+            if not self.bar_ok and self.bar_fails >= 3:
+                return off  # fail open on a lost bar
+            if snap.snapshot_timestamp_ms < session["stamp"]:
+                return off  # a reading from before our own start
+            state = timer_state(snap)
+            if (state.mode != "interval" or state.is_finished
+                    or state.phase != "work" or state.is_paused):
+                return off
+            return {
+                "active": True,
+                "task": session["task"]["content"],
+                "ends_at_ms": now_ms() + (state.time_left_ms or 0),
+            }
+
+    def notify_focus(self) -> None:
+        """Recompute focus and, if it flipped, run the hooks off App.lock."""
+        focus = self.focus()
+        with self.lock:
+            changed = focus["active"] != self._focus_active
+            self._focus_active = focus["active"]
+        if not changed:
+            return
+        for hook in list(self.focus_hooks):
+            threading.Thread(target=self._run_hook, args=(hook, focus), daemon=True).start()
+
+    @staticmethod
+    def _run_hook(hook, focus: dict) -> None:
+        try:
+            hook(focus)
+        except Exception:
+            log.exception("focus hook")
+
     # --------------------------------------------------------- engine loop
 
     def engine(self) -> None:
@@ -798,16 +862,19 @@ class App:
             try:
                 snap = self.bar.snapshot()
                 with self.lock:
-                    self.snap, self.bar_ok, self.bar_error = snap, True, ""
+                    self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
             except AppError as err:
                 with self.lock:
                     self.bar_ok, self.bar_error = False, str(err)
+                    self.bar_fails += 1
             except Exception as err:  # never let the loop die
                 log.exception("bar poll")
                 with self.lock:
                     self.bar_ok, self.bar_error = False, f"Unexpected: {err!r}"
+                    self.bar_fails += 1
             try:
                 self.follow_session()
+                self.notify_focus()
                 self.update_tray()
             except Exception:
                 log.exception("engine")
@@ -1038,6 +1105,15 @@ class App:
             threading.Thread(target=self.finish, args=(old, "replaced"), daemon=True).start()
         threading.Thread(target=self._label_task, args=(self.session,), daemon=True).start()
         self.wake.set()
+        # Read the fresh interval straight back so focus (and its blockers)
+        # act at once, not on the next poll.
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
+        except AppError:
+            pass
+        self.notify_focus()
         # Out of the way for the focus block; the mini timer takes over.
         if self.main:
             hide_window(self.main)
@@ -1089,9 +1165,11 @@ class App:
         try:
             snap = self.bar.snapshot()
             with self.lock:
-                self.snap, self.bar_ok = snap, True
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
         except AppError:
             pass
+        # A pause/resume/stop from the app lifts or applies the block now.
+        self.notify_focus()
 
     # ----------------------------------------------------------- settings
 
@@ -1111,6 +1189,8 @@ class App:
             else:
                 value = str(value).strip()
             clean[key] = value
+        if "blocked_apps" in changes:
+            clean["blocked_apps"] = self._clean_app_list(changes["blocked_apps"])
         merged = dict(self.cfg, **clean)
         for key in ("work_minutes", "rest_minutes"):
             if not PHASE_MIN <= merged[key] <= PHASE_MAX:
@@ -1134,8 +1214,26 @@ class App:
         if bar_changed:
             self.bar.reset()
             self.wake.set()
+        self.blocker.poke()  # pick up a changed list or switch straight away
         if self.tray:
             self.tray.update_menu()
+
+    @staticmethod
+    def _clean_app_list(values) -> list[str]:
+        """Trim, drop blanks and case-insensitive duplicates, cap the length."""
+        out: list[str] = []
+        for raw in values or []:
+            name = str(raw).strip()
+            if not name:
+                continue
+            if "/" in name or "\\" in name:
+                raise AppError("App names are just the program, like WhatsApp.exe.")
+            if any(name.lower() == kept.lower() for kept in out):
+                continue
+            out.append(name)
+            if len(out) > MAX_BLOCKED_APPS:
+                raise AppError(f"Keep the blocked apps under {MAX_BLOCKED_APPS}.")
+        return out
 
     def apply_launch_at_login(self) -> None:
         """Make the Windows sign-in entry match the setting."""
@@ -1211,6 +1309,7 @@ class App:
         self.quitting = True
         self.wake.set()
         self.update_wake.set()
+        self.blocker.poke()
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:
@@ -1343,6 +1442,7 @@ class App:
             log.warning("%s", err)
             self.notify(APP, f"{err} Change it in Settings.")
         threading.Thread(target=self.engine, daemon=True).start()
+        self.blocker.start()
         if FROZEN:  # from source, git is the updater
             threading.Thread(target=self.updater, daemon=True, name="updater").start()
         threading.Thread(target=listen_for_second_launch, args=(self,), daemon=True).start()
@@ -1670,6 +1770,162 @@ class GlobalHotkey:
 
     def stop(self) -> None:
         ctypes.windll.user32.PostThreadMessageW(self._thread_id, self.WM_QUIT, 0, 0)
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.wintypes.DWORD),
+        ("cntUsage", ctypes.wintypes.DWORD),
+        ("th32ProcessID", ctypes.wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.wintypes.DWORD),
+        ("cntThreads", ctypes.wintypes.DWORD),
+        ("th32ParentProcessID", ctypes.wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+TH32CS_SNAPPROCESS = 0x2
+PROCESS_TERMINATE = 0x1
+ERROR_ACCESS_DENIED = 5
+
+
+def _kernel32():
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateToolhelp32Snapshot.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    k.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+    k.Process32FirstW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k.Process32NextW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+    k.OpenProcess.restype = ctypes.wintypes.HANDLE
+    k.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+    k.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    k.ProcessIdToSessionId.argtypes = [ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    return k
+
+
+def list_processes() -> list[tuple[int, str]]:
+    """(pid, image name) of every process, via a Toolhelp snapshot."""
+    k = _kernel32()
+    snap = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == ctypes.wintypes.HANDLE(-1).value:
+        return []
+    found = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            found.append((entry.th32ProcessID, entry.szExeFile))
+            ok = k.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k.CloseHandle(snap)
+    return found
+
+
+def process_session(pid: int) -> int | None:
+    """The Windows logon session a process runs in, or None if unknown."""
+    session = ctypes.wintypes.DWORD()
+    if _kernel32().ProcessIdToSessionId(pid, ctypes.byref(session)):
+        return session.value
+    return None
+
+
+def terminate_process(pid: int) -> int:
+    """End a process; returns 0 on success, else the Win32 error code."""
+    k = _kernel32()
+    handle = k.OpenProcess(PROCESS_TERMINATE, False, pid)
+    if not handle:
+        return ctypes.get_last_error() or ERROR_ACCESS_DENIED
+    try:
+        return 0 if k.TerminateProcess(handle, 1) else (ctypes.get_last_error() or 1)
+    finally:
+        k.CloseHandle(handle)
+
+
+def app_key(name: str) -> str:
+    """'WhatsApp.Root.EXE' -> 'whatsapp.root': case-insensitive, .exe optional."""
+    name = name.strip().lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+class AppBlocker:
+    """
+    Keeps the listed apps closed while a work phase runs (issue #1).
+
+    The thread sleeps on an Event outside focus, so it costs nothing when
+    there is no session or the switch is off; App.notify_focus() and
+    save_settings() poke it. During focus it looks every TICK seconds and
+    ends any listed process in this user's session. Nothing is relaunched
+    when focus ends.
+    """
+
+    TICK = 1.5
+    TOAST_EVERY = 60  # seconds between toasts for the same app
+
+    def __init__(self, app: App):
+        self.app = app
+        self.wake = threading.Event()
+        self._toasted: dict[str, float] = {}
+        self._denied: set[int] = set()  # pids we couldn't end; logged once, not retried
+        self._session = process_session(os.getpid())
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="app-blocker")
+        self._thread.start()
+
+    def poke(self, _focus: dict | None = None) -> None:
+        self.wake.set()
+
+    def _loop(self) -> None:
+        while not self.app.quitting:
+            cfg = self.app.cfg
+            focus = self.app.focus() if cfg.get("block_apps") else {"active": False}
+            if focus["active"]:
+                try:
+                    self.enforce(focus)
+                except Exception:
+                    log.exception("app blocker")
+                self.wake.wait(self.TICK)
+            else:
+                self._toasted.clear()
+                self._denied.clear()
+                self.wake.wait()  # idle until focus starts or settings change
+            self.wake.clear()
+
+    def enforce(self, focus: dict) -> None:
+        wanted = {app_key(n): n for n in self.app.cfg.get("blocked_apps") or []}
+        if not wanted:
+            return
+        alive = set()
+        for pid, image in list_processes():
+            alive.add(pid)
+            key = app_key(image)
+            if key not in wanted or pid in self._denied:
+                continue
+            if self._session is not None and process_session(pid) != self._session:
+                continue  # another user's process: not ours to close
+            error = terminate_process(pid)
+            if error:
+                self._denied.add(pid)
+                log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
+                continue
+            log.info("closed %s (pid %d) during focus", image, pid)
+            self._toast(key, image, focus)
+        self._denied &= alive  # forget pids that are gone, so a reused pid is tried
+
+    def _toast(self, key: str, image: str, focus: dict) -> None:
+        now = time.monotonic()
+        if now - self._toasted.get(key, -self.TOAST_EVERY) < self.TOAST_EVERY:
+            return
+        self._toasted[key] = now
+        label = image[:-4] if image.lower().endswith(".exe") else image
+        label = label.split(".")[0] or label  # WhatsApp.Root -> WhatsApp
+        until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
+        self.app.notify("Focus", f"{label} is blocked until {until}")
 
 
 # -------------------------------------------------------------- startup ---

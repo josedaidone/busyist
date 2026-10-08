@@ -339,6 +339,15 @@ kbd {
 .drawer-body { padding: 6px 20px 20px; overflow-y: auto; flex: 1; }
 .drawer-foot { display: flex; gap: 8px; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--line); }
 .section { padding-top: 16px; }
+.app-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.app-list .chip { padding-right: 4px; color: var(--ink); }
+.app-list .chip button {
+  border: 0; background: none; color: var(--muted); cursor: pointer;
+  width: 20px; height: 20px; border-radius: 50%; font: inherit; line-height: 1;
+}
+.app-list .chip button:hover { background: var(--line); color: var(--ink); }
+.app-list .empty-note { color: var(--muted); font-size: 12.5px; }
+#blockedAppsFields.muted { opacity: .55; }
 .section h4 {
   margin: 0 0 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
   display: flex; align-items: center; gap: 8px;

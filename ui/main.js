@@ -608,6 +608,9 @@ async function openSettings() {
     else input.value = s[input.name] ?? "";
   }
   $("testResult").textContent = "";
+  blockedApps = [...(s.blocked_apps || [])];
+  $("addBlockedApp").value = "";
+  renderBlockedApps();
   showBarFields();
   $("aboutVersion").textContent = "Busyist " + s.version;
   $("aboutData").textContent = s.data_dir;
@@ -627,6 +630,44 @@ function showBarFields() {
   $("noBarHelp").classList.toggle("hidden", on);
 }
 $("s_use_busybar").onchange = showBarFields;
+
+// The apps closed during focus, as edited here; saved with the rest.
+const MAX_BLOCKED_APPS = 20;
+let blockedApps = [];
+
+function renderBlockedApps() {
+  const box = $("blockedApps");
+  box.replaceChildren();
+  if (!blockedApps.length) box.append(el("span", "empty-note", "No apps listed."));
+  blockedApps.forEach((name, i) => {
+    const chip = el("span", "chip", name);
+    const x = el("button", "", "×");
+    x.type = "button";
+    x.title = "Remove " + name;
+    x.onclick = () => { blockedApps.splice(i, 1); renderBlockedApps(); };
+    chip.append(x);
+    box.append(chip);
+  });
+  $("blockedAppsFields").classList.toggle("muted", !$("s_block_apps").checked);
+}
+
+function addBlockedApp() {
+  const input = $("addBlockedApp");
+  const name = input.value.trim();
+  if (!name) return;
+  if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
+  const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
+  if (blockedApps.some((n) => key(n) === key(name))) { input.value = ""; return; }
+  if (blockedApps.length >= MAX_BLOCKED_APPS) return toast(`Keep the blocked apps under ${MAX_BLOCKED_APPS}.`, true);
+  blockedApps.push(name);
+  input.value = "";
+  renderBlockedApps();
+}
+$("addBlockedAppBtn").onclick = addBlockedApp;
+$("addBlockedApp").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedApp(); }
+});
+$("s_block_apps").onchange = renderBlockedApps;
 
 function closeSettings() {
   $("drawer").classList.remove("on");
@@ -685,7 +726,8 @@ $("revealToken").onclick = () => {
 };
 $("settingsForm").onsubmit = (e) => { e.preventDefault(); $("saveSettings").click(); };
 $("saveSettings").onclick = async () => {
-  const result = await api.save_settings(formValues());
+  addBlockedApp(); // a name typed but not yet added still counts
+  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
