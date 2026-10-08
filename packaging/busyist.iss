@@ -89,6 +89,25 @@ begin
   Result := '';
 end;
 
+{ The app's own updater runs Setup with /VERYSILENT /RELAUNCH=1 after quitting.
+  Start the app again at the end, whether or not the update went through, so
+  a failed update doesn't leave Busyist closed. }
+procedure DeinitializeSetup;
+var
+  AppExe: String;
+  Code: Integer;
+begin
+  if ExpandConstant('{param:RELAUNCH|0}') <> '1' then
+    Exit;
+  try
+    AppExe := ExpandConstant('{app}\Busyist.exe');
+  except
+    Exit;  { Setup stopped before it knew where the app is }
+  end;
+  if FileExists(AppExe) then
+    ExecAsOriginalUser(AppExe, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;
+
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;

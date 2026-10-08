@@ -4,7 +4,7 @@
 
 **Todoist pomodoros on your BUSY Bar.** Busyist is a small Windows tray app: pick a task from
 Todoist, and your BUSY Bar runs its focus timer while Busyist keeps track of
-what you're working on.
+what you're working on. No bar? Busyist runs the timer on your PC instead.
 
 ![Busyist window](docs/screenshot.png)
 
@@ -26,13 +26,14 @@ menu, and starts it.
 ## Set up
 
 1. **Todoist**: in Todoist, open *Settings → Integrations → Developer* and copy your **API token**.
-2. **BUSY Bar**:
+2. **BUSY Bar** (optional; without one, Busyist runs the timer itself, shown by the mini timer and
+   the tray icon). In Settings, turn on **Run the timer on a BUSY Bar**, then:
    - **Over Wi-Fi**: the bar's HTTP API is off by default. Plug the bar in over USB, open
      <http://10.0.4.20>, go to *Network → HTTP API*, turn it on and set a PIN. Then find the bar's IP
      under *Settings → Wi-Fi → (your network) → View IP Address*.
    - **Over USB only**: nothing to do, Busyist also tries the bar's USB address.
-3. Start Busyist. The first time, it opens on **Settings**: paste the token, enter the bar's IP and
-   PIN, click **Test connection**, then **Save**.
+3. Start Busyist. The first time, it opens on **Settings**: paste the token and, if you have a bar,
+   turn it on, enter its IP and PIN and click **Test connection**. Then **Save**.
 
 ## Using it
 
@@ -100,6 +101,9 @@ push a matching tag:
 git tag v1.0.1
 git push origin v1.0.1
 ```
+
+The full steps, including test builds and what to do when one fails, are in
+[docs/RELEASING.md](docs/RELEASING.md).
 
 Project layout:
 - `busyist.py`: the app;

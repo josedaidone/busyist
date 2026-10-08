@@ -29,6 +29,7 @@
     <span class="chip" id="today" title="Finished pomodoros today"></span>
     <span class="chip" id="completed" title="Tasks completed from Busyist today"></span>
     <div class="spacer"></div>
+    <button class="chip update hidden" id="updateChip" title="A new version of Busyist is out"></button>
     <span class="chip" id="barChip"><span class="led"></span><span id="barText">Looking for the bar</span></span>
     <button class="icon-btn" id="openSettings" title="Settings"><svg><use href="#i-gear"/></svg></button>
   </header>
@@ -138,6 +139,11 @@
 
     <div class="section">
       <h4>BUSY Bar</h4>
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="use_busybar" id="s_use_busybar"><span class="knob"></span>Run the timer on a BUSY Bar</label>
+      </div>
+      <div class="help hidden" id="noBarHelp">Off: the timer runs in Busyist on this PC, with the mini timer and tray icon as the countdown.</div>
+      <div id="barFields">
       <div class="two">
         <div class="field">
           <label for="s_busybar_ip">Wi-Fi address</label>
@@ -153,6 +159,7 @@
       </div>
       <button type="button" class="btn" id="testBar">Test connection</button>
       <div class="test-result" id="testResult"></div>
+      </div>
     </div>
 
     <div class="section">
@@ -163,7 +170,7 @@
           <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
           <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
         </div>
-        <div class="field">
+        <div class="field" id="pollField">
           <label for="s_poll_seconds">Check the bar every</label>
           <input class="input" id="s_poll_seconds" name="poll_seconds" type="number" min="2" max="60">
           <div class="help">seconds</div>
@@ -173,12 +180,19 @@
         <label class="switch"><input type="checkbox" name="notifications"><span class="knob"></span>Notify at breaks and when a session ends</label>
         <label class="switch"><input type="checkbox" name="open_on_finish"><span class="knob"></span>Open this window when a session finishes</label>
         <label class="switch"><input type="checkbox" name="launch_at_login"><span class="knob"></span>Start Busyist when I sign in to Windows</label>
+        <label class="switch" id="autoUpdateRow"><input type="checkbox" name="auto_update"><span class="knob"></span>Install updates automatically when no session is running</label>
       </div>
     </div>
 
     <div class="section about">
       <h4>About</h4>
       <p class="help"><b id="aboutVersion">Busyist</b> · unofficial; not affiliated with BUSY or Todoist.</p>
+      <div class="input-row">
+        <button type="button" class="btn primary hidden" id="installUpdate"></button>
+        <button type="button" class="btn" id="checkUpdate">Check for updates</button>
+        <button type="button" class="btn ghost hidden" id="releaseNotes">What's new</button>
+      </div>
+      <div class="test-result" id="updateResult"></div>
       <div class="input-row">
         <button type="button" class="btn" id="openData">Open data folder</button>
         <button type="button" class="btn ghost" id="openRepo">GitHub</button>

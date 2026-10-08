@@ -22,7 +22,7 @@ function render() {
   $("mProgress").style.strokeDashoffset = t ? RING * (1 - left / t.total_ms) : RING;
   $("mPhase").textContent = { idle: "Idle", paused: "Paused", work: "Focus", rest: "Break" }[phase];
   $("mRound").textContent = t ? `· ${t.round}/${t.rounds}` : "";
-  $("mTask").textContent = s ? s.task.content : t ? "Running on the bar" : "No session";
+  $("mTask").textContent = s ? s.task.content : t ? (state.bar.local ? "Timer running" : "Running on the bar") : "No session";
   $("mProject").textContent = s ? s.task.project : "";
   $("mPauseIcon").setAttribute("href", t && t.paused ? "#i-play" : "#i-pause");
   $("mPause").title = t && t.paused ? "Resume" : "Pause";
