@@ -19,7 +19,12 @@ menu, and starts it.
 - **"Windows protected your PC"?** Busyist isn't code-signed yet, so SmartScreen warns on first run.
   Click **More info → Run anyway**. You can check the download against `SHA256SUMS.txt` on the
   release page.
+- **Updates install themselves.** Busyist checks GitHub for a new release every few hours, verifies
+  the download against `SHA256SUMS.txt`, and installs it while no session is running and the
+  window is closed. Turn that off in Settings, or use **Settings → About → Check for updates**.
+  An install for all users asks for admin rights before updating.
 - Prefer no installer? Download the **portable zip**, unzip it anywhere and run `Busyist.exe`.
+  The portable copy tells you when there's a new version but doesn't update itself.
 - Needs Windows 10 or 11 (64-bit) and Microsoft's WebView2 Runtime, which Windows 11 already has.
   The installer adds it if it's missing.
 
@@ -61,8 +66,8 @@ menu, and starts it.
 
 ## Privacy
 
-- Busyist talks to two places only: `api.todoist.com` and your BUSY Bar on your own network.
-  There is no telemetry and no account.
+- Busyist talks to three places only: `api.todoist.com`, your BUSY Bar on your own network, and
+  GitHub, to check for and download new releases. There is no telemetry and no account.
 - Your settings live in `%APPDATA%\Busyist`: `config.json` (including your Todoist token and bar
   PIN, unencrypted), the session, your history and a log. **Settings → About → Open data folder**
   takes you there.
@@ -101,6 +106,9 @@ push a matching tag:
 git tag v1.0.1
 git push origin v1.0.1
 ```
+
+Installed copies update themselves from the latest release, so keep the asset names
+(`Busyist-Setup-x.y.z.exe`, `SHA256SUMS.txt`) as `build.ps1` makes them.
 
 The full steps, including test builds and what to do when one fails, are in
 [docs/RELEASING.md](docs/RELEASING.md).
