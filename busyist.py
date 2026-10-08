@@ -1411,6 +1411,7 @@ class App:
     # ----------------------------------------------------------------- run
 
     def run(self) -> None:
+        clear_webview_cache()
         api = Api(self)
         bg = "#16151a" if windows_dark_mode() else "#f6f5f2"
         visible = not self.cfg.get("todoist_token") or "--show" in sys.argv
@@ -1558,6 +1559,20 @@ class Api:
 
 
 # --------------------------------------------------------------- platform ---
+
+
+def clear_webview_cache() -> None:
+    """
+    Drop WebView2's HTTP cache so the pages always load the ui/ files on disk.
+
+    pywebview means to serve them with Cache-Control: no-cache, but the
+    header is lost (bottle.static_file builds its own response), so WebView2
+    caches main.html/main.js by heuristic and can show an old UI for hours
+    after an update or a branch switch. Local Storage is left alone.
+    """
+    profile = WEBVIEW_DIR / "EBWebView" / "Default"
+    for name in ("Cache", "Code Cache"):
+        shutil.rmtree(profile / name, ignore_errors=True)
 
 
 def windows_dark_mode() -> bool:
