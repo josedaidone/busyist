@@ -140,10 +140,14 @@ function addPending(ids, seconds, now) {
   }
 }
 
-// The page the user is looking at: the active tab of the focused window.
-async function activeUrl() {
-  const win = await chrome.windows.getLastFocused().catch(() => null);
-  if (!win || !win.focused) return "";
+// The page the user is looking at: the active tab of the last browser window
+// they used. With `needFocus` only while that window has the keyboard focus
+// (that's what counts as using it); without it also while the toolbar popup
+// or another app is in front, which is when the popup and badge still want to
+// know the page.
+async function activeUrl(needFocus) {
+  const win = await chrome.windows.getLastFocused({ windowTypes: ["normal"] }).catch(() => null);
+  if (!win || (needFocus && !win.focused)) return "";
   const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
   return (tab && tab.url) || "";
 }
@@ -336,9 +340,8 @@ async function tick(force) {
   now = Date.now();
   await setRules(focus, now);
   await sweepTabs(focus, now);
-  const url = await activeUrl();
-  counting = { ids: await currentIds(focus, now, url), since: Date.now() };
-  updateBadge(focus, Date.now(), url);
+  counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: Date.now() };
+  updateBadge(focus, Date.now(), await activeUrl(false));
   // While something is being timed, keep ticking (and keep the worker awake).
   if (counting.ids.length && !timer) timer = setInterval(() => sync(false), TICK_MS);
   if (!counting.ids.length && timer) { clearInterval(timer); timer = null; }
@@ -398,7 +401,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
 // each stands, and whether Busyist is reachable.
 async function popupData(now) {
   const focus = (await fetchState(false)) || {};
-  const url = await activeUrl();
+  const url = await activeUrl(false);
   const here = new Set((url ? rulesFor(focus, url) : []).map((r) => r.id));
   const upcoming = (rule) => (rule.windows_ms || []).find(([start]) => start > now);
   return {
