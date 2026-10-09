@@ -182,9 +182,10 @@ function renderChrome() {
   const u = state.update;
   $("updateChip").classList.toggle("hidden", !u);
   if (u) $("updateChip").textContent = u.busy ? "Updating…" : `Update ${u.version}`;
+  $("extChip").classList.toggle("hidden", !state.extension_outdated);
   if ($("drawer").classList.contains("on")) {
     renderUpdate();
-    renderExtension(!!state.extension_connected);
+    renderExtension(!!state.extension_connected, !!state.extension_outdated);
   }
 }
 
@@ -746,7 +747,7 @@ $("settingsTabs").addEventListener("keydown", (e) => {
 function renderTabDots() {
   $("aboutDot").classList.toggle("hidden", !(state && state.update));
   const sitesOn = $("s_block_sites").checked;
-  const connected = !!(state && state.extension_connected);
+  const connected = !!(state && state.extension_connected && !state.extension_outdated);
   $("sitesDot").classList.toggle("hidden", !sitesOn || connected);
   $("limitsDot").classList.toggle("hidden", !$("s_site_limits_on").checked || connected);
 }
@@ -774,7 +775,9 @@ async function openSettings(tab) {
   $("extDir").title = s.extension_dir || "";
   for (const n of document.querySelectorAll(".browser-name")) n.textContent = s.extension_browser || "Chrome";
   renderBlockedSites();
-  renderExtension(s.extension_connected);
+  $("extOldVersion").textContent = s.extension_version ? "version " + s.extension_version : "an older version";
+  $("extNewVersion").textContent = s.extension_latest || "";
+  renderExtension(s.extension_connected, s.extension_outdated);
   showBarFields();
   showTodoistFields();
   $("aboutVersion").textContent = "Busyist " + s.version;
@@ -910,13 +913,17 @@ function renderBlockedSites() {
 }
 
 // The setup steps show until the extension has called Busyist.
-function renderExtension(connected) {
+// A connected extension older than the one Busyist ships needs a reload.
+function renderExtension(connected, outdated) {
   const status = $("extStatus");
-  status.textContent = connected ? "Browser extension: connected" : "Browser extension: not connected";
-  status.classList.toggle("ok", connected);
-  status.classList.toggle("bad", !connected);
+  const good = connected && !outdated;
+  status.textContent = !connected ? "Browser extension: not connected"
+    : outdated ? "Browser extension: needs a reload" : "Browser extension: connected";
+  status.classList.toggle("ok", good);
+  status.classList.toggle("bad", !good);
   $("extSetup").classList.toggle("hidden", connected);
-  $("extDone").classList.toggle("hidden", !connected);
+  $("extOutdated").classList.toggle("hidden", !outdated);
+  $("extDone").classList.toggle("hidden", !good);
   renderTabDots();
 }
 
@@ -1170,6 +1177,8 @@ $("addBlockedSite").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedSite(); }
 });
 $("s_block_sites").onchange = () => renderBlockedSites();
+$("extChip").onclick = () => openSettings("sites");
+$("openExtensionsPage").onclick = () => $("installExtension").click();
 $("openExtensionFolder").onclick = () => api.open_extension_folder();
 $("copyExtensionPath").onclick = async () => {
   const r = await api.copy_extension_path();

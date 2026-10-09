@@ -30,6 +30,7 @@
     <span class="chip" id="completed" title="Tasks completed from Busyist today"></span>
     <div class="spacer"></div>
     <button class="chip update hidden" id="updateChip" title="A new version of Busyist is out"></button>
+    <button class="chip update hidden" id="extChip" title="The browser extension is out of date">Reload extension</button>
     <span class="chip" id="barChip"><span class="led"></span><span id="barText">Looking for the bar</span></span>
     <button class="icon-btn" id="openSettings" title="Settings"><svg><use href="#i-gear"/></svg></button>
   </header>
@@ -231,6 +232,16 @@
               Or click <b>Load unpacked</b>, paste the path (<kbd>Ctrl</kbd>+<kbd>V</kbd>) into the folder picker's address bar, press <kbd>Enter</kbd>, then <b>Select Folder</b>.</li>
           </ol>
           <div class="help">The status above turns green within a few seconds of loading the extension.</div>
+        </div>
+        <div class="hidden" id="extOutdated">
+          <div class="help">Busyist was updated and so was its extension, but your browser is still running the old one (<span id="extOldVersion">older</span>, now <span id="extNewVersion"></span>). Reload it:</div>
+          <ol class="steps">
+            <li>
+              <button type="button" class="btn primary" id="openExtensionsPage">Open <span class="browser-name">Chrome</span>'s extensions page</button>
+            </li>
+            <li>Find <b>Busyist Focus</b> and click its <b>Reload</b> icon (the circular arrow). No need to load the folder again.</li>
+          </ol>
+          <div class="help">This message goes away within a few seconds of reloading.</div>
         </div>
         <div class="help hidden" id="extDone">All set. Keep the extension turned on and Busyist tells it when to block.</div>
         <div class="path-row">

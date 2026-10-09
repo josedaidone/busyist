@@ -733,6 +733,8 @@ class App:
         self.focus_hooks.append(self.blocker.poke)
         # Tells the Chrome extension whether to block sites (issue #2).
         self.extension_last = 0  # now_ms() of the last request the extension made
+        self.extension_version = ""  # what it said it is; "" for ones from before it said
+        self._ext_warned = ""  # the version we last told the user to reload for
         self.site_server = FocusServer(self)
 
     # -------------------------------------------------------------- filters
@@ -883,7 +885,8 @@ class App:
                 "needs_setup": bool(self.cfg.get("use_todoist")) and not self.cfg.get("todoist_token"),
                 "todoist": self.todoist_on,
                 "use_todoist": bool(self.cfg.get("use_todoist")),
-                "extension_connected": bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000,
+                "extension_connected": self.extension_connected(),
+                "extension_outdated": self.extension_outdated(),
                 "update": self.update_view(),
             }
 
@@ -951,6 +954,27 @@ class App:
             "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
             "pass_minutes": PASS_SECONDS // 60,
         }
+
+    def extension_connected(self) -> bool:
+        return bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000
+
+    def extension_outdated(self) -> bool:
+        """The extension in the browser is older than the one that ships with this Busyist."""
+        return self.extension_connected() and (
+            version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
+
+    def note_extension(self, version) -> None:
+        """
+        The extension just called, saying which version it is. Chrome doesn't
+        reload an unpacked extension when its files change, so after an update
+        the old one keeps running until the user reloads it: say so, once.
+        """
+        self.extension_last = now_ms()
+        self.extension_version = str(version or "")[:20]
+        if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
+            self._ext_warned = EXTENSION_VERSION
+            self.notify("Reload the Busyist extension",
+                        "Busyist was updated. Open your browser's extensions page and click Reload on Busyist Focus.")
 
     def site_limits_status(self, enabled_only: bool = False) -> list[dict]:
         """Where every site-limit rule stands right now (see site_limit_status)."""
@@ -1682,10 +1706,13 @@ class Api:
     def get_settings(self):
         cfg = self._app.cfg
         # extension_connected: the Chrome extension called in the last ~2 min.
-        connected = bool(self._app.extension_last) and (now_ms() - self._app.extension_last) < 120_000
+        connected = self._app.extension_connected()
         return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR),
                     can_auto_update=self._app.can_auto_update,
                     extension_id=EXTENSION_ID, extension_connected=connected,
+                    extension_outdated=self._app.extension_outdated(),
+                    extension_version=self._app.extension_version,
+                    extension_latest=EXTENSION_VERSION,
                     extension_dir=str(EXTENSION_DIR),
                     extension_browser=(find_browser() or (None,))[0])
 
@@ -1782,6 +1809,23 @@ def clear_webview_cache() -> None:
     profile = WEBVIEW_DIR / "EBWebView" / "Default"
     for name in ("Cache", "Code Cache"):
         shutil.rmtree(profile / name, ignore_errors=True)
+
+
+def version_tuple(text) -> tuple[int, ...]:
+    """'1.2.0' -> (1, 2, 0); () if it isn't one, which sorts before every version."""
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except ValueError:
+        return ()
+
+
+def bundled_extension_version() -> str:
+    """The version in the manifest of the extension that ships with this Busyist."""
+    manifest = read_json(EXTENSION_SRC / "manifest.json", {})
+    return str(manifest.get("version") or "") if isinstance(manifest, dict) else ""
+
+
+EXTENSION_VERSION = bundled_extension_version()
 
 
 def sync_extension() -> None:
@@ -2934,7 +2978,8 @@ class FocusServer:
                     return
                 if not self._cors(200):
                     return
-                app.extension_last = now_ms()
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                app.note_extension((query.get("v") or [""])[0])
                 body = json.dumps(app.site_focus()).encode("utf-8")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -2957,7 +3002,7 @@ class FocusServer:
                     data = None
                 if not self._cors(200):
                     return
-                app.extension_last = now_ms()
+                app.note_extension(data.get("version") if isinstance(data, dict) else "")
                 if isinstance(data, dict):
                     try:
                         if route == "/usage":

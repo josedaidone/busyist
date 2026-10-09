@@ -17,7 +17,9 @@
 //    kept and sent when Busyist is back.
 
 const BASE = "http://127.0.0.1:47616";
-const FOCUS_URL = BASE + "/focus";
+const VERSION = chrome.runtime.getManifest().version;
+// Busyist compares this with the extension it ships, to say when to reload.
+const FOCUS_URL = BASE + "/focus?v=" + VERSION;
 const USAGE_URL = BASE + "/usage";
 const GRANT_URL = BASE + "/grant";
 const BLOCKED = chrome.runtime.getURL("blocked.html");
@@ -173,7 +175,7 @@ async function fetchState(force) {
   let data = null;
   const sent = JSON.parse(JSON.stringify(pending));
   try {
-    data = await post(USAGE_URL, { usage: sent });
+    data = await post(USAGE_URL, { usage: sent, version: VERSION });
     if (data) {
       // What we sent is now in Busyist's totals; anything measured while the
       // request was out stays pending.
@@ -332,7 +334,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const minutes = (lastGood && lastGood.pass_minutes) || 2;
       passes[msg.id] = now + minutes * 60000;
       saveState();
-      try { await post(GRANT_URL, { id: msg.id }); } catch (e) { /* the local pass still holds */ }
+      try { await post(GRANT_URL, { id: msg.id, version: VERSION }); } catch (e) { /* the local pass still holds */ }
       await sync(true);
     }
     const focus = (await fetchState(msg.type === "grant")) || {};
