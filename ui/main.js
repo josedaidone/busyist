@@ -179,7 +179,10 @@ function renderChrome() {
   const u = state.update;
   $("updateChip").classList.toggle("hidden", !u);
   if (u) $("updateChip").textContent = u.busy ? "Updating…" : `Update ${u.version}`;
-  if ($("drawer").classList.contains("on")) renderUpdate();
+  if ($("drawer").classList.contains("on")) {
+    renderUpdate();
+    renderExtension(!!state.extension_connected);
+  }
 }
 
 function renderUpdate() {
@@ -393,7 +396,7 @@ function showEmpty(title, text, withSettings) {
   if (withSettings) {
     const b = el("button", "btn", "Open settings");
     b.style.marginTop = "14px";
-    b.onclick = openSettings;
+    b.onclick = () => openSettings("todoist");
     li.append(el("br"), b);
   }
   list.append(li);
@@ -600,7 +603,44 @@ $("endedAgain").onclick = async () => {
 
 // ------------------------------------------------------------- settings
 
-async function openSettings() {
+// ---------------------------------------------------------- settings tabs
+
+const TABS = [...document.querySelectorAll("#settingsTabs .stab")].map((b) => b.dataset.tab);
+let settingsTab = localStorage.getItem("settingsTab") || "todoist";
+
+function showTab(name, focus) {
+  if (!TABS.includes(name)) name = "todoist";
+  settingsTab = name;
+  localStorage.setItem("settingsTab", name);
+  for (const b of document.querySelectorAll("#settingsTabs .stab")) {
+    const on = b.dataset.tab === name;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-selected", on);
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  }
+  for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
+  $("settingsForm").scrollTop = 0;
+}
+
+for (const b of document.querySelectorAll("#settingsTabs .stab")) b.onclick = () => showTab(b.dataset.tab);
+$("settingsTabs").addEventListener("keydown", (e) => {
+  const i = TABS.indexOf(settingsTab);
+  const next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: TABS.length - 1 }[e.key];
+  if (next === undefined) return;
+  e.preventDefault();
+  showTab(TABS[(next + TABS.length) % TABS.length], true);
+});
+
+// Small dots on the tabs that need a look: an update, or site blocking
+// switched on without the extension connected.
+function renderTabDots() {
+  $("aboutDot").classList.toggle("hidden", !(state && state.update));
+  const sitesOn = $("s_block_sites").checked;
+  $("sitesDot").classList.toggle("hidden", !sitesOn || !!(state && state.extension_connected));
+}
+
+async function openSettings(tab) {
   const s = await api.get_settings();
   const form = $("settingsForm");
   for (const input of form.querySelectorAll("input[name]")) {
@@ -611,22 +651,33 @@ async function openSettings() {
   blockedApps = (s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
+  blockedSites = [...(s.blocked_sites || [])];
+  $("addBlockedSite").value = "";
+  $("extDir").textContent = s.extension_dir || "extension";
+  $("extDir").title = s.extension_dir || "";
+  for (const n of document.querySelectorAll(".browser-name")) n.textContent = s.extension_browser || "Chrome";
+  renderBlockedSites();
+  renderExtension(s.extension_connected);
   showBarFields();
   $("aboutVersion").textContent = "Busyist " + s.version;
   $("aboutData").textContent = s.data_dir;
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
   $("updateResult").textContent = "";
   renderUpdate();
+  if (!s.todoist_token) tab = "todoist";
+  showTab(typeof tab === "string" ? tab : settingsTab);
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
-  setTimeout(() => (s.todoist_token ? $("s_focus_label") : $("s_todoist_token")).focus(), 220);
+  setTimeout(() => {
+    if (!s.todoist_token) $("s_todoist_token").focus();
+    else document.querySelector("#settingsTabs .stab.on").focus();
+  }, 220);
 }
 
 // The bar's address, PIN and polling only matter with a bar.
 function showBarFields() {
   const on = $("s_use_busybar").checked;
   $("barFields").classList.toggle("hidden", !on);
-  $("pollField").classList.toggle("hidden", !on);
   $("noBarHelp").classList.toggle("hidden", on);
 }
 $("s_use_busybar").onchange = showBarFields;
@@ -700,6 +751,70 @@ $("addBlockedApp").addEventListener("keydown", (e) => {
 });
 $("s_block_apps").onchange = renderBlockedApps;
 
+// The websites blocked during focus, as bare domains; the Chrome extension
+// reads them from Busyist. Edited here, saved with the rest of the settings.
+let blockedSites = [];
+
+function renderBlockedSites() {
+  const list = $("blockedSites");
+  list.replaceChildren();
+  blockedSites.forEach((site, i) => {
+    const row = el("div", "app-row");
+    row.append(el("span", "site", site));
+    const x = el("button", "remove", "\u00d7");
+    x.type = "button";
+    x.title = "Remove " + site;
+    x.onclick = () => { blockedSites.splice(i, 1); renderBlockedSites(); };
+    row.append(el("span"), x);
+    list.append(row);
+  });
+  $("blockedSitesFields").classList.toggle("muted", !$("s_block_sites").checked);
+  renderTabDots();
+}
+
+// The setup steps show until the extension has called Busyist.
+function renderExtension(connected) {
+  const status = $("extStatus");
+  status.textContent = connected ? "Browser extension: connected" : "Browser extension: not connected";
+  status.classList.toggle("ok", connected);
+  status.classList.toggle("bad", !connected);
+  $("extSetup").classList.toggle("hidden", connected);
+  $("extDone").classList.toggle("hidden", !connected);
+  renderTabDots();
+}
+
+function addBlockedSite() {
+  const input = $("addBlockedSite");
+  let site = input.value.trim().toLowerCase();
+  site = site.replace(/^[a-z]+:\/\//, "").split("/")[0].split("?")[0].replace(/^www\./, "");
+  input.value = "";
+  if (!site) return;
+  if (site.includes(" ") || !site.includes(".")) {
+    return toast("Type a website like youtube.com.", true);
+  }
+  if (blockedSites.includes(site)) return;
+  if (blockedSites.length >= 50) return toast("Keep the blocked sites under 50.", true);
+  blockedSites.push(site);
+  renderBlockedSites();
+}
+$("addBlockedSiteBtn").onclick = addBlockedSite;
+$("addBlockedSite").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedSite(); }
+});
+$("s_block_sites").onchange = () => renderBlockedSites();
+$("openExtensionFolder").onclick = () => api.open_extension_folder();
+$("copyExtensionPath").onclick = async () => {
+  const r = await api.copy_extension_path();
+  toast(r.ok ? "Folder path copied" : "Couldn't reach the clipboard; copy the path by hand.", !r.ok);
+};
+$("installExtension").onclick = async () => {
+  const r = await api.install_extension();
+  if (!r.ok) return toast(r.error, true);
+  const copied = r.copied ? " The folder path is on your clipboard." : "";
+  if (r.browser) toast(`Opened ${r.browser}'s extensions page.${copied}`);
+  else toast(`Couldn't find Chrome. Open chrome://extensions in your browser.${copied}`, true);
+};
+
 function closeSettings() {
   $("drawer").classList.remove("on");
   if (!(state && state.ended)) $("scrim").classList.remove("on");
@@ -714,13 +829,12 @@ function formValues(names) {
   return out;
 }
 
-$("openSettings").onclick = openSettings;
+$("openSettings").onclick = () => openSettings();
 $("openData").onclick = () => api.open_data_folder();
 $("openRepo").onclick = () => api.open_repo();
 $("closeSettings").onclick = closeSettings;
 $("updateChip").onclick = async () => {
-  await openSettings();
-  setTimeout(() => $("installUpdate").scrollIntoView({ block: "nearest", behavior: "smooth" }), 250);
+  await openSettings("about");
 };
 $("checkUpdate").onclick = async () => {
   const out = $("updateResult");
@@ -758,7 +872,8 @@ $("revealToken").onclick = () => {
 $("settingsForm").onsubmit = (e) => { e.preventDefault(); $("saveSettings").click(); };
 $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps });
+  addBlockedSite(); // same for a website typed but not yet added
+  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: blockedSites });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");

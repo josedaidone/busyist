@@ -61,6 +61,17 @@ menu, and starts it.
   - finished pomodoros are logged as a comment on the task;
   - when the session ends you can complete the task in one click; it drops off the list, the
     filter reloads, and the ✓ counter in the header shows how many tasks you completed today.
+- **Keep distractions away during focus** (Settings → Apps and Websites tabs):
+  - **Apps**: pick which programs (WhatsApp, Slack, etc.) are closed or hidden to the tray
+    while a work phase runs; they come back when you pause, take a break or stop.
+  - **Websites**: block instagram, youtube, x, etc. during focus with the bundled **Chrome
+    extension** (also works in Edge). In **Settings → Websites**, click **Open Chrome's
+    extensions page**: it opens `chrome://extensions`, copies the extension's folder path and
+    shows the folder in Explorer. Turn on **Developer mode**, then drag the folder onto the page
+    (or click **Load unpacked** and paste the path). The folder is
+    `%APPDATA%\Busyist\chrome-extension`; Busyist keeps it up to date, so it survives updates.
+    A blocked site shows a "back to work" page during work phases and returns to itself when
+    focus ends.
 - Closing or minimizing the window sends it to the tray. Busyist starts with Windows; turn that
   off in Settings.
 
@@ -68,6 +79,9 @@ menu, and starts it.
 
 - Busyist talks to three places only: `api.todoist.com`, your BUSY Bar on your own network, and
   GitHub, to check for and download new releases. There is no telemetry and no account.
+- For website blocking, Busyist answers the browser extension on `127.0.0.1:47616` (your PC
+  only). It only replies to the Busyist extension itself, so web pages can't read what you're
+  working on, and the extension doesn't send your browsing anywhere.
 - Your settings live in `%APPDATA%\Busyist`: `config.json` (including your Todoist token and bar
   PIN, unencrypted), the session, your history and a log. **Settings → About → Open data folder**
   takes you there.
@@ -77,6 +91,10 @@ menu, and starts it.
 
 - **"Bar offline"**: check the IP and PIN in Settings, and that your PC and the bar are on the same
   network. Some office and guest networks block devices from talking to each other.
+- **Websites aren't blocked**: **Settings → Websites** should say *Browser extension: connected*.
+  If not, check that the extension is turned on in `chrome://extensions`, and that Busyist is
+  running. After a Busyist update, restart Chrome (or click the extension's reload arrow) to load
+  the new version.
 - **The hotkey does nothing**: another app may own that combination. Busyist warns about this; pick
   another one in Settings.
 - **Something else**: the log at `%APPDATA%\Busyist\busyist.log` usually says why. Please attach it
@@ -103,8 +121,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 push a matching tag:
 
 ```powershell
-git tag v1.0.1
-git push origin v1.0.1
+git tag v1.2.0
+git push origin v1.2.0
 ```
 
 Installed copies update themselves from the latest release, so keep the asset names
@@ -116,6 +134,7 @@ The full steps, including test builds and what to do when one fails, are in
 Project layout:
 - `busyist.py`: the app;
 - `ui/`: the window and mini timer (HTML/CSS/JS, shown with pywebview);
+- `extension/`: the Chrome extension that blocks websites during focus;
 - `packaging/`: the PyInstaller spec and the Inno Setup script;
 - `tools/`: the icon and license helpers.
 
