@@ -28,6 +28,20 @@ function duration(seconds) {
 
 const names = (patterns) => patterns.join(", ");
 
+// Replaces a box's content only when it actually changed, so a re-render
+// every 2 s doesn't make anything flicker.
+function swap(box, ...nodes) {
+  const next = document.createElement("div");
+  next.append(...nodes);
+  if (box.innerHTML !== next.innerHTML) box.replaceChildren(...next.childNodes);
+}
+function setClass(node, cls) {
+  if (node.className !== cls) node.className = cls;
+}
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
 // A bar showing how much of a budget is left.
 function bar(left, budget) {
   const wrap = el("div", "bar" + (left <= 0 ? " full" : left <= 120 ? " warn" : ""));
@@ -38,8 +52,8 @@ function bar(left, budget) {
 }
 
 function renderFocus(data) {
-  const box = $("focus");
-  box.replaceChildren();
+  const out = [];
+  const box = { append: (node) => out.push(node) };
   const f = data.focus;
   if (f.active) {
     const mins = Math.max(0, Math.ceil((f.ends_at_ms - Date.now()) / 60000));
@@ -56,6 +70,7 @@ function renderFocus(data) {
     box.append(el("div", "small", "No work phase running."));
     box.append(el("div", "small muted", "Start one in Busyist to block distracting websites."));
   }
+  swap($("focus"), ...out);
 }
 
 function ruleRow(rule) {
@@ -89,15 +104,14 @@ function ruleRow(rule) {
 
 function render(data) {
   const status = $("status");
-  status.textContent = data.offline ? "Busyist not running" : "Connected";
-  status.className = "status " + (data.offline ? "bad" : "ok");
+  setText(status, data.offline ? "Busyist not running" : "Connected");
+  setClass(status, "status " + (data.offline ? "bad" : "ok"));
 
   // Help: what to do when something is missing. The extension can't open the
   // app, so it says where to find it.
-  const help = $("help");
-  help.className = "notice hidden";
-  help.replaceChildren();
-  const tip = (info, ...parts) => { help.className = "notice" + (info ? " info" : ""); help.append(...parts); };
+  let helpClass = "notice hidden";
+  const helpParts = [];
+  const tip = (info, ...parts) => { helpClass = "notice" + (info ? " info" : ""); helpParts.push(...parts); };
   if (data.offline) {
     tip(false, el("b", "", "Busyist isn't running. "),
       data.known ? "Limits keep working from what it last said, and time is saved until it's back. "
@@ -114,11 +128,14 @@ function render(data) {
       "Open Busyist, then Settings \u2192 Limits \u2192 Add a website limit (for example 5 minutes per hour).");
   }
 
+  setClass($("help"), helpClass);
+  swap($("help"), ...helpParts);
+
   renderFocus(data);
 
   const here = data.limits.filter((r) => r.here);
   $("hereCard").classList.toggle("hidden", !here.length);
-  $("here").replaceChildren(...here.map((rule) => {
+  swap($("here"), ...here.map((rule) => {
     const box = el("div");
     if (rule.state) box.append(el("div", "big bad", rule.state.reason === "window" ? "Blocked" : "Time's up"));
     else if (rule.left_s != null) {
@@ -132,20 +149,21 @@ function render(data) {
   }));
 
   $("limitsCard").classList.toggle("hidden", !data.limits.length);
-  $("limits").replaceChildren(...data.limits.map(ruleRow));
+  swap($("limits"), ...data.limits.map(ruleRow));
 
-  const footer = $("footer");
-  footer.replaceChildren();
-  footer.append("Change limits in ", el("b", "", "Busyist \u2192 Settings \u2192 Limits"),
+  swap($("footer"), "Change limits in ", el("b", "", "Busyist \u2192 Settings \u2192 Limits"),
     ". Blocking during pomodoros is in the Websites tab. ", el("span", "", `Extension ${data.version}`));
 }
 
+let shown = false;
 async function load() {
+  let data = null;
   try {
-    render(await chrome.runtime.sendMessage({ type: "popup" }));
-  } catch (e) {
-    $("status").textContent = "Starting\u2026"; // the worker is waking up; try again shortly
-  }
+    data = await chrome.runtime.sendMessage({ type: "popup" });
+  } catch (e) { /* the worker is waking up; try again shortly */ }
+  if (data) { render(data); shown = true; }
+  // Once something is shown, a missed answer keeps it instead of flashing "Starting...".
+  else if (!shown) setText($("status"), "Starting\u2026");
 }
 
 load();
