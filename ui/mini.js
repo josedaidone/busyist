@@ -32,6 +32,7 @@ function render() {
 async function poll() {
   try {
     state = await api.get_state();
+    document.documentElement.dataset.theme = state.theme || "auto";
     render();
   } catch (err) {
     /* the window is being torn down */

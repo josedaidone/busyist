@@ -141,17 +141,20 @@ function renderCurrent() {
       meta.append(proj);
     }
     if (s.label_added && state.label) meta.append(el("span", "", "@" + state.label));
-    const open = el("button", "link", "Open in Todoist");
-    open.onclick = () => api.open_url(s.task.url);
-    meta.append(open);
+    if (s.task.url) {
+      const open = el("button", "link", "Open in Todoist");
+      open.onclick = () => api.open_url(s.task.url);
+      meta.append(open);
+    }
   } else if (t) {
     $("curEyebrow").textContent = state.bar.local ? "Timer running" : "Running on the bar";
     $("curTask").textContent = state.bar.local ? "No task linked" : "Started on the bar, no task linked";
     meta.append(el("span", "", "Pick a task to replace it"));
   } else {
     $("curEyebrow").textContent = "Nothing in focus";
-    $("curTask").textContent = "Pick a task to start a session";
+    $("curTask").textContent = state.todoist ? "Pick a task to start a session" : "Start a pomodoro session";
   }
+  $("freeBox").classList.toggle("hidden", !!t || !!s);
   if (t) {
     $("pauseIcon").setAttribute("href", t.paused ? "#i-play" : "#i-pause");
     $("btnPause").title = t.paused ? "Resume" : "Pause";
@@ -206,6 +209,7 @@ function renderEnded() {
   $("endedTomatoes").textContent = e.done ? (e.done > 8 ? "🍅 × " + e.done : "🍅".repeat(e.done)) : "⏹";
   $("endedTitle").textContent = e.reason === "finished" ? "Session complete" : "Session stopped";
   $("endedTask").textContent = e.task.content;
+  $("endedComplete").classList.toggle("hidden", !e.task.id || !state.todoist);
   $("endedSummary").textContent = e.done
     ? `${e.done} pomodoro${e.done === 1 ? "" : "s"} · ${duration(e.minutes)} of focus`
     : "No full pomodoro this time.";
@@ -215,6 +219,7 @@ function renderEnded() {
 async function poll() {
   try {
     state = await api.get_state();
+    document.documentElement.dataset.theme = state.theme || "auto";
   } catch (err) {
     return;
   }
@@ -223,7 +228,31 @@ async function poll() {
   renderCurrent();
   renderChrome();
   renderEnded();
+  renderTasksEnabled();
   markCurrentTask();
+}
+
+// The task list needs Todoist: grey it out without a token or when it's off.
+let tasksWereOff = false;
+let wasSolo = null;
+function renderTasksEnabled() {
+  // Todoist switched off: drop the task list and narrow the window.
+  const solo = !state.use_todoist;
+  document.body.classList.toggle("solo", solo);
+  if (wasSolo !== null && solo !== wasSolo) api.set_solo(solo);
+  wasSolo = solo;
+  const off = !state.todoist;
+  $("tasksCard").classList.toggle("off", off);
+  for (const id of ["search", "refresh", "editFilter", "addFilter"]) $(id).disabled = off;
+  if (off && !tasksWereOff) {
+    tasks = [];
+    $("filterTabs").textContent = "";
+    $("filterText").textContent = "";
+    showEmpty("Todoist is off",
+      state.needs_setup ? "Add your Todoist API token to see your tasks." : "Turn it on in Settings to pick tasks.");
+  }
+  if (!off && tasksWereOff) loadTasks();
+  tasksWereOff = off;
 }
 
 // --------------------------------------------------------------- tasks
@@ -235,6 +264,7 @@ function skeleton() {
 }
 
 async function loadTasks(quiet, filterName) {
+  if (state && !state.todoist) return;
   if (loadingTasks && filterName === undefined) return;  // a refresh is already on its way
   const seq = ++loadSeq;
   loadingTasks = true;
@@ -434,8 +464,20 @@ function renderTasks() {
     const play = el("button", "play");
     play.append(icon("play"), "Start");
     play.tabIndex = -1;
-    li.append(el("span", "prio " + prioClass(t.priority)), body, play);
-    li.onclick = () => startTask(t, li);
+    const check = el("button", "prio " + prioClass(t.priority));
+    check.title = "Mark as done";
+    check.tabIndex = -1;
+    check.append(icon("check"));
+    check.onclick = (e) => { e.stopPropagation(); completeTask(t, li); };
+    li.append(check, body, play);
+    play.onclick = (e) => { e.stopPropagation(); startTask(t, li); };
+    li.onclick = (e) => { sel = i; markSelection(false); openTaskMenu(t, li, e.clientX, e.clientY); };
+    li.oncontextmenu = (e) => {
+      e.preventDefault();
+      sel = i;
+      markSelection(false);
+      openTaskMenu(t, li, e.clientX, e.clientY);
+    };
     li.onmousemove = () => { if (sel !== i) { sel = i; markSelection(false); } };
     list.append(li);
   });
@@ -480,6 +522,60 @@ async function startTask(task, li) {
   renderTasks();
   poll();
 }
+
+async function completeTask(task, li) {
+  const inFocus = state && state.session && state.session.task.id === task.id;
+  if (inFocus && !confirm(`“${task.content}” is in focus. Stop the session and mark it as done?`)) return;
+  if (li) li.classList.add("busy", "done");
+  if (inFocus) {
+    const stopped = await api.control("stop");
+    if (!stopped.ok) { if (li) li.classList.remove("busy", "done"); return toast(stopped.error, true); }
+  }
+  const result = await api.complete(task.id);
+  if (!result.ok) {
+    if (li) li.classList.remove("busy", "done");
+    return toast(result.error, true);
+  }
+  toast("Completed in Todoist ✓");
+  tasks = tasks.filter((t) => t.id !== task.id);
+  renderTasks();
+  poll();
+}
+
+// ------------------------------------------------------------ task menu
+
+function closeTaskMenu() {
+  const m = $("taskMenu");
+  if (m) m.remove();
+}
+
+function openTaskMenu(task, li, x, y) {
+  closeTaskMenu();
+  const menu = el("div", "ctx-menu");
+  menu.id = "taskMenu";
+  menu.setAttribute("role", "menu");
+  const item = (ic, label, fn) => {
+    const b = el("button", "ctx-item");
+    b.setAttribute("role", "menuitem");
+    b.append(icon(ic), label);
+    b.onclick = (e) => { e.stopPropagation(); closeTaskMenu(); fn(); };
+    menu.append(b);
+  };
+  item("play", "Start pomodoro", () => startTask(task, li));
+  item("check", "Mark as done", () => completeTask(task, li));
+  if (task.url) item("eye", "See on Todoist", () => api.open_url(task.url));
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+  menu.querySelector("button").focus();
+}
+
+document.addEventListener("mousedown", (e) => { if (!e.target.closest("#taskMenu")) closeTaskMenu(); });
+document.addEventListener("contextmenu", (e) => { if (!e.target.closest(".task")) closeTaskMenu(); });
+window.addEventListener("blur", closeTaskMenu);
+window.addEventListener("resize", closeTaskMenu);
+document.addEventListener("scroll", closeTaskMenu, true);
 
 // ------------------------------------------------------------ pomodoro
 
@@ -577,6 +673,18 @@ async function control(action) {
   if (!result.ok) toast(result.error, true);
   poll();
 }
+async function startFree(name) {
+  if (typeof name !== "string") name = $("freeName").value;
+  if (state && state.session && !confirm(`Replace the current session on “${state.session.task.content}”?`)) return;
+  flushPomodoro();
+  const result = await api.start(null, name);
+  if (!result.ok) return toast(result.error, true);
+  toast(`Started${state && state.bar.local ? "" : " on the bar"} · ${pomo.work_minutes} min focus`);
+  $("freeName").value = "";
+  poll();
+}
+$("startFree").onclick = () => startFree();
+$("freeName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.stopPropagation(); startFree(); } });
 $("btnStop").onclick = () => control("stop");
 $("btnSkip").onclick = () => control("skip");
 $("btnPause").onclick = () => control(state.timer && state.timer.paused ? "resume" : "pause");
@@ -597,6 +705,7 @@ $("endedAgain").onclick = async () => {
   const e = state.ended;
   const task = tasks.find((t) => t.id === e.task.id);
   await api.dismiss_ended();
+  if (!e.task.id) return startFree(e.task.content);
   if (!task) return toast("That task is no longer in the list.", true);
   startTask(task);
 };
@@ -645,13 +754,14 @@ async function openSettings(tab) {
   const form = $("settingsForm");
   for (const input of form.querySelectorAll("input[name]")) {
     if (input.type === "checkbox") input.checked = !!s[input.name];
+    else if (input.type === "radio") input.checked = s[input.name] === input.value;
     else input.value = s[input.name] ?? "";
   }
   $("testResult").textContent = "";
   blockedApps = (s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
-  blockedSites = [...(s.blocked_sites || [])];
+  siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
   $("addBlockedSite").value = "";
   $("extDir").textContent = s.extension_dir || "extension";
   $("extDir").title = s.extension_dir || "";
@@ -659,20 +769,29 @@ async function openSettings(tab) {
   renderBlockedSites();
   renderExtension(s.extension_connected);
   showBarFields();
+  showTodoistFields();
   $("aboutVersion").textContent = "Busyist " + s.version;
   $("aboutData").textContent = s.data_dir;
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
   $("updateResult").textContent = "";
   renderUpdate();
-  if (!s.todoist_token) tab = "todoist";
+  if (s.use_todoist && !s.todoist_token) tab = "todoist";
   showTab(typeof tab === "string" ? tab : settingsTab);
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
   setTimeout(() => {
-    if (!s.todoist_token) $("s_todoist_token").focus();
+    if (s.use_todoist && !s.todoist_token) $("s_todoist_token").focus();
     else document.querySelector("#settingsTabs .stab.on").focus();
   }, 220);
 }
+
+// The token and label options only matter with Todoist.
+function showTodoistFields() {
+  const on = $("s_use_todoist").checked;
+  $("todoistFields").classList.toggle("muted", !on);
+  $("noTodoistHelp").classList.toggle("hidden", on);
+}
+$("s_use_todoist").onchange = showTodoistFields;
 
 // The bar's address, PIN and polling only matter with a bar.
 function showBarFields() {
@@ -751,20 +870,31 @@ $("addBlockedApp").addEventListener("keydown", (e) => {
 });
 $("s_block_apps").onchange = renderBlockedApps;
 
-// The websites blocked during focus, as bare domains; the Chrome extension
-// reads them from Busyist. Edited here, saved with the rest of the settings.
-let blockedSites = [];
+// The website lists, one per mode: blocked during focus, or the only ones
+// allowed. Entries are domains or URL patterns with * wildcards; the Chrome
+// extension reads them from Busyist. Edited here, saved with the rest.
+let siteLists = { block: [], allow: [] };
+const siteMode = () => (document.querySelector('input[name="site_mode"]:checked') || {}).value || "block";
 
 function renderBlockedSites() {
+  const mode = siteMode();
+  const sites = siteLists[mode];
   const list = $("blockedSites");
   list.replaceChildren();
-  blockedSites.forEach((site, i) => {
+  $("addBlockedSite").placeholder = mode === "allow"
+    ? "Add an allowed website, e.g. github.com or *.google.com"
+    : "Add a website, e.g. youtube.com or *.reddit.com";
+  $("sitesHelp").textContent = mode === "allow"
+    ? (sites.length ? "During work phases every other website shows a \"back to work\" page."
+                    : "The list is empty, so every website is blocked during work phases.")
+    : "These websites show a \"back to work\" page during work phases.";
+  sites.forEach((site, i) => {
     const row = el("div", "app-row");
     row.append(el("span", "site", site));
     const x = el("button", "remove", "\u00d7");
     x.type = "button";
     x.title = "Remove " + site;
-    x.onclick = () => { blockedSites.splice(i, 1); renderBlockedSites(); };
+    x.onclick = () => { sites.splice(i, 1); renderBlockedSites(); };
     row.append(el("span"), x);
     list.append(row);
   });
@@ -785,18 +915,32 @@ function renderExtension(connected) {
 
 function addBlockedSite() {
   const input = $("addBlockedSite");
-  let site = input.value.trim().toLowerCase();
-  site = site.replace(/^[a-z]+:\/\//, "").split("/")[0].split("?")[0].replace(/^www\./, "");
+  const site = cleanSitePattern(input.value);
   input.value = "";
-  if (!site) return;
-  if (site.includes(" ") || !site.includes(".")) {
-    return toast("Type a website like youtube.com.", true);
-  }
-  if (blockedSites.includes(site)) return;
-  if (blockedSites.length >= 50) return toast("Keep the blocked sites under 50.", true);
-  blockedSites.push(site);
+  if (site === "") return;
+  if (site === null) return toast("Type a website like youtube.com or *.google.com.", true);
+  const sites = siteLists[siteMode()];
+  if (sites.includes(site)) return;
+  if (sites.length >= 50) return toast("Keep the list under 50 websites.", true);
+  sites.push(site);
   renderBlockedSites();
 }
+// Mirrors clean_site_pattern in busyist.py, which has the final say on save.
+// "" for nothing typed, null for something that isn't a website.
+function cleanSitePattern(raw) {
+  let text = String(raw).trim().toLowerCase();
+  if (!text) return "";
+  text = text.replace(/^[a-z*]+:\/\//, "").split("#")[0].trim().replace(/\*{2,}/g, "*");
+  const slash = text.indexOf("/");
+  let host = slash < 0 ? text : text.slice(0, slash);
+  let path = slash < 0 ? "" : text.slice(slash);
+  if (host.startsWith("www.")) host = host.slice(4);
+  if (!host && path) host = "*";
+  if (!/^[a-z0-9.*-]+$/.test(host) || (!host.includes(".") && !host.includes("*")) || path.includes(" ")) return null;
+  if (path === "/" || path === "/*") path = "";
+  return host + path;
+}
+for (const r of document.querySelectorAll('input[name="site_mode"]')) r.onchange = () => renderBlockedSites();
 $("addBlockedSiteBtn").onclick = addBlockedSite;
 $("addBlockedSite").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedSite(); }
@@ -824,6 +968,7 @@ function formValues(names) {
   const out = {};
   for (const input of $("settingsForm").querySelectorAll("input[name]")) {
     if (names && !names.includes(input.name)) continue;
+    if (input.type === "radio") { if (input.checked) out[input.name] = input.value; continue; }
     out[input.name] = input.type === "checkbox" ? input.checked : input.value;
   }
   return out;
@@ -873,7 +1018,7 @@ $("settingsForm").onsubmit = (e) => { e.preventDefault(); $("saveSettings").clic
 $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: blockedSites });
+  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
@@ -896,6 +1041,18 @@ $("testBar").onclick = async () => {
 document.addEventListener("keydown", (e) => {
   const inDrawer = $("drawer").classList.contains("on");
   const inEditor = editing !== undefined;
+  const menu = $("taskMenu");
+  if (menu) {
+    const items = [...menu.querySelectorAll("button")];
+    const at = items.indexOf(document.activeElement);
+    if (e.key === "Escape") closeTaskMenu();
+    else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+    } else if (e.key === "Enter" && at >= 0) items[at].click();
+    else if (e.key !== "Tab") return;
+    e.preventDefault();
+    return;
+  }
   if (e.key === "Escape") {
     if (inEditor) return closeFilterEditor();
     if (inDrawer) return closeSettings();
@@ -942,9 +1099,10 @@ async function boot() {
   api = window.pywebview.api;
   await poll();
   if (state.needs_setup) {
-    showEmpty("Welcome to Busyist", "Add your Todoist API token to see your tasks.", true);
+    showEmpty("Welcome to Busyist", "Add your Todoist API token to see your tasks, or turn Todoist off in Settings to run sessions without tasks.", true);
+    tasksWereOff = true;
     openSettings();
-  } else {
+  } else if (state.todoist) {
     loadTasks();
   }
   setInterval(poll, 1000);

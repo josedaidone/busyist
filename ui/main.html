@@ -53,6 +53,10 @@
         <div class="eyebrow" id="curEyebrow">Nothing in focus</div>
         <h2 id="curTask">Pick a task to start a session</h2>
         <div class="cur-meta" id="curMeta"></div>
+        <div class="free hidden" id="freeBox" style="margin-top:12px;display:flex;flex-direction:column;align-items:center;gap:8px">
+          <input class="input" id="freeName" maxlength="80" placeholder="Session name (optional)" autocomplete="off" spellcheck="false" style="width:100%;max-width:280px;text-align:center">
+          <button class="btn primary" id="startFree"><svg><use href="#i-play"/></svg>Start without a task</button>
+        </div>
       </div>
 
       <div class="controls hidden" id="controls">
@@ -88,7 +92,7 @@
       </div>
     </section>
 
-    <section class="card tasks">
+    <section class="card tasks" id="tasksCard">
       <div class="tasks-head">
         <label class="search">
           <svg><use href="#i-search"/></svg>
@@ -118,7 +122,7 @@
   </div>
   <div class="stabs" id="settingsTabs" role="tablist" aria-label="Settings sections">
     <button type="button" class="stab" role="tab" data-tab="todoist" aria-controls="p_todoist">Todoist</button>
-    <button type="button" class="stab" role="tab" data-tab="timer" aria-controls="p_timer">Timer</button>
+    <button type="button" class="stab" role="tab" data-tab="timer" aria-controls="p_timer">BUSY Bar</button>
     <button type="button" class="stab" role="tab" data-tab="apps" aria-controls="p_apps">Apps</button>
     <button type="button" class="stab" role="tab" data-tab="sites" aria-controls="p_sites">Websites<i class="dot warn hidden" id="sitesDot"></i></button>
     <button type="button" class="stab" role="tab" data-tab="general" aria-controls="p_general">General</button>
@@ -126,6 +130,11 @@
   </div>
   <form class="drawer-body" id="settingsForm" autocomplete="off">
     <div class="section" role="tabpanel" id="p_todoist" data-panel="todoist">
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="use_todoist" id="s_use_todoist"><span class="knob"></span>Use Todoist</label>
+      </div>
+      <div class="help" id="noTodoistHelp">Without Todoist, sessions run with no task and you don't need an API token.</div>
+      <div id="todoistFields">
       <div class="field">
         <label for="s_todoist_token">API token</label>
         <div class="input-row">
@@ -141,6 +150,7 @@
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="remove_label_on_end"><span class="knob"></span>Remove the label when the session ends</label>
         <label class="switch"><input type="checkbox" name="log_comments"><span class="knob"></span>Log finished pomodoros as a task comment</label>
+      </div>
       </div>
     </div>
 
@@ -191,15 +201,20 @@
 
     <div class="section" role="tabpanel" id="p_sites" data-panel="sites">
       <div class="toggles">
-        <label class="switch"><input type="checkbox" name="block_sites" id="s_block_sites"><span class="knob"></span>Block these websites during focus</label>
+        <label class="switch"><input type="checkbox" name="block_sites" id="s_block_sites"><span class="knob"></span>Limit websites during focus</label>
       </div>
       <div id="blockedSitesFields">
+        <div class="seg" role="radiogroup" aria-label="Website mode">
+          <label><input type="radio" name="site_mode" value="block"><span>Block these sites</span></label>
+          <label><input type="radio" name="site_mode" value="allow"><span>Allow only these sites</span></label>
+        </div>
         <div class="app-list" id="blockedSites"></div>
         <div class="input-row">
           <input class="input" id="addBlockedSite" spellcheck="false" placeholder="Add a website, e.g. youtube.com">
           <button type="button" class="btn" id="addBlockedSiteBtn">Add</button>
         </div>
-        <div class="help">A blocked site shows a "back to work" page during work phases; subdomains are included (<code>youtube.com</code> also blocks <code>m.youtube.com</code>).</div>
+        <div class="help" id="sitesHelp"></div>
+        <div class="help">Subdomains are included (<code>youtube.com</code> also covers <code>m.youtube.com</code>). Use <code>*</code> as a wildcard anywhere: <code>*.google.com</code>, <code>google.*</code>, <code>youtube.com/shorts/*</code>. A path covers the pages below it (<code>reddit.com/r/python</code>).</div>
       </div>
       <div class="extension-box" id="extBox">
         <div class="extension-status" id="extStatus">Browser extension: not connected</div>
@@ -230,6 +245,14 @@
         <label for="s_hotkey">Global hotkey</label>
         <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
         <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
+      </div>
+      <div class="field">
+        <label>Theme</label>
+        <div class="seg" role="radiogroup" aria-label="Theme">
+          <label><input type="radio" name="theme" value="auto"><span>Match Windows</span></label>
+          <label><input type="radio" name="theme" value="light"><span>Light</span></label>
+          <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
+        </div>
       </div>
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="notifications"><span class="knob"></span>Notify at breaks and when a session ends</label>
