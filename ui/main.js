@@ -996,9 +996,9 @@ function renderLimits() {
     edit.onclick = () => openLimitEditor(i);
     const x = el("button", "remove", "\u00d7");
     x.type = "button";
-    x.title = "Remove " + rule.pattern;
+    x.title = "Remove this limit";
     x.onclick = () => { limitRules.splice(i, 1); renderLimits(); };
-    head.append(sw, el("span", "site", rule.pattern), edit, x);
+    head.append(sw, el("span", "site", rule.patterns.join(", ")), edit, x);
     row.append(head);
     if (status && status.blocked) row.append(el("div", "limit-tag", `Blocked until ${clockText(status.until_ms)}`));
     rule.budgets.forEach((b, k) => {
@@ -1042,7 +1042,7 @@ setInterval(() => {
 
 function openLimitEditor(index) {
   const rule = index === undefined
-    ? { pattern: "", enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }], windows: [] }
+    ? { patterns: [], enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }], windows: [] }
     : JSON.parse(JSON.stringify(limitRules[index]));
   limitDraft = { index, rule };
   renderLimitEditor();
@@ -1089,8 +1089,11 @@ function dayButtons(item) {
   return wrap;
 }
 
+let sitesText = "";  // what's typed in the editor's websites box
+
 function renderLimitEditor() {
   const { rule } = limitDraft;
+  sitesText = rule.patterns.join(", ");
   const box = $("limitEditor");
   box.replaceChildren();
   box.classList.remove("hidden");
@@ -1099,10 +1102,10 @@ function renderLimitEditor() {
   const site = el("input", "input");
   site.id = "limitSite";
   site.spellcheck = false;
-  site.placeholder = "Website, e.g. instagram.com or youtube.com/shorts/*";
-  site.value = rule.pattern;
-  site.oninput = () => { rule.pattern = site.value; };
-  box.append(site);
+  site.placeholder = "Websites, e.g. instagram.com, facebook.com";
+  site.value = rule.patterns.join(", ");
+  site.oninput = () => { sitesText = site.value; };
+  box.append(site, el("div", "help", "Several websites can share one limit: the time adds up across all of them."));
   box.onkeydown = (e) => {
     if (e.key === "Enter" && e.target.tagName !== "BUTTON") { e.preventDefault(); e.stopPropagation(); commitLimitDraft(); }
   };
@@ -1168,14 +1171,20 @@ function renderLimitEditor() {
 // Move the editor's rule into the list. False (with a toast) if it isn't usable yet.
 function commitLimitDraft() {
   const { index, rule } = limitDraft;
-  const pattern = cleanSitePattern(rule.pattern);
-  if (!pattern) { toast("Type a website like instagram.com or *.reddit.com.", true); return false; }
+  const patterns = [];
+  for (const part of sitesText.split(/[\s,;]+/).filter(Boolean)) {
+    const pattern = cleanSitePattern(part);
+    if (pattern === null) { toast(`"${part}" isn't a website like instagram.com or *.reddit.com.`, true); return false; }
+    if (pattern && !patterns.includes(pattern)) patterns.push(pattern);
+  }
+  if (!patterns.length) { toast("Type a website like instagram.com or *.reddit.com.", true); return false; }
+  if (patterns.length > 20) { toast("Keep a limit to 20 websites or fewer.", true); return false; }
   if (!rule.budgets.length && !rule.windows.length) { toast("Add a time limit or blocked hours.", true); return false; }
   if (rule.budgets.some((b) => !b.days.length)) { toast("Pick at least one day for each time limit.", true); return false; }
   if (rule.budgets.some((b) => b.minutes < 1 || b.every < 1)) { toast("Time limits need at least 1 minute and a period of at least 1.", true); return false; }
   if (rule.windows.some((w) => !w.days.length || !w.from || !w.to)) { toast("Blocked hours need days and times.", true); return false; }
   if (limitRules.length >= 30 && index === undefined) { toast("Keep the website limits under 30.", true); return false; }
-  rule.pattern = pattern;
+  rule.patterns = patterns;
   if (index === undefined) limitRules.push(rule);
   else limitRules[index] = rule;
   closeLimitEditor();

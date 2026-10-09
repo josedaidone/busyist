@@ -102,6 +102,7 @@ MAX_BLOCKED_SITES = 50
 # Site limits: per-website time budgets and blocked hours, enforced by the
 # extension whether or not a pomodoro is running.
 MAX_SITE_LIMITS = 30
+MAX_LIMIT_SITES = 20  # websites in one limit
 LIMIT_UNITS = {"minute": 1, "hour": 60, "day": 1440, "week": 10080}  # in minutes
 SITE_ANCHOR = date(2024, 1, 1)  # a Monday: day/week periods count from here
 PASS_SECONDS = 120  # what "allow 2 more minutes" on the block page grants
@@ -2459,7 +2460,9 @@ def _sanitize_sites(values) -> list[str]:
 
 # ------------------------------------------------------------ site limits ---
 #
-# A rule is {"id", "pattern", "enabled", "budgets": [...], "windows": [...]}.
+# A rule is {"id", "patterns", "enabled", "budgets": [...], "windows": [...]}:
+# one set of limits for one or more websites, which share the time (30 minutes
+# a day on instagram.com and facebook.com together).
 # A budget {"minutes": 5, "every": 1, "unit": "hour", "days": [0..6]} allows 5
 # minutes per period, on those days only (Monday is 0; all days if omitted); periods are clock-aligned (the hour, the day, ...) in local time:
 # minute/hour periods restart at midnight, day/week periods count from
@@ -2482,7 +2485,22 @@ def clean_site_limit(raw) -> dict:
     """Check and tidy one site-limit rule from Settings; AppError if it's wrong."""
     if not isinstance(raw, dict):
         raise AppError("A website limit didn't come through; try again.")
-    pattern = clean_site_pattern(raw.get("pattern", ""))
+    sites = raw.get("patterns")
+    if sites is None:  # rules saved before a rule could cover several sites
+        sites = [raw.get("pattern", "")]
+    if not isinstance(sites, list):
+        raise AppError("The websites of a limit didn't come through; try again.")
+    patterns: list[str] = []
+    for site in sites:
+        if str(site).strip():
+            pattern = clean_site_pattern(site)
+            if pattern not in patterns:
+                patterns.append(pattern)
+    if not patterns:
+        raise AppError("Add at least one website to the limit.")
+    if len(patterns) > MAX_LIMIT_SITES:
+        raise AppError(f"Keep a limit to {MAX_LIMIT_SITES} websites or fewer.")
+    pattern = ", ".join(patterns)  # how this rule is named in messages
     rid = str(raw.get("id") or "")
     if not re.fullmatch(r"[a-f0-9]{6,16}", rid):
         rid = uuid.uuid4().hex[:8]
@@ -2527,7 +2545,7 @@ def clean_site_limit(raw) -> dict:
         raise AppError(f"{pattern}: add a time limit or blocked hours.")
     if len(budgets) > 5 or len(windows) > 5:
         raise AppError(f"{pattern}: keep it to 5 time limits and 5 blocked-hours entries.")
-    return {"id": rid, "pattern": pattern, "enabled": bool(raw.get("enabled", True)),
+    return {"id": rid, "patterns": patterns, "enabled": bool(raw.get("enabled", True)),
             "budgets": budgets, "windows": windows}
 
 
@@ -2643,7 +2661,8 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
     pass_until = usage.pass_until(rule["id"])
     reason = "window" if open_until else ("budget" if spent else "")
     return {
-        "id": rule["id"], "pattern": rule["pattern"], "enabled": rule.get("enabled", True),
+        "id": rule["id"], "patterns": rule["patterns"], "pattern": ", ".join(rule["patterns"]),
+        "enabled": rule.get("enabled", True),
         "blocked": bool(reason) and pass_until <= at, "reason": reason,
         "until_ms": max(open_until, key["end_ms"] if spent else 0),
         "pass_until_ms": pass_until,

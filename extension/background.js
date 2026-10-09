@@ -116,12 +116,14 @@ function limitState(rule, now) {
   return null;
 }
 
+const patternsOf = (rule) => rule.patterns || [rule.pattern];
+
 const limitRules = (focus) => (focus && focus.limits_on && focus.limits) || [];
 
 function limitBlocks(url, focus, now) {
   if (!/^https?:\/\//i.test(url)) return null;
   for (const rule of limitRules(focus)) {
-    if (matches(rule.pattern, url) && limitState(rule, now)) return rule;
+    if (patternsOf(rule).some((p) => matches(p, url)) && limitState(rule, now)) return rule;
   }
   return null;
 }
@@ -150,7 +152,7 @@ async function currentIds(focus, now) {
   const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
   if (!tab || !tab.url) return [];
   return rules
-    .filter((r) => matches(r.pattern, tab.url) && !limitState(r, now))
+    .filter((r) => patternsOf(r).some((p) => matches(p, tab.url)) && !limitState(r, now))
     .map((r) => r.id);
 }
 
@@ -237,11 +239,13 @@ async function setRules(focus, now) {
   } else if (focus.active) {
     patterns.forEach((p, i) => addRules.push(redirectRule(i + 1, FOCUS_PRIORITY, patternRegex(p))));
   }
-  limitRules(focus).forEach((rule, i) => {
-    if (limitState(rule, now)) {
-      addRules.push(redirectRule(LIMIT_RULE_BASE + i, LIMIT_PRIORITY, patternRegex(rule.pattern), rule.id));
+  let next = LIMIT_RULE_BASE;
+  for (const rule of limitRules(focus)) {
+    if (!limitState(rule, now)) continue;
+    for (const p of patternsOf(rule)) {
+      addRules.push(redirectRule(next++, LIMIT_PRIORITY, patternRegex(p), rule.id));
     }
-  });
+  }
   try {
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
   } catch (e) {
@@ -348,7 +352,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
         label: rule.limit_label,
         used_s: rule.used_s,
         budget_s: rule.budget_s,
-        pattern: rule.pattern,
+        pattern: patternsOf(rule).join(", "),
         pass_minutes: focus.pass_minutes || 2,
       } : null,
     });

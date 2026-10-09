@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Busyist Focus",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Blocks distracting websites while a Busyist pomodoro work phase is running, and enforces per-site time limits and blocked hours.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoe5z2eWF6raR/XVE5T2MqkamhIPZPKwcPXjqeuPrTnr5rNwO6HZmCYqUaNed4M1mr+OVA1waitUOsMFucWLQOlvUT81E67Y+bJgQpxGZ21cH2WfGBNE7RxsOyffSjeIazKf/QZ9IvOYNlVZ6G97t3pHFfRh4JlG9mZkaVPdDnvaEqrjbbakjeaJH4FqI5ngDnefZKh1P/B1/+5lprwds7MPc4JxR6H6uBQgI/Qt+qW8zDAL5o3nxxZg/MGcXqx8gF480Gt0/0+xALjF5CZLZvY1D4qK19YDsVDwa0vLPLNfsiUZbuO6N0/JiRM3LRNeSp+mHCms+qGmAYfqQZDEWrwIDAQAB",
   "permissions": ["declarativeNetRequest", "tabs", "alarms", "storage", "idle"],
