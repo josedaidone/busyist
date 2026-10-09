@@ -2048,9 +2048,10 @@ class AppBlocker:
             self._toast(entry, "blocked", focus)
         self._denied &= alive  # forget pids that are gone, so a reused pid is tried
         if to_hide:
+            # No toast: a hidden app is still running, and saying so each
+            # time its window comes back is just noise.
             for pid in close_windows(set(to_hide)):
                 log.info("hid %s (pid %d) to the tray during focus", to_hide[pid]["name"], pid)
-                self._toast(to_hide[pid], "hidden", focus)
 
     def _toast(self, entry: dict, what: str, focus: dict) -> None:
         now = time.monotonic()
