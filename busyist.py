@@ -51,7 +51,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -2647,7 +2647,7 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
         budgets.append({
             "label": f"{b['minutes']} min per {period_label(b['every'], b['unit'])}",
             "used_s": round(used), "budget_s": b["minutes"] * 60,
-            "remaining_s": round(b["minutes"] * 60 - used), "end_ms": _ms(end),
+            "remaining_s": round(b["minutes"] * 60 - used, 1), "end_ms": _ms(end),
             "active": now.weekday() in days,
         })
     spans = [[_ms(s), _ms(e)] for s, e in window_spans(rule["windows"], now)]

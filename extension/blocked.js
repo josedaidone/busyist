@@ -36,34 +36,46 @@ const minutes = (s) => Math.round(s / 60);
 let endsAt = 0;
 let passMinutes = 2;
 
+// Ticks the focus countdown. A limit page's line ("Opens again at") is left
+// alone: clearing it here between asks made it blink.
 function renderCount() {
+  if (limitId) return;
   const count = $("count");
   if (!endsAt) { count.textContent = ""; return; }
   const mins = Math.ceil(Math.max(0, endsAt - Date.now()) / 60000);
-  count.innerHTML = `Focus until <b>${clock(endsAt)}</b> &middot; <b>${mins}</b> min left`;
+  const html = `Focus until <b>${clock(endsAt)}</b> \u00b7 <b>${mins}</b> min left`;
+  if (count.innerHTML !== html) count.innerHTML = html;
+}
+
+// Sets text only when it changed, so nothing flickers on a re-render.
+function setText(id, text) {
+  if ($(id).textContent !== text) $(id).textContent = text;
 }
 
 function render(status) {
+  if (!status) return; // no answer this round: keep what's shown
   const { focus, limit } = status;
   if (limitId) {
     if (!limit) { goBack(); return; }
-    $("eyebrow").lastChild.textContent = "Busyist limit";
+    const eyebrow = $("eyebrow").lastChild;
+    if (eyebrow.textContent !== "Busyist limit") eyebrow.textContent = "Busyist limit";
     if (limit.reason === "window") {
-      $("title").textContent = "Blocked right now.";
-      $("task").textContent = `${limit.pattern} is blocked at this time.`;
+      setText("title", "Blocked right now.");
+      setText("task", `${limit.pattern} is blocked at this time.`);
     } else {
-      $("title").textContent = "That's enough for now.";
-      $("task").textContent = `You've used ${minutes(limit.used_s)} of ${minutes(limit.budget_s)} min on ${limit.pattern} (${limit.label}).`;
+      setText("title", "That's enough for now.");
+      setText("task", `You've used ${minutes(limit.used_s)} of ${minutes(limit.budget_s)} min on ${limit.pattern} (${limit.label}).`);
     }
     endsAt = 0;
-    $("count").innerHTML = `Opens again at <b>${when(limit.until)}</b>`;
+    const count = `Opens again at <b>${when(limit.until)}</b>`;
+    if ($("count").innerHTML !== count) $("count").innerHTML = count;
     passMinutes = limit.pass_minutes;
-    $("pass").textContent = `Allow ${passMinutes} more minutes`;
+    setText("pass", `Allow ${passMinutes} more minutes`);
     $("pass").classList.remove("hidden");
     return;
   }
   if (!focus.active) { goBack(); return; }
-  $("task").textContent = focus.task || "";
+  setText("task", focus.task || "");
   endsAt = focus.ends_at_ms || 0;
   renderCount();
 }
