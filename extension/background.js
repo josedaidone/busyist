@@ -326,21 +326,29 @@ function updateBadge(focus, now, url) {
 
 // Everything happens in one place, one at a time: credit the time since the
 // last tick, exchange it with Busyist, apply the rules, work out what's being
-// timed now.
+// timed now. The popup and the block page queue up here too: two exchanges in
+// flight at once would send the same pending time twice and let an older
+// answer overwrite a newer one (the time left jumping up and down).
 let chain = Promise.resolve();
-const sync = (force) => (chain = chain.then(() => tick(force)).catch((e) => console.warn("Busyist", e)));
+function exclusive(fn) {
+  const run = chain.then(fn);
+  chain = run.catch((e) => console.warn("Busyist", e));
+  return run;
+}
+const sync = (force) => exclusive(() => tick(force));
 
 async function tick(force) {
   await ready;
-  let now = Date.now();
+  const started = Date.now();
   if (counting.ids.length) {
-    addPending(counting.ids, Math.min((now - counting.since) / 1000, MAX_GAP_S), now);
+    addPending(counting.ids, Math.min((started - counting.since) / 1000, MAX_GAP_S), started);
   }
   const focus = await fetchState(force);
-  now = Date.now();
+  const now = Date.now();
   await setRules(focus, now);
   await sweepTabs(focus, now);
-  counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: Date.now() };
+  // Counted from the start of this tick, so the time spent talking to Busyist isn't lost.
+  counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: started };
   updateBadge(focus, Date.now(), await activeUrl(false));
   // While something is being timed, keep ticking (and keep the worker awake).
   if (counting.ids.length && !timer) timer = setInterval(() => sync(false), TICK_MS);
@@ -369,38 +377,44 @@ chrome.idle.onStateChanged.addListener(() => sync(false));
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
     await ready;
-    const now = Date.now();
     if (msg.type === "grant") {
       const minutes = (lastGood && lastGood.pass_minutes) || 2;
-      passes[msg.id] = now + minutes * 60000;
+      passes[msg.id] = Date.now() + minutes * 60000;
       saveState();
       try { await post(GRANT_URL, { id: msg.id, version: VERSION }); } catch (e) { /* the local pass still holds */ }
       await sync(true);
     }
-    if (msg.type === "popup") { reply(await popupData(now)); return; }
-    const focus = (await fetchState(msg.type === "grant")) || {};
-    const rule = limitRules(focus).find((r) => r.id === msg.limit);
-    const state = rule && limitState(rule, now);
-    reply({
-      focus: { active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0 },
-      limit: rule && state ? {
-        reason: state.reason,
-        until: state.until,
-        label: rule.limit_label,
-        used_s: rule.used_s,
-        budget_s: rule.budget_s,
-        pattern: patternsOf(rule).join(", "),
-        pass_minutes: focus.pass_minutes || 2,
-      } : null,
-    });
-  })();
+    if (msg.type === "popup") { reply(await exclusive(() => popupData())); return; }
+    reply(await exclusive(() => blockPageData(msg)));
+  })().catch((e) => { console.warn("Busyist", e); reply(null); });
   return true; // reply asynchronously
 });
 
+// What blocked.js shows: why this site is blocked and until when.
+async function blockPageData(msg) {
+  const focus = (await fetchState(msg.type === "grant")) || {};
+  const now = Date.now();
+  const rule = limitRules(focus).find((r) => r.id === msg.limit);
+  const state = rule && limitState(rule, now);
+  return {
+    focus: { active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0 },
+    limit: rule && state ? {
+      reason: state.reason,
+      until: state.until,
+      label: rule.limit_label,
+      used_s: rule.used_s,
+      budget_s: rule.budget_s,
+      pattern: patternsOf(rule).join(", "),
+      pass_minutes: focus.pass_minutes || 2,
+    } : null,
+  };
+}
+
 // What the toolbar popup shows (popup.js): the pomodoro, the limits and where
 // each stands, and whether Busyist is reachable.
-async function popupData(now) {
+async function popupData() {
   const focus = (await fetchState(false)) || {};
+  const now = Date.now(); // after the exchange, so it's never before counting.since
   const url = await activeUrl(false);
   const here = new Set((url ? rulesFor(focus, url) : []).map((r) => r.id));
   const upcoming = (rule) => (rule.windows_ms || []).find(([start]) => start > now);
@@ -424,7 +438,8 @@ async function popupData(now) {
         state,                                  // {reason, until} while blocked
         left_s: (() => {                        // null: no time limit applies now
           const left = secondsLeft(rule, now);
-          const live = counting.ids.includes(rule.id) ? Math.min((now - counting.since) / 1000, MAX_GAP_S) : 0;
+          const live = counting.ids.includes(rule.id)
+            ? Math.max(0, Math.min((now - counting.since) / 1000, MAX_GAP_S)) : 0;
           return left == null ? null : Math.max(0, left - live);
         })(),
         budget_s: rule.budget_s,
