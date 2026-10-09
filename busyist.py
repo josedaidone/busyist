@@ -21,6 +21,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes
 import hashlib
+import http.server
 import json
 import logging
 import os
@@ -48,7 +49,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -58,10 +59,15 @@ SOURCE_DIR = Path(__file__).resolve().parent
 # PyInstaller unpacked them.
 RES_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 UI = RES_DIR / "ui"
+EXTENSION_SRC = RES_DIR / "extension"  # the Chrome extension, loaded unpacked (issue #2)
 ICON_PATH = RES_DIR / "busyist.ico"
 # Everything the app writes is per user, never next to the program: an
 # installed app cannot write to its own folder.
 DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
+# The folder Chrome loads the extension from. The packaged app copies it out
+# of _internal\ (see sync_extension) to a short path that survives updates
+# and reinstalls; from source it is the repo's extension/ so edits are live.
+EXTENSION_DIR = DATA_DIR / "chrome-extension" if FROZEN else EXTENSION_SRC
 CONFIG_PATH = DATA_DIR / "config.json"
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
@@ -77,6 +83,19 @@ log = logging.getLogger(APP)
 USB_ADDR = "10.0.4.20"  # the bar's fixed address over USB
 TODOIST_API = "https://api.todoist.com/api/v1"
 INSTANCE_PORT = 47615  # a second launch pokes the first one here and exits
+
+# The Chrome extension (issue #2) asks this local server whether a work phase
+# is running, so it can block distracting sites. Only our own extension may
+# read it (its id is pinned by the public key in extension/manifest.json), so
+# a web page can't learn the current task name.
+FOCUS_PORT = 47616
+EXTENSION_ID = "ebnjnikifknbkdlkbbfggibfekkohbne"
+EXTENSION_ORIGIN = "chrome-extension://" + EXTENSION_ID
+DEFAULT_BLOCKED_SITES = [
+    "instagram.com", "youtube.com", "youtu.be", "twitter.com", "x.com",
+    "facebook.com", "web.whatsapp.com", "reddit.com", "linkedin.com", "tiktok.com",
+]
+MAX_BLOCKED_SITES = 50
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MINI_W, MINI_H = 340, 108
 
@@ -101,7 +120,35 @@ DEFAULTS = {
     "launch_at_login": True,
     "open_on_finish": True,
     "auto_update": True,
+    # Keep distracting apps away while a work phase runs (issue #1). Off by
+    # default for other users. The list is APP_PRESETS (each switchable)
+    # plus apps added by hand; normalize_blocked_apps() fills it in.
+    "block_apps": False,
+    "blocked_apps": [],
+    # Keep distracting websites away during a work phase, via the Chrome
+    # extension (issue #2). Off by default; blocked_sites is a list of bare
+    # domains (subdomains included), edited here, not in the extension.
+    "block_sites": False,
+    "blocked_sites": list(DEFAULT_BLOCKED_SITES),
 }
+
+MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
+
+# Apps offered in Settings, each with its own switch: (id, name, program
+# names, default action, on by default). "close" ends the app; "hide" sends
+# its windows to the tray as their X would, so it stays signed in and online.
+APP_PRESETS = [
+    # WhatsApp Desktop runs as WhatsApp.Root.exe today, WhatsApp.exe on older builds.
+    ("whatsapp", "WhatsApp", ["WhatsApp.Root.exe", "WhatsApp.exe"], "close", True),
+    ("slack", "Slack", ["Slack.exe"], "hide", False),
+    ("discord", "Discord", ["Discord.exe"], "hide", False),
+    ("telegram", "Telegram", ["Telegram.exe"], "close", False),
+    ("signal", "Signal", ["Signal.exe"], "close", False),
+    ("spotify", "Spotify", ["Spotify.exe"], "close", False),
+    ("steam", "Steam", ["steam.exe"], "close", False),
+    ("epic", "Epic Games", ["EpicGamesLauncher.exe"], "close", False),
+]
+APP_ACTIONS = ("close", "hide")
 
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
@@ -613,6 +660,9 @@ class App:
         self.cfg = dict(DEFAULTS)
         saved = read_json(CONFIG_PATH, {})
         self.cfg.update(saved)
+        self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
+        # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
+        self.cfg["blocked_sites"] = _sanitize_sites(self.cfg.get("blocked_sites"))
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -628,6 +678,9 @@ class App:
         self.snap: types.BusySnapshot | None = None
         self.bar_ok: bool | None = None
         self.bar_error = ""
+        self.bar_fails = 0  # consecutive failed polls; blocking fails open at 3
+        self._focus_active = False
+        self.focus_hooks: list = []  # called (off App.lock) when focus flips
         self.ended: dict | None = None
         self.history: list[dict] = read_json(HISTORY_PATH, [])
         self.wake = threading.Event()
@@ -648,6 +701,13 @@ class App:
         # to; an all-users install would raise an admin prompt out of nowhere.
         self.can_auto_update = UPDATABLE and app_dir_writable()
         self._migrate_filters()
+        # Closes distracting apps during focus (issue #1); idle until a work
+        # phase starts, so nothing runs when the feature is off.
+        self.blocker = AppBlocker(self)
+        self.focus_hooks.append(self.blocker.poke)
+        # Tells the Chrome extension whether to block sites (issue #2).
+        self.extension_last = 0  # now_ms() of the last request the extension made
+        self.site_server = FocusServer(self)
 
     # -------------------------------------------------------------- filters
 
@@ -787,8 +847,76 @@ class App:
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
                 "needs_setup": not self.cfg.get("todoist_token"),
+                "extension_connected": bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000,
                 "update": self.update_view(),
             }
+
+    # ----------------------------------------------------------- focus
+
+    def focus(self) -> dict:
+        """
+        Whether a work phase is running right now, worked out from the same
+        snapshot follow_session() uses. Shared by the app and site blockers
+        (issues #1 and #2): active means an interval session, in a work phase,
+        not paused, not finished. `ends_at_ms` is when the current work phase
+        ends, so toasts and the block page can show "until 14:25".
+
+        Blocking fails open: a bar that can't be read for three polls in a row
+        counts as "no focus", so a lost connection never leaves apps blocked.
+        """
+        off = {"active": False, "task": "", "ends_at_ms": 0}
+        with self.lock:
+            session, snap = self.session, self.snap
+            if not session or snap is None:
+                return off
+            if not self.bar_ok and self.bar_fails >= 3:
+                return off  # fail open on a lost bar
+            if snap.snapshot_timestamp_ms < session["stamp"]:
+                return off  # a reading from before our own start
+            state = timer_state(snap)
+            if (state.mode != "interval" or state.is_finished
+                    or state.phase != "work" or state.is_paused):
+                return off
+            return {
+                "active": True,
+                "task": session["task"]["content"],
+                "ends_at_ms": now_ms() + (state.time_left_ms or 0),
+            }
+
+    def site_focus(self) -> dict:
+        """
+        What the Chrome extension (issue #2) reads from /focus: the same work-
+        phase rule as the app blocker, but only when site blocking is on. When
+        it's off, or no work phase is running, `active` is False and no sites
+        are sent, so the extension removes its rules.
+        """
+        on = bool(self.cfg.get("block_sites"))
+        focus = self.focus()
+        active = on and focus["active"]
+        return {
+            "active": active,
+            "task": focus["task"] if active else "",
+            "ends_at_ms": focus["ends_at_ms"] if active else 0,
+            "sites": list(self.cfg.get("blocked_sites") or []) if on else [],
+        }
+
+    def notify_focus(self) -> None:
+        """Recompute focus and, if it flipped, run the hooks off App.lock."""
+        focus = self.focus()
+        with self.lock:
+            changed = focus["active"] != self._focus_active
+            self._focus_active = focus["active"]
+        if not changed:
+            return
+        for hook in list(self.focus_hooks):
+            threading.Thread(target=self._run_hook, args=(hook, focus), daemon=True).start()
+
+    @staticmethod
+    def _run_hook(hook, focus: dict) -> None:
+        try:
+            hook(focus)
+        except Exception:
+            log.exception("focus hook")
 
     # --------------------------------------------------------- engine loop
 
@@ -798,16 +926,19 @@ class App:
             try:
                 snap = self.bar.snapshot()
                 with self.lock:
-                    self.snap, self.bar_ok, self.bar_error = snap, True, ""
+                    self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
             except AppError as err:
                 with self.lock:
                     self.bar_ok, self.bar_error = False, str(err)
+                    self.bar_fails += 1
             except Exception as err:  # never let the loop die
                 log.exception("bar poll")
                 with self.lock:
                     self.bar_ok, self.bar_error = False, f"Unexpected: {err!r}"
+                    self.bar_fails += 1
             try:
                 self.follow_session()
+                self.notify_focus()
                 self.update_tray()
             except Exception:
                 log.exception("engine")
@@ -1038,6 +1169,15 @@ class App:
             threading.Thread(target=self.finish, args=(old, "replaced"), daemon=True).start()
         threading.Thread(target=self._label_task, args=(self.session,), daemon=True).start()
         self.wake.set()
+        # Read the fresh interval straight back so focus (and its blockers)
+        # act at once, not on the next poll.
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
+        except AppError:
+            pass
+        self.notify_focus()
         # Out of the way for the focus block; the mini timer takes over.
         if self.main:
             hide_window(self.main)
@@ -1089,9 +1229,11 @@ class App:
         try:
             snap = self.bar.snapshot()
             with self.lock:
-                self.snap, self.bar_ok = snap, True
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
         except AppError:
             pass
+        # A pause/resume/stop from the app lifts or applies the block now.
+        self.notify_focus()
 
     # ----------------------------------------------------------- settings
 
@@ -1111,6 +1253,10 @@ class App:
             else:
                 value = str(value).strip()
             clean[key] = value
+        if "blocked_apps" in changes:
+            clean["blocked_apps"] = clean_blocked_apps(changes["blocked_apps"])
+        if "blocked_sites" in changes:
+            clean["blocked_sites"] = clean_blocked_sites(changes["blocked_sites"])
         merged = dict(self.cfg, **clean)
         for key in ("work_minutes", "rest_minutes"):
             if not PHASE_MIN <= merged[key] <= PHASE_MAX:
@@ -1134,6 +1280,7 @@ class App:
         if bar_changed:
             self.bar.reset()
             self.wake.set()
+        self.blocker.poke()  # pick up a changed list or switch straight away
         if self.tray:
             self.tray.update_menu()
 
@@ -1211,6 +1358,8 @@ class App:
         self.quitting = True
         self.wake.set()
         self.update_wake.set()
+        self.blocker.poke()
+        self.site_server.stop()
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:
@@ -1312,6 +1461,7 @@ class App:
     # ----------------------------------------------------------------- run
 
     def run(self) -> None:
+        clear_webview_cache()
         api = Api(self)
         bg = "#16151a" if windows_dark_mode() else "#f6f5f2"
         visible = not self.cfg.get("todoist_token") or "--show" in sys.argv
@@ -1343,6 +1493,8 @@ class App:
             log.warning("%s", err)
             self.notify(APP, f"{err} Change it in Settings.")
         threading.Thread(target=self.engine, daemon=True).start()
+        self.blocker.start()
+        self.site_server.start()
         if FROZEN:  # from source, git is the updater
             threading.Thread(target=self.updater, daemon=True, name="updater").start()
         threading.Thread(target=listen_for_second_launch, args=(self,), daemon=True).start()
@@ -1416,8 +1568,13 @@ class Api:
 
     def get_settings(self):
         cfg = self._app.cfg
+        # extension_connected: the Chrome extension called in the last ~2 min.
+        connected = bool(self._app.extension_last) and (now_ms() - self._app.extension_last) < 120_000
         return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR),
-                    can_auto_update=self._app.can_auto_update)
+                    can_auto_update=self._app.can_auto_update,
+                    extension_id=EXTENSION_ID, extension_connected=connected,
+                    extension_dir=str(EXTENSION_DIR),
+                    extension_browser=(find_browser() or (None,))[0])
 
     def check_update(self):
         return self._do(self._app.check_for_update)
@@ -1427,6 +1584,33 @@ class Api:
 
     def open_data_folder(self):
         os.startfile(DATA_DIR)
+
+    def open_extension_folder(self):
+        show_in_explorer(EXTENSION_DIR if EXTENSION_DIR.exists() else RES_DIR)
+
+    def copy_extension_path(self):
+        return {"ok": set_clipboard(str(EXTENSION_DIR))}
+
+    def install_extension(self):
+        """
+        Do the parts of "Load unpacked" we can: put the folder path on the
+        clipboard (to paste in Chrome's folder picker), select the folder in
+        Explorer (to drag onto the page) and open the browser's extensions page.
+        """
+        def go():
+            sync_extension()
+            if not EXTENSION_DIR.exists():
+                raise AppError("The extension folder is missing; reinstall Busyist.")
+            copied = set_clipboard(str(EXTENSION_DIR))
+            show_in_explorer(EXTENSION_DIR)
+            browser = find_browser()
+            if browser:
+                name, exe, page = browser
+                subprocess.Popen([exe, page], close_fds=True)
+            return {"browser": browser[0] if browser else None,
+                    "page": browser[2] if browser else "chrome://extensions",
+                    "copied": copied, "path": str(EXTENSION_DIR)}
+        return self._do(go)
 
     def open_repo(self):
         webbrowser.open(REPO_URL)
@@ -1458,6 +1642,115 @@ class Api:
 
 
 # --------------------------------------------------------------- platform ---
+
+
+def clear_webview_cache() -> None:
+    """
+    Drop WebView2's HTTP cache so the pages always load the ui/ files on disk.
+
+    pywebview means to serve them with Cache-Control: no-cache, but the
+    header is lost (bottle.static_file builds its own response), so WebView2
+    caches main.html/main.js by heuristic and can show an old UI for hours
+    after an update or a branch switch. Local Storage is left alone.
+    """
+    profile = WEBVIEW_DIR / "EBWebView" / "Default"
+    for name in ("Cache", "Code Cache"):
+        shutil.rmtree(profile / name, ignore_errors=True)
+
+
+def sync_extension() -> None:
+    """
+    Keep the user's copy of the Chrome extension (EXTENSION_DIR) the same as
+    the one that ships with this version. Chrome reads an unpacked extension
+    from disk, so after an update it picks up the new files on its next start
+    (or with Reload on chrome://extensions) without being loaded again.
+    """
+    if EXTENSION_DIR == EXTENSION_SRC or not EXTENSION_SRC.is_dir():
+        return
+    try:
+        EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
+        wanted = {p.relative_to(EXTENSION_SRC) for p in EXTENSION_SRC.rglob("*") if p.is_file()}
+        for rel in wanted:
+            src, dst = EXTENSION_SRC / rel, EXTENSION_DIR / rel
+            if dst.is_file() and dst.read_bytes() == src.read_bytes():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+        for p in sorted(EXTENSION_DIR.rglob("*"), reverse=True):  # files from older versions
+            rel = p.relative_to(EXTENSION_DIR)
+            if p.is_file() and rel not in wanted:
+                p.unlink()
+            elif p.is_dir() and not any(p.iterdir()):
+                p.rmdir()
+    except OSError:
+        log.exception("could not copy the Chrome extension to %s", EXTENSION_DIR)
+
+
+# Browsers that can load the extension, with their extensions page. Chrome
+# first; Edge (on every Windows PC) runs the same MV3 extension with the same id.
+BROWSERS = (("Chrome", "chrome.exe", "chrome://extensions/", r"Google\Chrome\Application"),
+            ("Edge", "msedge.exe", "edge://extensions/", r"Microsoft\Edge\Application"))
+
+
+def find_browser() -> tuple[str, str, str] | None:
+    """(name, exe path, extensions page) of the first installed browser above."""
+    import winreg
+    for name, exe, page, folder in BROWSERS:
+        for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(root, "Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + exe) as key:
+                    path = winreg.QueryValueEx(key, "")[0]
+                if path and Path(path).is_file():
+                    return name, path, page
+            except OSError:
+                pass
+        for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("PROGRAMFILES"),
+                     os.environ.get("PROGRAMFILES(X86)")):
+            if base and (Path(base) / folder / exe).is_file():
+                return name, str(Path(base) / folder / exe), page
+    return None
+
+
+def show_in_explorer(path: Path) -> None:
+    """Open Explorer on the folder holding `path`, with `path` selected."""
+    try:
+        subprocess.Popen(f'explorer.exe /select,"{path}"')
+    except OSError:
+        os.startfile(path)
+
+
+def set_clipboard(text: str) -> bool:
+    """Put text on the Windows clipboard (private DLL handles: no shared argtypes)."""
+    k32, u32 = ctypes.WinDLL("kernel32"), ctypes.WinDLL("user32")
+    k32.GlobalAlloc.argtypes = [ctypes.wintypes.UINT, ctypes.c_size_t]
+    k32.GlobalAlloc.restype = ctypes.c_void_p
+    k32.GlobalLock.argtypes = [ctypes.c_void_p]
+    k32.GlobalLock.restype = ctypes.c_void_p
+    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    k32.GlobalFree.argtypes = [ctypes.c_void_p]
+    u32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
+    u32.SetClipboardData.argtypes = [ctypes.wintypes.UINT, ctypes.c_void_p]
+    u32.SetClipboardData.restype = ctypes.c_void_p
+    data = text.encode("utf-16-le") + b"\0\0"
+    for _ in range(10):  # another program may hold the clipboard for a moment
+        if u32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        return False
+    try:
+        u32.EmptyClipboard()
+        handle = k32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+        if not handle:
+            return False
+        ctypes.memmove(k32.GlobalLock(handle), data, len(data))
+        k32.GlobalUnlock(handle)
+        if not u32.SetClipboardData(13, handle):  # CF_UNICODETEXT; on success the clipboard owns it
+            k32.GlobalFree(handle)
+            return False
+        return True
+    finally:
+        u32.CloseClipboard()
 
 
 def windows_dark_mode() -> bool:
@@ -1672,6 +1965,509 @@ class GlobalHotkey:
         ctypes.windll.user32.PostThreadMessageW(self._thread_id, self.WM_QUIT, 0, 0)
 
 
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.wintypes.DWORD),
+        ("cntUsage", ctypes.wintypes.DWORD),
+        ("th32ProcessID", ctypes.wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.wintypes.DWORD),
+        ("cntThreads", ctypes.wintypes.DWORD),
+        ("th32ParentProcessID", ctypes.wintypes.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("szExeFile", ctypes.c_wchar * 260),
+    ]
+
+
+TH32CS_SNAPPROCESS = 0x2
+PROCESS_TERMINATE = 0x1
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_ACCESS_DENIED = 5
+
+
+def _kernel32():
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateToolhelp32Snapshot.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+    k.CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+    k.Process32FirstW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k.Process32NextW.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+    k.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+    k.OpenProcess.restype = ctypes.wintypes.HANDLE
+    k.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+    k.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    k.ProcessIdToSessionId.argtypes = [ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    k.QueryFullProcessImageNameW.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+                                             ctypes.wintypes.LPWSTR, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    if hasattr(k, "GetApplicationUserModelId"):  # Win8+; absent on older Windows
+        k.GetApplicationUserModelId.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.UINT),
+                                                ctypes.wintypes.LPWSTR]
+    return k
+
+
+def list_processes() -> list[tuple[int, str]]:
+    """(pid, image name) of every process, via a Toolhelp snapshot."""
+    k = _kernel32()
+    snap = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if not snap or snap == ctypes.wintypes.HANDLE(-1).value:
+        return []
+    found = []
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        ok = k.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            found.append((entry.th32ProcessID, entry.szExeFile))
+            ok = k.Process32NextW(snap, ctypes.byref(entry))
+    finally:
+        k.CloseHandle(snap)
+    return found
+
+
+def process_session(pid: int) -> int | None:
+    """The Windows logon session a process runs in, or None if unknown."""
+    session = ctypes.wintypes.DWORD()
+    if _kernel32().ProcessIdToSessionId(pid, ctypes.byref(session)):
+        return session.value
+    return None
+
+
+def terminate_process(pid: int) -> int:
+    """End a process; returns 0 on success, else the Win32 error code."""
+    k = _kernel32()
+    handle = k.OpenProcess(PROCESS_TERMINATE, False, pid)
+    if not handle:
+        return ctypes.get_last_error() or ERROR_ACCESS_DENIED
+    try:
+        return 0 if k.TerminateProcess(handle, 1) else (ctypes.get_last_error() or 1)
+    finally:
+        k.CloseHandle(handle)
+
+
+def process_path(pid: int) -> str | None:
+    """The full path of a process's executable, or None if it can't be read."""
+    k = _kernel32()
+    handle = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        size = ctypes.wintypes.DWORD(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        if k.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return buf.value
+        return None
+    finally:
+        k.CloseHandle(handle)
+
+
+def process_aumid(pid: int) -> str | None:
+    """The Application User Model ID of a packaged (Store) app, else None."""
+    k = _kernel32()
+    if not hasattr(k, "GetApplicationUserModelId"):
+        return None
+    handle = k.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        length = ctypes.wintypes.UINT(0)
+        k.GetApplicationUserModelId(handle, ctypes.byref(length), None)  # ask for the size
+        if not length.value:
+            return None  # not a packaged app
+        buf = ctypes.create_unicode_buffer(length.value)
+        if k.GetApplicationUserModelId(handle, ctypes.byref(length), buf) == 0:
+            return buf.value
+        return None
+    finally:
+        k.CloseHandle(handle)
+
+
+def relaunch_target(pid: int) -> str | None:
+    """
+    How to start this process again later: a "shell:AppsFolder\\<AUMID>" path
+    for Store apps (WhatsApp, Slack, ... now ship this way and can't be run
+    from their WindowsApps exe), or the plain exe path for ordinary programs.
+    """
+    aumid = process_aumid(pid)
+    if aumid:
+        return "shell:AppsFolder\\" + aumid
+    return process_path(pid)
+
+
+def relaunch_app(target: str) -> bool:
+    """Start the program again, as the user would from Explorer or the Start menu."""
+    try:
+        os.startfile(target)  # type: ignore[attr-defined]  # Windows only
+        return True
+    except OSError:
+        log.warning("couldn't reopen %s", target, exc_info=True)
+        return False
+
+
+def app_key(name: str) -> str:
+    """'WhatsApp.Root.EXE' -> 'whatsapp.root': case-insensitive, .exe optional."""
+    name = name.strip().lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def normalize_blocked_apps(raw) -> list[dict]:
+    """
+    The app list as Settings shows it: every preset (in APP_PRESETS order,
+    with the saved switch and action), then the apps added by hand.
+
+    Presets take their name and program names from the code, so a fix there
+    reaches existing configs. The first version of this setting saved bare
+    program names; those turn the matching preset on, or become hand-added.
+    """
+    saved: dict[str, dict] = {}
+    custom: list[dict] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, str):
+            name = item.strip()
+            preset = next((p for p in APP_PRESETS if app_key(name) in {app_key(e) for e in p[2]}), None)
+            item = {"id": preset[0], "on": True} if preset else {"exes": [name], "on": True, "custom": True}
+        if not isinstance(item, dict):
+            continue
+        if item.get("custom"):
+            exe = str((item.get("exes") or [""])[0]).strip()
+            if not exe:
+                continue
+            custom.append({
+                "id": "custom:" + app_key(exe),
+                "name": str(item.get("name") or exe_label(exe)),
+                "exes": [exe],
+                "on": bool(item.get("on", True)),
+                "action": item.get("action") if item.get("action") in APP_ACTIONS else "close",
+                "custom": True,
+            })
+        elif item.get("id"):
+            saved[str(item["id"])] = item
+    out = []
+    for pid, name, exes, action, on in APP_PRESETS:
+        mine = saved.get(pid, {})
+        out.append({
+            "id": pid, "name": name, "exes": list(exes),
+            "on": bool(mine.get("on", on)),
+            "action": mine.get("action") if mine.get("action") in APP_ACTIONS else action,
+            "custom": False,
+        })
+    taken = {app_key(e) for entry in out for e in entry["exes"]}
+    for entry in custom:
+        key = app_key(entry["exes"][0])
+        if key not in taken:
+            taken.add(key)
+            out.append(entry)
+    return out
+
+
+def clean_blocked_apps(values) -> list[dict]:
+    """Check the list Settings sent, then normalize it; AppError if it's wrong."""
+    if not isinstance(values, list) or not all(isinstance(item, dict) for item in values):
+        raise AppError("The app list didn't come through; try again.")
+    hand = 0
+    for item in values:
+        if item.get("custom"):
+            exe = str((item.get("exes") or [""])[0]).strip()
+            if not exe:
+                raise AppError("Type the program name, like Slack.exe.")
+            if "/" in exe or "\\" in exe:
+                raise AppError("App names are just the program, like WhatsApp.exe.")
+            hand += 1
+    if hand > MAX_BLOCKED_APPS:
+        raise AppError(f"Keep the added apps under {MAX_BLOCKED_APPS}.")
+    return normalize_blocked_apps(values)
+
+
+def clean_domain(raw) -> str:
+    """'https://www.YouTube.com/watch' -> 'youtube.com'; AppError if it's not one."""
+    domain = str(raw).strip().lower()
+    domain = re.sub(r"^[a-z]+://", "", domain)  # drop any scheme
+    domain = domain.split("/")[0].split("?")[0].split("#")[0].strip()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not domain or " " in domain or "." not in domain:
+        raise AppError(f"{str(raw).strip()!r} isn't a website like youtube.com.")
+    return domain
+
+
+def clean_blocked_sites(values) -> list[str]:
+    """Check and tidy the domain list Settings sent; AppError if it's wrong."""
+    if not isinstance(values, list):
+        raise AppError("The site list didn't come through; try again.")
+    out: list[str] = []
+    for item in values:
+        domain = clean_domain(item)
+        if domain not in out:
+            out.append(domain)
+    if len(out) > MAX_BLOCKED_SITES:
+        raise AppError(f"Keep the blocked sites under {MAX_BLOCKED_SITES}.")
+    return out
+
+
+def _sanitize_sites(values) -> list[str]:
+    """Tidy a saved domain list without raising, for load time."""
+    out: list[str] = []
+    for item in values if isinstance(values, list) else []:
+        try:
+            domain = clean_domain(item)
+        except AppError:
+            continue
+        if domain not in out:
+            out.append(domain)
+    return out
+
+
+def exe_label(image: str) -> str:
+    """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
+    stem = image[:-4] if image.lower().endswith(".exe") else image
+    return stem.split(".")[0] or stem
+
+
+WM_CLOSE = 0x0010
+GW_OWNER = 4
+_ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+
+
+def close_windows(pids: set[int]) -> set[int]:
+    """
+    Ask the visible top-level windows of these processes to close, as their
+    X button would. Apps that live in the tray (Slack, Discord) just hide and
+    stay signed in. Returns the pids that had a window to close.
+    """
+    user32 = ctypes.windll.user32
+    user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
+    user32.GetWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+    user32.GetWindow.restype = ctypes.wintypes.HWND
+    user32.PostMessageW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+                                    ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    user32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, ctypes.wintypes.LPARAM]
+    closed: set[int] = set()
+
+    def visit(hwnd, _):
+        pid = ctypes.wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, GW_OWNER):
+            if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
+                closed.add(pid.value)
+        return True
+
+    user32.EnumWindows(_ENUM_WINDOWS_PROC(visit), 0)
+    return closed
+
+
+class AppBlocker:
+    """
+    Keeps the listed apps away while a work phase runs (issue #1).
+
+    The thread sleeps on an Event outside focus, so it costs nothing when
+    there is no session or the switch is off; App.notify_focus() and
+    save_settings() poke it. During focus it looks every TICK seconds:
+    "close" apps are ended (only in this user's session), "hide" apps get
+    their windows closed to the tray so they stay online.
+
+    A "blocked" toast only fires when the user opens a blocked app *during*
+    focus (not for apps already running when focus began, which are swept away
+    silently on the first tick). Every "close" app we end is remembered with
+    its exe path and started again when focus ends (pause, break, stop or
+    finish), so the desktop is left as it was found.
+    """
+
+    TICK = 1.5
+    TOAST_EVERY = 60  # seconds between toasts for the same app
+
+    def __init__(self, app: App):
+        self.app = app
+        self.wake = threading.Event()
+        self._toasted: dict[str, float] = {}
+        self._denied: set[int] = set()  # pids we couldn't end; logged once, not retried
+        self._closed: dict[str, str] = {}  # app_key -> exe path, to reopen when focus ends
+        self._first_sweep = True  # the first enforce of a focus: existing apps, no toast
+        self._preexisting: set[str] = set()  # apps already open when focus began: never popped
+        self._session = process_session(os.getpid())
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="app-blocker")
+        self._thread.start()
+
+    def poke(self, _focus: dict | None = None) -> None:
+        self.wake.set()
+
+    def _loop(self) -> None:
+        while not self.app.quitting:
+            cfg = self.app.cfg
+            focus = self.app.focus() if cfg.get("block_apps") else {"active": False}
+            if focus["active"]:
+                try:
+                    self.enforce(focus)
+                except Exception:
+                    log.exception("app blocker")
+                self._first_sweep = False
+                self.wake.wait(self.TICK)
+            else:
+                self.reopen()  # focus ended (pause, break, stop, finish): put apps back
+                self._toasted.clear()
+                self._denied.clear()
+                self._first_sweep = True
+                self._preexisting.clear()
+                self.wake.wait()  # idle until focus starts or settings change
+            self.wake.clear()
+
+    def reopen(self) -> None:
+        """Bring back every app we closed or hid during the focus that just ended."""
+        for key, target in list(self._closed.items()):
+            if relaunch_app(target):
+                log.info("reopened %s after focus", target)
+        self._closed.clear()
+
+    def enforce(self, focus: dict) -> None:
+        wanted: dict[str, dict] = {}
+        for entry in self.app.cfg.get("blocked_apps") or []:
+            if entry.get("on"):
+                for exe in entry["exes"]:
+                    wanted[app_key(exe)] = entry
+        if not wanted:
+            return
+        alive: set[int] = set()
+        alive_keys: set[str] = set()  # blocked apps seen running this tick
+        to_hide: dict[int, dict] = {}
+        for pid, image in list_processes():
+            alive.add(pid)
+            key = app_key(image)
+            entry = wanted.get(key)
+            if entry is None or pid in self._denied:
+                continue
+            alive_keys.add(key)
+            if self._session is not None and process_session(pid) != self._session:
+                continue  # another user's process: not ours to touch
+            target = relaunch_target(pid)  # how to start it again, grabbed before it's gone
+            if entry["action"] == "hide":
+                if target:
+                    self._closed.setdefault(key, target)  # bring its window back later
+                to_hide[pid] = entry
+                continue
+            error = terminate_process(pid)
+            if error:
+                self._denied.add(pid)
+                log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
+                continue
+            log.info("closed %s (pid %d) during focus", image, pid)
+            if target:
+                self._closed.setdefault(key, target)  # reopen it when focus ends
+            if not self._first_sweep and key not in self._preexisting:
+                # The app wasn't open when the pomodoro started, so the user
+                # just tried to open it: that's when the "blocked" popup fits.
+                self._toast(entry, "blocked", focus)
+        if self._first_sweep:
+            self._preexisting = alive_keys  # whatever was open at the start stays quiet
+        else:
+            self._preexisting &= alive_keys  # once an app is fully gone, a reopen may pop up
+        self._denied &= alive  # forget pids that are gone, so a reused pid is tried
+        if to_hide:
+            # No toast: a hidden app is still running, and saying so each
+            # time its window comes back is just noise. reopen() will bring
+            # its window back when focus ends (relaunch just activates it).
+            for pid in close_windows(set(to_hide)):
+                log.info("hid %s (pid %d) to the tray during focus", to_hide[pid]["name"], pid)
+
+    def _toast(self, entry: dict, what: str, focus: dict) -> None:
+        now = time.monotonic()
+        if now - self._toasted.get(entry["id"], -self.TOAST_EVERY) < self.TOAST_EVERY:
+            return
+        self._toasted[entry["id"]] = now
+        until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
+        self.app.notify("Focus", f"{entry['name']} is {what} until {until}")
+
+
+class FocusServer:
+    """
+    A tiny localhost HTTP server the Chrome extension (issue #2) polls to learn
+    whether a work phase is running, so it can block distracting sites.
+
+    A web page can't read it: the browser only hands a cross-origin response
+    back to script when the server allows that page's Origin, and we only ever
+    allow our pinned `chrome-extension://<EXTENSION_ID>`. Our own extension has
+    a host permission for this URL, so Chrome may send its request with no
+    `Origin` header at all; those are allowed, and any request that *does*
+    carry a different (web) Origin is refused with 403.
+
+    It serves one route, GET /focus, returning App.site_focus(). OPTIONS is
+    answered for the CORS preflight, including Private Network Access
+    (`Access-Control-Allow-Private-Network`), which Chrome requires before it
+    will let an extension reach `127.0.0.1`. It fails quietly if the port is
+    taken (another copy, say), leaving sites unblocked.
+    """
+
+    def __init__(self, app: App):
+        self.app = app
+        self.httpd: http.server.ThreadingHTTPServer | None = None
+
+    def start(self) -> None:
+        app = self.app
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):  # don't spam the log with one line per poll
+                pass
+
+            def _cors(self, code: int) -> bool:
+                """Send status + CORS headers, or 403 if a web page is asking."""
+                origin = self.headers.get("Origin")
+                # Our extension's host-permitted request may carry no Origin;
+                # a web page always sends its own, which is never ours.
+                if origin not in (None, "", EXTENSION_ORIGIN):
+                    self.send_response(403)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return False
+                self.send_response(code)
+                self.send_header("Access-Control-Allow-Origin", EXTENSION_ORIGIN)
+                # Let Chrome's Private Network Access preflight through to localhost.
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+                return True
+
+            def do_OPTIONS(self):
+                if not self._cors(204):
+                    return
+                self.send_header("Access-Control-Allow-Methods", "GET")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def do_GET(self):
+                if self.path.split("?")[0] != "/focus":
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                if not self._cors(200):
+                    return
+                app.extension_last = now_ms()
+                body = json.dumps(app.site_focus()).encode("utf-8")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        try:
+            self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", FOCUS_PORT), Handler)
+        except OSError as err:
+            log.warning("focus server couldn't bind 127.0.0.1:%d: %s", FOCUS_PORT, err)
+            return
+        self.httpd.daemon_threads = True
+        threading.Thread(target=self.httpd.serve_forever, daemon=True, name="focus-server").start()
+        log.info("focus server on 127.0.0.1:%d for extension %s", FOCUS_PORT, EXTENSION_ID)
+
+    def stop(self) -> None:
+        if self.httpd:
+            try:
+                self.httpd.shutdown()
+            except Exception:
+                pass
+
+
 # -------------------------------------------------------------- startup ---
 
 
@@ -1771,6 +2567,7 @@ def main() -> None:
             webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/#download-section")
         return
     adopt_old_files()
+    sync_extension()
     app = App()
     app.instance_socket = instance
     app.run()

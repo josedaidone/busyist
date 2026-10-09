@@ -116,9 +116,16 @@
     <h3>Settings</h3>
     <button class="icon-btn" id="closeSettings" title="Close"><svg><use href="#i-x"/></svg></button>
   </div>
+  <div class="stabs" id="settingsTabs" role="tablist" aria-label="Settings sections">
+    <button type="button" class="stab" role="tab" data-tab="todoist" aria-controls="p_todoist">Todoist</button>
+    <button type="button" class="stab" role="tab" data-tab="timer" aria-controls="p_timer">Timer</button>
+    <button type="button" class="stab" role="tab" data-tab="apps" aria-controls="p_apps">Apps</button>
+    <button type="button" class="stab" role="tab" data-tab="sites" aria-controls="p_sites">Websites<i class="dot warn hidden" id="sitesDot"></i></button>
+    <button type="button" class="stab" role="tab" data-tab="general" aria-controls="p_general">General</button>
+    <button type="button" class="stab" role="tab" data-tab="about" aria-controls="p_about">About<i class="dot good hidden" id="aboutDot"></i></button>
+  </div>
   <form class="drawer-body" id="settingsForm" autocomplete="off">
-    <div class="section">
-      <h4>Todoist</h4>
+    <div class="section" role="tabpanel" id="p_todoist" data-panel="todoist">
       <div class="field">
         <label for="s_todoist_token">API token</label>
         <div class="input-row">
@@ -137,44 +144,92 @@
       </div>
     </div>
 
-    <div class="section">
-      <h4>BUSY Bar</h4>
+    <div class="section" role="tabpanel" id="p_timer" data-panel="timer">
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="use_busybar" id="s_use_busybar"><span class="knob"></span>Run the timer on a BUSY Bar</label>
       </div>
       <div class="help hidden" id="noBarHelp">Off: the timer runs in Busyist on this PC, with the mini timer and tray icon as the countdown.</div>
       <div id="barFields">
-      <div class="two">
-        <div class="field">
-          <label for="s_busybar_ip">Wi-Fi address</label>
-          <input class="input" id="s_busybar_ip" name="busybar_ip" placeholder="192.168.1.50" spellcheck="false">
+        <div class="two">
+          <div class="field">
+            <label for="s_busybar_ip">Wi-Fi address</label>
+            <input class="input" id="s_busybar_ip" name="busybar_ip" placeholder="192.168.1.50" spellcheck="false">
+          </div>
+          <div class="field">
+            <label for="s_busybar_pin">HTTP API PIN</label>
+            <input class="input" id="s_busybar_pin" name="busybar_pin" type="password">
+          </div>
         </div>
         <div class="field">
-          <label for="s_busybar_pin">HTTP API PIN</label>
-          <input class="input" id="s_busybar_pin" name="busybar_pin" type="password">
+          <label for="s_poll_seconds">Check the bar every</label>
+          <div class="input-row inline">
+            <input class="input narrow" id="s_poll_seconds" name="poll_seconds" type="number" min="2" max="60">
+            <span class="help">seconds</span>
+          </div>
         </div>
-      </div>
-      <div class="toggles">
-        <label class="switch"><input type="checkbox" name="usb_fallback"><span class="knob"></span>Also try USB (10.0.4.20)</label>
-      </div>
-      <button type="button" class="btn" id="testBar">Test connection</button>
-      <div class="test-result" id="testResult"></div>
+        <div class="toggles">
+          <label class="switch"><input type="checkbox" name="usb_fallback"><span class="knob"></span>Also try USB (10.0.4.20)</label>
+        </div>
+        <button type="button" class="btn" id="testBar">Test connection</button>
+        <div class="test-result" id="testResult"></div>
       </div>
     </div>
 
-    <div class="section">
-      <h4>App</h4>
-      <div class="two">
-        <div class="field">
-          <label for="s_hotkey">Global hotkey</label>
-          <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
-          <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
+    <div class="section" role="tabpanel" id="p_apps" data-panel="apps">
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="block_apps" id="s_block_apps"><span class="knob"></span>Keep these apps away during focus</label>
+      </div>
+      <div id="blockedAppsFields">
+        <div class="app-list" id="blockedApps"></div>
+        <div class="input-row">
+          <input class="input" id="addBlockedApp" spellcheck="false" placeholder="Add another program, e.g. Teams.exe">
+          <button type="button" class="btn" id="addBlockedAppBtn">Add</button>
         </div>
-        <div class="field" id="pollField">
-          <label for="s_poll_seconds">Check the bar every</label>
-          <input class="input" id="s_poll_seconds" name="poll_seconds" type="number" min="2" max="60">
-          <div class="help">seconds</div>
+        <div class="help"><b>Close</b> quits the app. <b>Hide to tray</b> closes its window like its X does, so it keeps running and you stay online. Only during work phases; breaks, pauses and the end of a session leave apps alone.</div>
+      </div>
+    </div>
+
+    <div class="section" role="tabpanel" id="p_sites" data-panel="sites">
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="block_sites" id="s_block_sites"><span class="knob"></span>Block these websites during focus</label>
+      </div>
+      <div id="blockedSitesFields">
+        <div class="app-list" id="blockedSites"></div>
+        <div class="input-row">
+          <input class="input" id="addBlockedSite" spellcheck="false" placeholder="Add a website, e.g. youtube.com">
+          <button type="button" class="btn" id="addBlockedSiteBtn">Add</button>
         </div>
+        <div class="help">A blocked site shows a "back to work" page during work phases; subdomains are included (<code>youtube.com</code> also blocks <code>m.youtube.com</code>).</div>
+      </div>
+      <div class="extension-box" id="extBox">
+        <div class="extension-status" id="extStatus">Browser extension: not connected</div>
+        <div id="extSetup">
+          <div class="help">Blocking websites needs the Busyist extension in your browser. It's a one-time setup:</div>
+          <ol class="steps">
+            <li>
+              <button type="button" class="btn primary" id="installExtension">Open <span class="browser-name">Chrome</span>'s extensions page</button>
+              <div class="help">This also copies the extension's folder path and shows the folder in Explorer.</div>
+            </li>
+            <li>Turn on <b>Developer mode</b> (the switch at the top right of that page).</li>
+            <li>Drag the selected <code>chrome-extension</code> folder from Explorer onto the page.<br>
+              Or click <b>Load unpacked</b>, paste the path (<kbd>Ctrl</kbd>+<kbd>V</kbd>) into the folder picker's address bar, press <kbd>Enter</kbd>, then <b>Select Folder</b>.</li>
+          </ol>
+          <div class="help">The status above turns green within a few seconds of loading the extension.</div>
+        </div>
+        <div class="help hidden" id="extDone">All set. Keep the extension turned on and Busyist tells it when to block.</div>
+        <div class="path-row">
+          <code id="extDir">extension</code>
+          <button type="button" class="btn sm" id="copyExtensionPath">Copy path</button>
+          <button type="button" class="btn sm ghost" id="openExtensionFolder">Show folder</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" role="tabpanel" id="p_general" data-panel="general">
+      <div class="field">
+        <label for="s_hotkey">Global hotkey</label>
+        <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
+        <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
       </div>
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="notifications"><span class="knob"></span>Notify at breaks and when a session ends</label>
@@ -184,8 +239,7 @@
       </div>
     </div>
 
-    <div class="section about">
-      <h4>About</h4>
+    <div class="section about" role="tabpanel" id="p_about" data-panel="about">
       <p class="help"><b id="aboutVersion">Busyist</b> · unofficial; not affiliated with BUSY or Todoist.</p>
       <div class="input-row">
         <button type="button" class="btn primary hidden" id="installUpdate"></button>
