@@ -35,8 +35,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
@@ -49,7 +51,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -72,6 +74,7 @@ CONFIG_PATH = DATA_DIR / "config.json"
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
+USAGE_PATH = DATA_DIR / "usage.json"  # time spent per limited website (site limits)
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"
 UPDATES_DIR = DATA_DIR / "updates"  # downloaded installers
@@ -96,6 +99,13 @@ DEFAULT_BLOCKED_SITES = [
     "facebook.com", "web.whatsapp.com", "reddit.com", "linkedin.com", "tiktok.com",
 ]
 MAX_BLOCKED_SITES = 50
+# Site limits: per-website time budgets and blocked hours, enforced by the
+# extension whether or not a pomodoro is running.
+MAX_SITE_LIMITS = 30
+MAX_LIMIT_SITES = 20  # websites in one limit
+LIMIT_UNITS = {"minute": 1, "hour": 60, "day": 1440, "week": 10080}  # in minutes
+SITE_ANCHOR = date(2024, 1, 1)  # a Monday: day/week periods count from here
+PASS_SECONDS = 120  # what "allow 2 more minutes" on the block page grants
 SITE_MODES = ("block", "allow")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MINI_W, MINI_H = 340, 108
@@ -138,6 +148,10 @@ DEFAULTS = {
     "site_mode": "block",
     "blocked_sites": list(DEFAULT_BLOCKED_SITES),
     "allowed_sites": [],
+    # Per-website limits that apply all day, pomodoro or not: a time budget
+    # per period and/or hours when the site is blocked. See clean_site_limit.
+    "site_limits_on": False,
+    "site_limits": [],
 }
 
 MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
@@ -674,6 +688,8 @@ class App:
         self.cfg["allowed_sites"] = _sanitize_sites(self.cfg.get("allowed_sites"))
         if self.cfg.get("site_mode") not in SITE_MODES:
             self.cfg["site_mode"] = "block"
+        self.cfg["site_limits"] = _sanitize_site_limits(self.cfg.get("site_limits"))
+        self.usage = SiteUsage(USAGE_PATH)
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -718,6 +734,8 @@ class App:
         self.focus_hooks.append(self.blocker.poke)
         # Tells the Chrome extension whether to block sites (issue #2).
         self.extension_last = 0  # now_ms() of the last request the extension made
+        self.extension_version = ""  # what it said it is; "" for ones from before it said
+        self._ext_warned = ""  # the version we last told the user to reload for
         self.site_server = FocusServer(self)
 
     # -------------------------------------------------------------- filters
@@ -868,7 +886,8 @@ class App:
                 "needs_setup": bool(self.cfg.get("use_todoist")) and not self.cfg.get("todoist_token"),
                 "todoist": self.todoist_on,
                 "use_todoist": bool(self.cfg.get("use_todoist")),
-                "extension_connected": bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000,
+                "extension_connected": self.extension_connected(),
+                "extension_outdated": self.extension_outdated(),
                 "update": self.update_view(),
             }
 
@@ -888,11 +907,13 @@ class App:
         off = {"active": False, "task": "", "ends_at_ms": 0}
         with self.lock:
             session, snap = self.session, self.snap
-            if not session or snap is None:
+            if snap is None:
                 return off
+            if session is None and self.bar.is_local:
+                return off  # no bar: only our own sessions exist
             if not self.bar_ok and self.bar_fails >= 3:
                 return off  # fail open on a lost bar
-            if snap.snapshot_timestamp_ms < session["stamp"]:
+            if session and snap.snapshot_timestamp_ms < session["stamp"]:
                 return off  # a reading from before our own start
             state = timer_state(snap)
             if (state.mode != "interval" or state.is_finished
@@ -900,7 +921,9 @@ class App:
                 return off
             return {
                 "active": True,
-                "task": session["task"]["content"],
+                # No session here: the timer was started on the bar itself
+                # (or from another PC), but this PC still blocks.
+                "task": session["task"]["content"] if session else "",
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
             }
 
@@ -916,6 +939,7 @@ class App:
         those: only the plain domains of a blocklist, which they understand.
         """
         on = bool(self.cfg.get("block_sites"))
+        limits_on = bool(self.cfg.get("site_limits_on"))
         mode = self.cfg.get("site_mode", "block")
         focus = self.focus()
         active = on and focus["active"]
@@ -927,7 +951,62 @@ class App:
             "mode": mode,
             "patterns": patterns,
             "sites": [p for p in patterns if is_plain_domain(p)] if mode == "block" else [],
+            "limits_on": limits_on,
+            "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
+            "pass_minutes": PASS_SECONDS // 60,
         }
+
+    def extension_connected(self) -> bool:
+        return bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000
+
+    def extension_outdated(self) -> bool:
+        """The extension in the browser is older than the one that ships with this Busyist."""
+        return self.extension_connected() and (
+            version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
+
+    def note_extension(self, version) -> None:
+        """
+        The extension just called, saying which version it is. Chrome doesn't
+        reload an unpacked extension when its files change, so after an update
+        the old one keeps running until the user reloads it: say so, once.
+        """
+        self.extension_last = now_ms()
+        self.extension_version = str(version or "")[:20]
+        if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
+            self._ext_warned = EXTENSION_VERSION
+            self.notify("Reload the Busyist extension",
+                        "Busyist was updated. Open your browser's extensions page and click Reload on Busyist Focus.")
+
+    def site_limits_status(self, enabled_only: bool = False) -> list[dict]:
+        """Where every site-limit rule stands right now (see site_limit_status)."""
+        now = datetime.now()
+        rules = self.cfg.get("site_limits") or []
+        return [site_limit_status(r, self.usage, now) for r in rules
+                if r.get("enabled", True) or not enabled_only]
+
+    def record_usage(self, usage) -> None:
+        """Add the time the extension measured: {rule id: {epoch minute: seconds}}."""
+        if not isinstance(usage, dict):
+            return
+        known = {r["id"] for r in self.cfg.get("site_limits") or []}
+        minute_now = now_ms() // 60000
+        for rid, per_minute in usage.items():
+            if rid not in known or not isinstance(per_minute, dict):
+                continue
+            for minute, seconds in list(per_minute.items())[:5000]:
+                try:
+                    minute, seconds = int(minute), float(seconds)
+                except (TypeError, ValueError):
+                    continue
+                if minute_now - 3 * 1440 <= minute <= minute_now + 1 and 0 < seconds:
+                    self.usage.add(rid, minute, seconds)
+        self.usage.flush()
+
+    def grant_pass(self, rid) -> None:
+        """The block page's "allow 2 more minutes": lift one rule for a short while."""
+        if rid not in {r["id"] for r in self.cfg.get("site_limits") or []}:
+            raise AppError("That limit no longer exists.")
+        self.usage.grant(rid, now_ms() + PASS_SECONDS * 1000)
 
     def notify_focus(self) -> None:
         """Recompute focus and, if it flipped, run the hooks off App.lock."""
@@ -1055,9 +1134,9 @@ class App:
             self.notify("Session complete", f"{done} pomodoro{'s' * (done != 1)} on {task['content']}")
             if self.cfg["open_on_finish"]:
                 self.show_main()
-        elif reason == "stopped":
-            self.show_main()
         self.hide_mini()
+        if reason == "stopped":
+            self.show_main()  # after hiding the mini timer, which may hold the focus
 
     # ------------------------------------------------------------ updates
 
@@ -1296,6 +1375,8 @@ class App:
             clean["blocked_sites"] = clean_blocked_sites(changes["blocked_sites"])
         if "allowed_sites" in changes:
             clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
+        if "site_limits" in changes:
+            clean["site_limits"] = clean_site_limits(changes["site_limits"])
         if "theme" in clean and clean["theme"] not in ("auto", "light", "dark"):
             raise AppError("Pick auto, light or dark for the theme.")
         if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
@@ -1344,7 +1425,16 @@ class App:
         if not self.main:
             return
         show_window(self.main)
+        wake_window(self.main)
         self._js(self.main, "App.onShown(%s)" % json.dumps(focus_search))
+        # The page may still be throttled; nudge it again shortly after.
+        for delay in (0.15, 0.5, 1.2):
+            threading.Timer(delay, self._rewake).start()
+
+    def _rewake(self) -> None:
+        if self.main and not self.quitting and window_shown(self.main):
+            wake_window(self.main)
+            self._js(self.main, "window.poll && poll()")
 
     def cycle_windows(self) -> None:
         """
@@ -1403,6 +1493,7 @@ class App:
         self.update_wake.set()
         self.blocker.poke()
         self.site_server.stop()
+        self.usage.flush(force=True)
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:
@@ -1616,12 +1707,20 @@ class Api:
     def get_settings(self):
         cfg = self._app.cfg
         # extension_connected: the Chrome extension called in the last ~2 min.
-        connected = bool(self._app.extension_last) and (now_ms() - self._app.extension_last) < 120_000
+        connected = self._app.extension_connected()
         return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR),
                     can_auto_update=self._app.can_auto_update,
                     extension_id=EXTENSION_ID, extension_connected=connected,
+                    extension_outdated=self._app.extension_outdated(),
+                    extension_version=self._app.extension_version,
+                    extension_latest=EXTENSION_VERSION,
                     extension_dir=str(EXTENSION_DIR),
                     extension_browser=(find_browser() or (None,))[0])
+
+    def site_usage(self):
+        """Every site-limit rule with its usage, for the Websites tab."""
+        return self._do(lambda: {"on": bool(self._app.cfg.get("site_limits_on")),
+                                 "rules": self._app.site_limits_status()})
 
     def check_update(self):
         return self._do(self._app.check_for_update)
@@ -1711,6 +1810,23 @@ def clear_webview_cache() -> None:
     profile = WEBVIEW_DIR / "EBWebView" / "Default"
     for name in ("Cache", "Code Cache"):
         shutil.rmtree(profile / name, ignore_errors=True)
+
+
+def version_tuple(text) -> tuple[int, ...]:
+    """'1.2.0' -> (1, 2, 0); () if it isn't one, which sorts before every version."""
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except ValueError:
+        return ()
+
+
+def bundled_extension_version() -> str:
+    """The version in the manifest of the extension that ships with this Busyist."""
+    manifest = read_json(EXTENSION_SRC / "manifest.json", {})
+    return str(manifest.get("version") or "") if isinstance(manifest, dict) else ""
+
+
+EXTENSION_VERSION = bundled_extension_version()
 
 
 def sync_extension() -> None:
@@ -1863,7 +1979,58 @@ def show_window(window: webview.Window) -> None:
         return
     user32 = ctypes.windll.user32
     user32.ShowWindow(hwnd, 9 if user32.IsIconic(hwnd) else 5)  # SW_RESTORE / SW_SHOW
+    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
     user32.SetForegroundWindow(hwnd)
+    if window_focused(window):
+        return
+    # Windows refuses SetForegroundWindow from a process that isn't the
+    # foreground one (e.g. right after the mini timer, which we may just have
+    # hidden). Attach to the foreground thread's input queue to get around it.
+    kernel32 = ctypes.windll.kernel32
+    fg = user32.GetForegroundWindow()
+    fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    this_thread = kernel32.GetCurrentThreadId()
+    attached = bool(fg_thread and fg_thread != this_thread
+                    and user32.AttachThreadInput(this_thread, fg_thread, True))
+    try:
+        user32.keybd_event(0x12, 0, 0, 0)  # a synthetic Alt press lifts the foreground lock
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0003 | 0x0040)  # TOPMOST, no move/size, show
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0003 | 0x0040)  # back to NOTOPMOST
+    finally:
+        if attached:
+            user32.AttachThreadInput(this_thread, fg_thread, False)
+
+
+def wake_window(window: webview.Window) -> None:
+    """
+    Nudge the WebView2 inside a window that was just un-hidden. After a stay
+    in the tray its renderer can stay throttled (timers and repaints stalled)
+    until the first input event, so send it a harmless mouse move and force a
+    repaint.
+    """
+    hwnd = _hwnd(window)
+    if not hwnd:
+        return
+    user32 = ctypes.windll.user32
+    children = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(
+        lambda h, _l: children.append(h) or True)
+    user32.EnumChildWindows(hwnd, proc, 0)
+    for target in children or [hwnd]:
+        user32.PostMessageW(target, 0x0200, 0, 0x00010001)  # WM_MOUSEMOVE
+    if not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
+        # A one-pixel resize and back makes WebView2 update its bounds and
+        # visibility, which restarts rendering after a stay on the taskbar.
+        rect = ctypes.wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            flags = 0x0002 | 0x0004 | 0x0010  # NOMOVE | NOZORDER | NOACTIVATE
+            user32.SetWindowPos(hwnd, None, 0, 0, w + 1, h, flags)
+            user32.SetWindowPos(hwnd, None, 0, 0, w, h, flags)
+    user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400)  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
 
 
 def mini_position(width: int, height: int) -> tuple[int, int]:
@@ -2291,6 +2458,307 @@ def _sanitize_sites(values) -> list[str]:
     return out
 
 
+# ------------------------------------------------------------ site limits ---
+#
+# A rule is {"id", "patterns", "enabled", "budgets": [...], "windows": [...]}:
+# one set of limits for one or more websites, which share the time (30 minutes
+# a day on instagram.com and facebook.com together).
+# A budget {"minutes": 5, "every": 1, "unit": "hour", "days": [0..6]} allows 5
+# minutes per period, on those days only (Monday is 0; all days if omitted); periods are clock-aligned (the hour, the day, ...) in local time:
+# minute/hour periods restart at midnight, day/week periods count from
+# SITE_ANCHOR. A window {"days": [0..6], "from": "08:00", "to": "17:00"} blocks
+# the site for those hours (Monday is 0; "to" earlier than "from" runs past
+# midnight, and 00:00 as "to" means the end of the day). A site is blocked when
+# any budget is used up or any window is open. The extension measures the time
+# and enforces; Busyist keeps the totals and says where each rule stands.
+
+
+def _hhmm(text) -> int:
+    """'08:30' -> minutes since midnight; ValueError if it isn't a time."""
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", str(text).strip())
+    if not match or int(match[1]) > 23 or int(match[2]) > 59:
+        raise ValueError(text)
+    return int(match[1]) * 60 + int(match[2])
+
+
+def clean_site_limit(raw) -> dict:
+    """Check and tidy one site-limit rule from Settings; AppError if it's wrong."""
+    if not isinstance(raw, dict):
+        raise AppError("A website limit didn't come through; try again.")
+    sites = raw.get("patterns")
+    if sites is None:  # rules saved before a rule could cover several sites
+        sites = [raw.get("pattern", "")]
+    if not isinstance(sites, list):
+        raise AppError("The websites of a limit didn't come through; try again.")
+    patterns: list[str] = []
+    for site in sites:
+        if str(site).strip():
+            pattern = clean_site_pattern(site)
+            if pattern not in patterns:
+                patterns.append(pattern)
+    if not patterns:
+        raise AppError("Add at least one website to the limit.")
+    if len(patterns) > MAX_LIMIT_SITES:
+        raise AppError(f"Keep a limit to {MAX_LIMIT_SITES} websites or fewer.")
+    pattern = ", ".join(patterns)  # how this rule is named in messages
+    rid = str(raw.get("id") or "")
+    if not re.fullmatch(r"[a-f0-9]{6,16}", rid):
+        rid = uuid.uuid4().hex[:8]
+    budgets, windows = [], []
+    for b in raw.get("budgets") or []:
+        try:
+            minutes, every, unit = int(b["minutes"]), int(b["every"]), str(b["unit"])
+        except (KeyError, TypeError, ValueError):
+            raise AppError(f"{pattern}: a time limit is incomplete.")
+        if unit not in LIMIT_UNITS or every < 1:
+            raise AppError(f"{pattern}: pick minutes, hours, days or weeks for the period.")
+        period = every * LIMIT_UNITS[unit]
+        if unit in ("minute", "hour") and period > 1440:
+            raise AppError(f"{pattern}: a period under a day can't be longer than 24 hours; use days.")
+        if unit in ("day", "week") and every > 365:
+            raise AppError(f"{pattern}: that period is too long.")
+        if not 1 <= minutes <= period:
+            raise AppError(f"{pattern}: {minutes} minutes doesn't fit in a period of {period} minutes.")
+        try:
+            days = sorted({int(d) for d in b.get("days", range(7))})
+        except (TypeError, ValueError):
+            days = []
+        if not days or days[0] < 0 or days[-1] > 6:
+            raise AppError(f"{pattern}: pick at least one day for each time limit.")
+        item = {"minutes": minutes, "every": every, "unit": unit, "days": days}
+        if item not in budgets:
+            budgets.append(item)
+    for w in raw.get("windows") or []:
+        try:
+            days = sorted({int(d) for d in w["days"]})
+            start, end = _hhmm(w["from"]), _hhmm(w["to"])
+        except (KeyError, TypeError, ValueError):
+            raise AppError(f"{pattern}: a blocked-hours entry needs days and times like 08:00.")
+        if not days or days[0] < 0 or days[-1] > 6:
+            raise AppError(f"{pattern}: pick at least one day for the blocked hours.")
+        if start == end and start != 0:
+            raise AppError(f"{pattern}: blocked hours can't start and end at the same time.")
+        item = {"days": days, "from": f"{start // 60:02d}:{start % 60:02d}", "to": f"{end // 60:02d}:{end % 60:02d}"}
+        if item not in windows:
+            windows.append(item)
+    if not budgets and not windows:
+        raise AppError(f"{pattern}: add a time limit or blocked hours.")
+    if len(budgets) > 5 or len(windows) > 5:
+        raise AppError(f"{pattern}: keep it to 5 time limits and 5 blocked-hours entries.")
+    return {"id": rid, "patterns": patterns, "enabled": bool(raw.get("enabled", True)),
+            "budgets": budgets, "windows": windows}
+
+
+def clean_site_limits(values) -> list[dict]:
+    if not isinstance(values, list):
+        raise AppError("The website limits didn't come through; try again.")
+    if len(values) > MAX_SITE_LIMITS:
+        raise AppError(f"Keep the website limits under {MAX_SITE_LIMITS}.")
+    out = [clean_site_limit(v) for v in values]
+    seen: set[str] = set()
+    for r in out:  # a copied rule keeps its id: give the later ones new ones
+        if r["id"] in seen:
+            r["id"] = uuid.uuid4().hex[:8]
+        seen.add(r["id"])
+    return out
+
+
+def _sanitize_site_limits(values) -> list[dict]:
+    """Tidy saved rules without raising, for load time: bad ones are dropped."""
+    out = []
+    for item in values if isinstance(values, list) else []:
+        try:
+            out.append(clean_site_limit(item))
+        except AppError:
+            continue
+    return out[:MAX_SITE_LIMITS]
+
+
+def period_label(every: int, unit: str) -> str:
+    return unit if every == 1 else f"{every} {unit}s"
+
+
+def budget_bounds(now: datetime, every: int, unit: str) -> tuple[datetime, datetime]:
+    """The period of a budget that `now` falls in, as local start and end."""
+    if unit in ("minute", "hour"):
+        size = every * LIMIT_UNITS[unit]
+        midnight = datetime.combine(now.date(), dtime.min)
+        since = int((now - midnight).total_seconds() // 60)
+        start = midnight + timedelta(minutes=since // size * size)
+        return start, min(start + timedelta(minutes=size), midnight + timedelta(days=1))
+    days = every * (1 if unit == "day" else 7)
+    first = SITE_ANCHOR + timedelta(days=(now.date() - SITE_ANCHOR).days // days * days)
+    start = datetime.combine(first, dtime.min)
+    return start, start + timedelta(days=days)
+
+
+def window_spans(windows: list[dict], now: datetime, hours: int = 48) -> list[tuple[datetime, datetime]]:
+    """Blocked-hours spans that haven't ended and start within `hours`, overlaps merged."""
+    spans = []
+    for back in range(-1, hours // 24 + 2):
+        day = now.date() + timedelta(days=back)
+        midnight = datetime.combine(day, dtime.min)
+        for w in windows:
+            if day.weekday() not in w["days"]:
+                continue
+            start_min, end_min = _hhmm(w["from"]), _hhmm(w["to"])
+            if end_min == 0:
+                end_min = 1440
+            elif end_min < start_min:
+                end_min += 1440
+            start = midnight + timedelta(minutes=start_min)
+            end = midnight + timedelta(minutes=end_min)
+            if end > now and start < now + timedelta(hours=hours):
+                spans.append((start, end))
+    spans.sort()
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in spans:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _ms(moment: datetime) -> int:
+    return int(moment.timestamp() * 1000)
+
+
+def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
+    """
+    Where one rule stands at `now`. The extension needs enough to keep
+    enforcing for a while without Busyist: `remaining_s` of the budget that
+    matters (the exhausted one that frees up last, else the tightest) until
+    `limit_end_ms`, and the blocked-hours spans `windows_ms` of the next 48 h.
+    `blocked`, `reason` and `until_ms` are the same decision, for the UI.
+    """
+    at = _ms(now)
+    budgets = []
+    for b in rule["budgets"]:
+        days = b.get("days", list(range(7)))
+        start, end = budget_bounds(now, b["every"], b["unit"])
+        # A budget only applies on its days: it stops at the first midnight of a day it doesn't.
+        for ahead in range(1, 8):
+            day = now.date() + timedelta(days=ahead)
+            if day.weekday() not in days:
+                end = min(end, datetime.combine(day, dtime.min))
+                break
+        used = usage.used(rule["id"], _ms(start), at)
+        budgets.append({
+            "label": f"{b['minutes']} min per {period_label(b['every'], b['unit'])}",
+            "used_s": round(used), "budget_s": b["minutes"] * 60,
+            "remaining_s": round(b["minutes"] * 60 - used), "end_ms": _ms(end),
+            "active": now.weekday() in days,
+        })
+    spans = [[_ms(s), _ms(e)] for s, e in window_spans(rule["windows"], now)]
+    open_until = next((e for s, e in spans if s <= at < e), 0)
+    applying = [b for b in budgets if b["active"]]
+    spent = [b for b in applying if b["remaining_s"] <= 0]
+    if spent:
+        key = max(spent, key=lambda b: b["end_ms"])
+    else:
+        key = min(applying, key=lambda b: b["remaining_s"]) if applying else None
+    pass_until = usage.pass_until(rule["id"])
+    reason = "window" if open_until else ("budget" if spent else "")
+    return {
+        "id": rule["id"], "patterns": rule["patterns"], "pattern": ", ".join(rule["patterns"]),
+        "enabled": rule.get("enabled", True),
+        "blocked": bool(reason) and pass_until <= at, "reason": reason,
+        "until_ms": max(open_until, key["end_ms"] if spent else 0),
+        "pass_until_ms": pass_until,
+        "remaining_s": key["remaining_s"] if key else None,
+        "budget_s": key["budget_s"] if key else None,
+        "used_s": key["used_s"] if key else None,
+        "limit_end_ms": key["end_ms"] if key else 0,
+        "limit_label": key["label"] if key else "",
+        "budgets": budgets, "windows_ms": spans,
+    }
+
+
+class SiteUsage:
+    """
+    Seconds spent on each limited website, kept in usage.json. The last two
+    days are per minute (budgets can restart at any minute); older time is
+    rolled up per day, enough for day and week budgets. Also holds the
+    short-lived passes from "allow 2 more minutes".
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.minutes: dict[str, dict[int, float]] = {}
+        self.days: dict[str, dict[str, float]] = {}
+        self.passes: dict[str, int] = {}
+        self.dirty = False
+        self._saved = time.time()
+        try:
+            data = read_json(path, {})
+            for rid, per in (data.get("minutes") or {}).items():
+                self.minutes[rid] = {int(m): float(s) for m, s in per.items()}
+            for rid, per in (data.get("days") or {}).items():
+                self.days[rid] = {str(d): float(s) for d, s in per.items()}
+            self.passes = {rid: int(t) for rid, t in (data.get("passes") or {}).items()}
+        except (AttributeError, TypeError, ValueError):
+            log.warning("usage.json was unreadable; starting the totals over")
+            self.minutes, self.days, self.passes = {}, {}, {}
+
+    def add(self, rid: str, minute: int, seconds: float) -> None:
+        with self.lock:
+            slot = self.minutes.setdefault(rid, {})
+            slot[minute] = min(60.0, slot.get(minute, 0.0) + seconds)
+            self.dirty = True
+
+    def used(self, rid: str, start_ms: int, end_ms: int) -> float:
+        """Seconds on this rule from start_ms up to end_ms."""
+        first, last = start_ms // 60000, end_ms // 60000
+        with self.lock:
+            total = sum(s for m, s in self.minutes.get(rid, {}).items() if first <= m <= last)
+            for day, seconds in self.days.get(rid, {}).items():
+                if start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms:
+                    total += seconds
+        return total
+
+    def grant(self, rid: str, until_ms: int) -> None:
+        with self.lock:
+            self.passes[rid] = until_ms
+            self.dirty = True
+        self.flush(force=True)
+
+    def pass_until(self, rid: str) -> int:
+        with self.lock:
+            return self.passes.get(rid, 0)
+
+    def _roll_up(self) -> None:
+        today = date.today()
+        keep_from = _ms(datetime.combine(today - timedelta(days=1), dtime.min)) // 60000
+        for rid, per in self.minutes.items():
+            for minute in [m for m in per if m < keep_from]:
+                day = datetime.fromtimestamp(minute * 60).strftime("%Y-%m-%d")
+                bucket = self.days.setdefault(rid, {})
+                bucket[day] = bucket.get(day, 0.0) + per.pop(minute)
+        oldest = (today - timedelta(days=70)).strftime("%Y-%m-%d")
+        for per in self.days.values():
+            for day in [d for d in per if d < oldest]:
+                del per[day]
+        now = now_ms()
+        self.passes = {rid: t for rid, t in self.passes.items() if t > now}
+
+    def flush(self, force: bool = False) -> None:
+        """Write to disk: at most every 30 s, or right now with force."""
+        with self.lock:
+            if not self.dirty or (not force and time.time() - self._saved < 30):
+                return
+            self._roll_up()
+            data = {"minutes": {r: {str(m): round(s, 1) for m, s in per.items()} for r, per in self.minutes.items()},
+                    "days": self.days, "passes": self.passes}
+            self.dirty = False
+            self._saved = time.time()
+        try:
+            write_json(self.path, data)
+        except OSError:
+            log.warning("couldn't write usage.json", exc_info=True)
+
+
 def exe_label(image: str) -> str:
     """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
     stem = image[:-4] if image.lower().endswith(".exe") else image
@@ -2490,7 +2958,9 @@ class FocusServer:
     `Origin` header at all; those are allowed, and any request that *does*
     carry a different (web) Origin is refused with 403.
 
-    It serves one route, GET /focus, returning App.site_focus(). OPTIONS is
+    It serves GET /focus, returning App.site_focus(), and two POST routes that
+    answer with the same thing: /usage (time the extension measured on
+    limited sites) and /grant (the block page's "2 more minutes"). OPTIONS is
     answered for the CORS preflight, including Private Network Access
     (`Access-Control-Allow-Private-Network`), which Chrome requires before it
     will let an extension reach `127.0.0.1`. It fails quietly if the port is
@@ -2529,7 +2999,7 @@ class FocusServer:
             def do_OPTIONS(self):
                 if not self._cors(204):
                     return
-                self.send_header("Access-Control-Allow-Methods", "GET")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -2542,7 +3012,41 @@ class FocusServer:
                     return
                 if not self._cors(200):
                     return
-                app.extension_last = now_ms()
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                app.note_extension((query.get("v") or [""])[0])
+                body = json.dumps(app.site_focus()).encode("utf-8")
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_POST(self):
+                route = self.path.split("?")[0]
+                if route not in ("/usage", "/grant"):
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                # Read the body before answering, so a refusal doesn't leave it unread.
+                try:
+                    size = min(int(self.headers.get("Content-Length") or 0), 1_000_000)
+                    data = json.loads(self.rfile.read(size) or b"{}")
+                except (ValueError, OSError):
+                    data = None
+                if not self._cors(200):
+                    return
+                app.note_extension(data.get("version") if isinstance(data, dict) else "")
+                if isinstance(data, dict):
+                    try:
+                        if route == "/usage":
+                            app.record_usage(data.get("usage"))
+                        else:
+                            app.grant_pass(data.get("id"))
+                    except AppError:
+                        pass
+                    except Exception:
+                        log.exception("site limit request failed")
                 body = json.dumps(app.site_focus()).encode("utf-8")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")

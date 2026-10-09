@@ -182,9 +182,10 @@ function renderChrome() {
   const u = state.update;
   $("updateChip").classList.toggle("hidden", !u);
   if (u) $("updateChip").textContent = u.busy ? "Updating…" : `Update ${u.version}`;
+  $("extChip").classList.toggle("hidden", !state.extension_outdated);
   if ($("drawer").classList.contains("on")) {
     renderUpdate();
-    renderExtension(!!state.extension_connected);
+    renderExtension(!!state.extension_connected, !!state.extension_outdated);
   }
 }
 
@@ -746,7 +747,9 @@ $("settingsTabs").addEventListener("keydown", (e) => {
 function renderTabDots() {
   $("aboutDot").classList.toggle("hidden", !(state && state.update));
   const sitesOn = $("s_block_sites").checked;
-  $("sitesDot").classList.toggle("hidden", !sitesOn || !!(state && state.extension_connected));
+  const connected = !!(state && state.extension_connected && !state.extension_outdated);
+  $("sitesDot").classList.toggle("hidden", !sitesOn || connected);
+  $("limitsDot").classList.toggle("hidden", !$("s_site_limits_on").checked || connected);
 }
 
 async function openSettings(tab) {
@@ -762,12 +765,19 @@ async function openSettings(tab) {
   $("addBlockedApp").value = "";
   renderBlockedApps();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
+  limitRules = JSON.parse(JSON.stringify(s.site_limits || []));
+  limitUsage = {};
+  closeLimitEditor();
+  renderLimits();
+  refreshLimitUsage();
   $("addBlockedSite").value = "";
   $("extDir").textContent = s.extension_dir || "extension";
   $("extDir").title = s.extension_dir || "";
   for (const n of document.querySelectorAll(".browser-name")) n.textContent = s.extension_browser || "Chrome";
   renderBlockedSites();
-  renderExtension(s.extension_connected);
+  $("extOldVersion").textContent = s.extension_version ? "version " + s.extension_version : "an older version";
+  $("extNewVersion").textContent = s.extension_latest || "";
+  renderExtension(s.extension_connected, s.extension_outdated);
   showBarFields();
   showTodoistFields();
   $("aboutVersion").textContent = "Busyist " + s.version;
@@ -903,13 +913,17 @@ function renderBlockedSites() {
 }
 
 // The setup steps show until the extension has called Busyist.
-function renderExtension(connected) {
+// A connected extension older than the one Busyist ships needs a reload.
+function renderExtension(connected, outdated) {
   const status = $("extStatus");
-  status.textContent = connected ? "Browser extension: connected" : "Browser extension: not connected";
-  status.classList.toggle("ok", connected);
-  status.classList.toggle("bad", !connected);
+  const good = connected && !outdated;
+  status.textContent = !connected ? "Browser extension: not connected"
+    : outdated ? "Browser extension: needs a reload" : "Browser extension: connected";
+  status.classList.toggle("ok", good);
+  status.classList.toggle("bad", !good);
   $("extSetup").classList.toggle("hidden", connected);
-  $("extDone").classList.toggle("hidden", !connected);
+  $("extOutdated").classList.toggle("hidden", !outdated);
+  $("extDone").classList.toggle("hidden", !good);
   renderTabDots();
 }
 
@@ -940,12 +954,255 @@ function cleanSitePattern(raw) {
   if (path === "/" || path === "/*") path = "";
   return host + path;
 }
+// ------------------------------------------------------- website limits
+//
+// Per-site time budgets and blocked hours that apply all day (the Limits
+// tab). Rules are edited in memory and saved with the rest; Busyist checks
+// them (clean_site_limit) and the extension enforces them. Usage comes from
+// Busyist, which keeps the totals.
+let limitRules = [];
+let limitUsage = {};      // rule id -> where it stands, from api.site_usage
+let limitDraft = null;    // {index, rule} while the editor is open
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+const unitPlural = (every, unit) => (every === 1 ? unit : `${every} ${unit}s`);
+const budgetText = (b) => `${b.minutes} min per ${unitPlural(b.every, b.unit)}`
+  + (!b.days || b.days.length === 7 ? "" : ", " + daysText(b.days));
+const clockText = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
+function daysText(days) {
+  if (days.length === 7) return "every day";
+  if (days.join() === "0,1,2,3,4") return "Mon\u2013Fri";
+  if (days.join() === "5,6") return "Sat\u2013Sun";
+  return days.map((d) => DAY_NAMES[d]).join(", ");
+}
+
+function renderLimits() {
+  const list = $("limitList");
+  list.replaceChildren();
+  limitRules.forEach((rule, i) => {
+    const status = limitUsage[rule.id];
+    const row = el("div", "limit-row" + (rule.enabled ? "" : " off"));
+    const head = el("div", "limit-head");
+    const sw = el("label", "switch");
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = rule.enabled;
+    box.onchange = () => { rule.enabled = box.checked; renderLimits(); };
+    sw.append(box, el("span", "knob"));
+    sw.title = rule.enabled ? "Turn this limit off" : "Turn this limit on";
+    const edit = el("button", "btn sm ghost", "Edit");
+    edit.type = "button";
+    edit.onclick = () => openLimitEditor(i);
+    const x = el("button", "remove", "\u00d7");
+    x.type = "button";
+    x.title = "Remove this limit";
+    x.onclick = () => { limitRules.splice(i, 1); renderLimits(); };
+    head.append(sw, el("span", "site", rule.patterns.join(", ")), edit, x);
+    row.append(head);
+    if (status && status.blocked) row.append(el("div", "limit-tag", `Blocked until ${clockText(status.until_ms)}`));
+    rule.budgets.forEach((b, k) => {
+      const line = el("div", "limit-line");
+      const live = status && status.budgets && status.budgets[k];
+      if (live && live.budget_s === b.minutes * 60) {
+        const used = Math.min(live.used_s, live.budget_s);
+        const text = el("div");
+        text.append(el("b", "", budgetText(b)),
+          live.active ? ` \u00b7 ${Math.floor(used / 60)} of ${b.minutes} min used` : " \u00b7 not today");
+        const bar = el("div", "limit-bar" + (live.remaining_s <= 0 ? " full" : ""));
+        const fill = el("i");
+        fill.style.width = Math.round((100 * used) / live.budget_s) + "%";
+        bar.append(fill);
+        line.append(text, bar);
+      } else {
+        line.append(el("div", "", budgetText(b)));
+      }
+      row.append(line);
+    });
+    for (const w of rule.windows) {
+      const line = el("div", "limit-line");
+      line.append(el("div", "", `Blocked ${daysText(w.days)}, ${w.from}\u2013${w.to}`));
+      row.append(line);
+    }
+    list.append(row);
+  });
+  $("limitsFields").classList.toggle("muted", !$("s_site_limits_on").checked);
+  renderTabDots();
+}
+
+async function refreshLimitUsage() {
+  const r = await api.site_usage();
+  if (!r.ok) return;
+  limitUsage = Object.fromEntries(r.rules.map((rule) => [rule.id, rule]));
+  renderLimits();
+}
+setInterval(() => {
+  if ($("drawer").classList.contains("on") && settingsTab === "limits") refreshLimitUsage();
+}, 5000);
+
+function openLimitEditor(index) {
+  const rule = index === undefined
+    ? { patterns: [], enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }], windows: [] }
+    : JSON.parse(JSON.stringify(limitRules[index]));
+  limitDraft = { index, rule };
+  renderLimitEditor();
+}
+
+function closeLimitEditor() {
+  limitDraft = null;
+  $("limitEditor").classList.add("hidden");
+  $("limitEditor").replaceChildren();
+  $("addLimitBtn").classList.remove("hidden");
+}
+
+function numberInput(value, min, onchange) {
+  const input = el("input", "input");
+  input.type = "number";
+  input.min = min;
+  input.value = value;
+  input.oninput = () => onchange(parseInt(input.value, 10) || 0);
+  return input;
+}
+
+function removeButton(onclick, title) {
+  const x = el("button", "remove", "\u00d7");
+  x.type = "button";
+  x.title = title;
+  x.onclick = onclick;
+  return x;
+}
+
+// Seven day toggles editing item.days (a time limit or blocked hours).
+function dayButtons(item) {
+  if (!item.days) item.days = [0, 1, 2, 3, 4, 5, 6];
+  const wrap = el("div", "limit-days");
+  DAY_NAMES.forEach((name, d) => {
+    const b = el("button", "day", name);
+    b.type = "button";
+    b.setAttribute("aria-pressed", item.days.includes(d));
+    b.onclick = () => {
+      item.days = item.days.includes(d) ? item.days.filter((x) => x !== d) : [...item.days, d].sort();
+      b.setAttribute("aria-pressed", item.days.includes(d));
+    };
+    wrap.append(b);
+  });
+  return wrap;
+}
+
+let sitesText = "";  // what's typed in the editor's websites box
+
+function renderLimitEditor() {
+  const { rule } = limitDraft;
+  sitesText = rule.patterns.join(", ");
+  const box = $("limitEditor");
+  box.replaceChildren();
+  box.classList.remove("hidden");
+  $("addLimitBtn").classList.add("hidden");
+
+  const site = el("input", "input");
+  site.id = "limitSite";
+  site.spellcheck = false;
+  site.placeholder = "Websites, e.g. instagram.com, facebook.com";
+  site.value = rule.patterns.join(", ");
+  site.oninput = () => { sitesText = site.value; };
+  box.append(site, el("div", "help", "Several websites can share one limit: the time adds up across all of them."));
+  box.onkeydown = (e) => {
+    if (e.key === "Enter" && e.target.tagName !== "BUTTON") { e.preventDefault(); e.stopPropagation(); commitLimitDraft(); }
+  };
+
+  box.append(el("h4", "", "Time allowed"));
+  rule.budgets.forEach((b, i) => {
+    const row = el("div", "limit-sub");
+    row.append(dayButtons(b));
+    const amount = el("div", "limit-sub");
+    const unit = el("select", "input");
+    for (const u of ["minute", "hour", "day", "week"]) {
+      const o = el("option", "", u + "s");
+      o.value = u;
+      o.selected = u === b.unit;
+      unit.append(o);
+    }
+    unit.onchange = () => { b.unit = unit.value; };
+    amount.append(numberInput(b.minutes, 1, (n) => { b.minutes = n; }), "min every",
+                  numberInput(b.every, 1, (n) => { b.every = n; }), unit,
+                  removeButton(() => { rule.budgets.splice(i, 1); renderLimitEditor(); }, "Remove this limit"));
+    const group = el("div", "limit-group");
+    group.append(amount, row);
+    box.append(group);
+  });
+  const addBudget = el("button", "btn sm", "Add a time limit");
+  addBudget.type = "button";
+  addBudget.onclick = () => { rule.budgets.push({ minutes: 30, every: 1, unit: "day", days: [0, 1, 2, 3, 4, 5, 6] }); renderLimitEditor(); };
+  box.append(addBudget);
+
+  box.append(el("h4", "", "Blocked hours"));
+  rule.windows.forEach((w, i) => {
+    const row = el("div", "limit-sub");
+    row.append(dayButtons(w));
+    const from = el("input", "input");
+    from.type = "time";
+    from.value = w.from;
+    from.oninput = () => { w.from = from.value; };
+    const to = el("input", "input");
+    to.type = "time";
+    to.value = w.to;
+    to.oninput = () => { w.to = to.value; };
+    row.append(from, "to", to, removeButton(() => { rule.windows.splice(i, 1); renderLimitEditor(); }, "Remove these hours"));
+    box.append(row);
+  });
+  const addWindow = el("button", "btn sm", "Add blocked hours");
+  addWindow.type = "button";
+  addWindow.onclick = () => { rule.windows.push({ days: [0, 1, 2, 3, 4], from: "08:00", to: "17:00" }); renderLimitEditor(); };
+  box.append(addWindow);
+  box.append(el("div", "help", "Blocked hours ending before they start run past midnight (22:00 to 06:00). 00:00 to 00:00 is the whole day."));
+
+  const actions = el("div", "limit-actions");
+  const cancel = el("button", "btn ghost", "Cancel");
+  cancel.type = "button";
+  cancel.onclick = closeLimitEditor;
+  const done = el("button", "btn primary", limitDraft.index === undefined ? "Add limit" : "Done");
+  done.type = "button";
+  done.onclick = commitLimitDraft;
+  actions.append(cancel, done);
+  box.append(actions);
+  site.focus();
+}
+
+// Move the editor's rule into the list. False (with a toast) if it isn't usable yet.
+function commitLimitDraft() {
+  const { index, rule } = limitDraft;
+  const patterns = [];
+  for (const part of sitesText.split(/[\s,;]+/).filter(Boolean)) {
+    const pattern = cleanSitePattern(part);
+    if (pattern === null) { toast(`"${part}" isn't a website like instagram.com or *.reddit.com.`, true); return false; }
+    if (pattern && !patterns.includes(pattern)) patterns.push(pattern);
+  }
+  if (!patterns.length) { toast("Type a website like instagram.com or *.reddit.com.", true); return false; }
+  if (patterns.length > 20) { toast("Keep a limit to 20 websites or fewer.", true); return false; }
+  if (!rule.budgets.length && !rule.windows.length) { toast("Add a time limit or blocked hours.", true); return false; }
+  if (rule.budgets.some((b) => !b.days.length)) { toast("Pick at least one day for each time limit.", true); return false; }
+  if (rule.budgets.some((b) => b.minutes < 1 || b.every < 1)) { toast("Time limits need at least 1 minute and a period of at least 1.", true); return false; }
+  if (rule.windows.some((w) => !w.days.length || !w.from || !w.to)) { toast("Blocked hours need days and times.", true); return false; }
+  if (limitRules.length >= 30 && index === undefined) { toast("Keep the website limits under 30.", true); return false; }
+  rule.patterns = patterns;
+  if (index === undefined) limitRules.push(rule);
+  else limitRules[index] = rule;
+  closeLimitEditor();
+  renderLimits();
+  return true;
+}
+
+$("addLimitBtn").onclick = () => openLimitEditor();
+$("s_site_limits_on").onchange = renderLimits;
+
 for (const r of document.querySelectorAll('input[name="site_mode"]')) r.onchange = () => renderBlockedSites();
 $("addBlockedSiteBtn").onclick = addBlockedSite;
 $("addBlockedSite").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedSite(); }
 });
 $("s_block_sites").onchange = () => renderBlockedSites();
+$("extChip").onclick = () => openSettings("sites");
+$("openExtensionsPage").onclick = () => $("installExtension").click();
 $("openExtensionFolder").onclick = () => api.open_extension_folder();
 $("copyExtensionPath").onclick = async () => {
   const r = await api.copy_extension_path();
@@ -1018,7 +1275,8 @@ $("settingsForm").onsubmit = (e) => { e.preventDefault(); $("saveSettings").clic
 $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow });
+  if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
+  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
@@ -1088,12 +1346,22 @@ window.App = {
   onShown(focusSearch) {
     if (Date.now() - lastTaskLoad > 30000) loadTasks(true);
     poll();
+    // A window that was hidden in the tray can still be throttled for a
+    // moment after it shows; poll again so the end-of-session prompt
+    // doesn't wait for a click.
+    setTimeout(poll, 200);
+    setTimeout(poll, 800);
     if (focusSearch) {
       $("search").focus();
       $("search").select();
     }
   },
 };
+
+// Re-sync as soon as the window is restored or focused.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+window.addEventListener("focus", () => poll());
+window.addEventListener("resize", () => poll());
 
 async function boot() {
   api = window.pywebview.api;
