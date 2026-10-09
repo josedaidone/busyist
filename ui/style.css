@@ -19,7 +19,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #16151a;
     --surface: #1f1e24;
     --surface-2: #25242b;
@@ -38,6 +38,25 @@
     --shadow: 0 1px 2px #0000004d, 0 10px 30px #00000059;
     color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #16151a;
+  --surface: #1f1e24;
+  --surface-2: #25242b;
+  --surface-3: #2c2b33;
+  --ink: #ecebe7;
+  --muted: #a19d95;
+  --faint: #6d6a73;
+  --line: #2f2e36;
+  --focus: #f06a5d;
+  --focus-soft: #f06a5d22;
+  --rest: #4cc38a;
+  --rest-soft: #4cc38a22;
+  --pause: #f0b43c;
+  --pause-soft: #f0b43c22;
+  --track: #2e2d35;
+  --shadow: 0 1px 2px #0000004d, 0 10px 30px #00000059;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -164,6 +183,12 @@ body[data-phase="idle"] .phase-tag { color: var(--muted); }
 body[data-phase="paused"] .time { animation: blink 1.6s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .45; } }
 
+.free.hidden { display: none !important; }
+body.solo .body { grid-template-columns: 1fr; }
+body.solo #completed { display: none; }
+body.solo .card.tasks { display: none; }
+.card.tasks.off { opacity: .45; pointer-events: none; }
+#todoistFields.muted { opacity: .5; pointer-events: none; }
 .current { text-align: center; min-height: 62px; }
 .eyebrow { font-size: 12px; color: var(--muted); }
 .current h2 {
@@ -291,10 +316,27 @@ kbd {
 .task.sel { box-shadow: inset 0 0 0 1px var(--line); }
 .prio {
   width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--faint); flex: none;
+  padding: 0; background: transparent; color: var(--faint); display: grid; place-items: center;
+  cursor: pointer; border-color: var(--faint);
 }
-.prio.p1 { border-color: #d1453b; background: #d1453b1f; }
-.prio.p2 { border-color: #eb8909; background: #eb89091f; }
-.prio.p3 { border-color: #246fe0; background: #246fe01f; }
+.prio svg { width: 10px; height: 10px; opacity: 0; transition: opacity .1s; }
+.prio:hover svg, .task.done .prio svg { opacity: 1; }
+.prio:hover { filter: brightness(1.05); }
+.task.done .t-title { text-decoration: line-through; color: var(--muted); }
+.ctx-menu {
+  position: fixed; z-index: 1000; min-width: 180px; padding: 4px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow);
+  display: flex; flex-direction: column;
+}
+.ctx-item {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--ink); font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.ctx-item svg { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.ctx-item:hover, .ctx-item:focus { background: var(--surface-2); outline: none; }
+.prio.p1 { border-color: #d1453b; background: #d1453b1f; color: #d1453b; }
+.prio.p2 { border-color: #eb8909; background: #eb89091f; color: #eb8909; }
+.prio.p3 { border-color: #246fe0; background: #246fe01f; color: #246fe0; }
 .t-body { flex: 1; min-width: 0; }
 .t-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .t-meta { display: flex; gap: 10px; align-items: center; font-size: 12px; color: var(--muted); margin-top: 1px; white-space: nowrap; overflow: hidden; }
@@ -376,6 +418,16 @@ kbd {
 .app-row .remove:hover { background: var(--line); color: var(--ink); }
 #blockedAppsFields.muted, #blockedSitesFields.muted { opacity: .55; }
 .app-row .site { font-size: 13px; }
+.seg {
+  display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--surface-3);
+  border: 1px solid var(--line); margin: 2px 0 10px;
+}
+.seg label { position: relative; cursor: pointer; }
+.seg input { position: absolute; opacity: 0; pointer-events: none; }
+.seg span { display: block; padding: 6px 12px; border-radius: 7px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.seg label:hover span { color: var(--ink); }
+.seg input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 1px 2px #0000001a; }
+.seg input:focus-visible + span { outline: 2px solid var(--focus); outline-offset: 1px; }
 .extension-box {
   margin-top: 10px; padding: 10px 11px; border: 1px solid var(--line);
   border-radius: 9px; background: var(--surface-2); display: grid; gap: 8px;

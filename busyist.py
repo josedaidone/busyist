@@ -49,7 +49,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -96,10 +96,13 @@ DEFAULT_BLOCKED_SITES = [
     "facebook.com", "web.whatsapp.com", "reddit.com", "linkedin.com", "tiktok.com",
 ]
 MAX_BLOCKED_SITES = 50
+SITE_MODES = ("block", "allow")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MINI_W, MINI_H = 340, 108
+SOLO_W, SOLO_H = 580, 740  # main window size without the task list
 
 DEFAULTS = {
+    "use_todoist": True,  # off: sessions run without tasks, no API token needed
     "todoist_token": "",
     "filters": [],  # [{"name": ..., "query": ...}], the task lists to pick from
     "active_filter": "",
@@ -119,6 +122,7 @@ DEFAULTS = {
     "notifications": True,
     "launch_at_login": True,
     "open_on_finish": True,
+    "theme": "auto",  # auto follows Windows; or light / dark
     "auto_update": True,
     # Keep distracting apps away while a work phase runs (issue #1). Off by
     # default for other users. The list is APP_PRESETS (each switchable)
@@ -126,10 +130,14 @@ DEFAULTS = {
     "block_apps": False,
     "blocked_apps": [],
     # Keep distracting websites away during a work phase, via the Chrome
-    # extension (issue #2). Off by default; blocked_sites is a list of bare
-    # domains (subdomains included), edited here, not in the extension.
+    # extension (issue #2). Off by default. site_mode "block" blocks the sites
+    # in blocked_sites; "allow" blocks everything but allowed_sites. Both are
+    # lists of site patterns (see clean_site_pattern), edited here, not in the
+    # extension.
     "block_sites": False,
+    "site_mode": "block",
     "blocked_sites": list(DEFAULT_BLOCKED_SITES),
+    "allowed_sites": [],
 }
 
 MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
@@ -663,6 +671,9 @@ class App:
         self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
         # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
         self.cfg["blocked_sites"] = _sanitize_sites(self.cfg.get("blocked_sites"))
+        self.cfg["allowed_sites"] = _sanitize_sites(self.cfg.get("allowed_sites"))
+        if self.cfg.get("site_mode") not in SITE_MODES:
+            self.cfg["site_mode"] = "block"
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -722,6 +733,11 @@ class App:
         if CONFIG_PATH.exists():
             write_json(CONFIG_PATH, self.cfg)
 
+    @property
+    def todoist_on(self) -> bool:
+        """Todoist is switched on in Settings and has a token."""
+        return bool(self.cfg.get("use_todoist")) and bool(self.cfg.get("todoist_token"))
+
     def active_filter(self) -> dict:
         filters = self.cfg["filters"]
         return next((f for f in filters if f["name"] == self.cfg["active_filter"]), filters[0])
@@ -733,6 +749,8 @@ class App:
                 raise AppError(f"There is no filter called {name!r}.")
             self.cfg["active_filter"] = name
             write_json(CONFIG_PATH, self.cfg)
+        if not self.cfg.get("use_todoist"):
+            raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
         if tasks is None:
             tasks = self.todoist.tasks(active["query"])
@@ -836,6 +854,7 @@ class App:
             view = self.timer_view()
             return {
                 "now": now_ms(),
+                "theme": self.cfg["theme"],
                 "timer": view,
                 "session": self.session and {
                     k: self.session[k] for k in ("task", "started_at", "done", "label_added")
@@ -846,7 +865,9 @@ class App:
                 "pomodoro": {k: self.cfg[k] for k in ("work_minutes", "rest_minutes", "cycles", "autostart")},
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
-                "needs_setup": not self.cfg.get("todoist_token"),
+                "needs_setup": bool(self.cfg.get("use_todoist")) and not self.cfg.get("todoist_token"),
+                "todoist": self.todoist_on,
+                "use_todoist": bool(self.cfg.get("use_todoist")),
                 "extension_connected": bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000,
                 "update": self.update_view(),
             }
@@ -889,15 +910,23 @@ class App:
         phase rule as the app blocker, but only when site blocking is on. When
         it's off, or no work phase is running, `active` is False and no sites
         are sent, so the extension removes its rules.
+
+        `mode` and `patterns` are what the extension uses (patterns may hold
+        wildcards and paths). `sites` is kept for extensions from before
+        those: only the plain domains of a blocklist, which they understand.
         """
         on = bool(self.cfg.get("block_sites"))
+        mode = self.cfg.get("site_mode", "block")
         focus = self.focus()
         active = on and focus["active"]
+        patterns = list(self.cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
         return {
             "active": active,
             "task": focus["task"] if active else "",
             "ends_at_ms": focus["ends_at_ms"] if active else 0,
-            "sites": list(self.cfg.get("blocked_sites") or []) if on else [],
+            "mode": mode,
+            "patterns": patterns,
+            "sites": [p for p in patterns if is_plain_domain(p)] if mode == "block" else [],
         }
 
     def notify_focus(self) -> None:
@@ -991,7 +1020,8 @@ class App:
         task, done = session["task"], session["done"]
         minutes = done * session["work_ms"] // 60000
         problems = []
-        if done and self.cfg["log_comments"]:
+        linked = bool(task["id"]) and self.todoist_on  # a free session has no task
+        if linked and done and self.cfg["log_comments"]:
             try:
                 self.todoist.comment(
                     task["id"],
@@ -1000,7 +1030,7 @@ class App:
                 )
             except AppError as err:
                 problems.append(f"Couldn't log the pomodoros: {err}")
-        if session.get("label_added") and self.cfg["remove_label_on_end"]:
+        if linked and session.get("label_added") and self.cfg["remove_label_on_end"]:
             try:
                 self.todoist.set_label(task["id"], session["label"], False)
             except AppError as err:
@@ -1025,6 +1055,8 @@ class App:
             self.notify("Session complete", f"{done} pomodoro{'s' * (done != 1)} on {task['content']}")
             if self.cfg["open_on_finish"]:
                 self.show_main()
+        elif reason == "stopped":
+            self.show_main()
         self.hide_mini()
 
     # ------------------------------------------------------------ updates
@@ -1140,11 +1172,15 @@ class App:
 
     # ------------------------------------------------------------ actions
 
-    def start_task(self, task_id: str) -> dict:
-        with self.lock:
-            task = self.tasks.get(task_id)
-        if task is None:
-            raise AppError("That task is no longer in the list. Refresh and try again.")
+    def start_task(self, task_id: str | None = None, name: str = "") -> dict:
+        """Start a session on a task, or (task_id None) one with no task, optionally named."""
+        if task_id is None:
+            task = {"id": "", "content": (name or "").strip()[:80] or "Focus session", "project": "", "color": "", "priority": 1, "url": ""}
+        else:
+            with self.lock:
+                task = self.tasks.get(task_id)
+            if task is None:
+                raise AppError("That task is no longer in the list. Refresh and try again.")
         work = int(self.cfg["work_minutes"]) * 60000
         rest = int(self.cfg["rest_minutes"]) * 60000
         cycles = int(self.cfg["cycles"])
@@ -1167,7 +1203,8 @@ class App:
                 self.recovering = False
         if old:
             threading.Thread(target=self.finish, args=(old, "replaced"), daemon=True).start()
-        threading.Thread(target=self._label_task, args=(self.session,), daemon=True).start()
+        if task["id"] and self.todoist_on:
+            threading.Thread(target=self._label_task, args=(self.session,), daemon=True).start()
         self.wake.set()
         # Read the fresh interval straight back so focus (and its blockers)
         # act at once, not on the next poll.
@@ -1257,6 +1294,12 @@ class App:
             clean["blocked_apps"] = clean_blocked_apps(changes["blocked_apps"])
         if "blocked_sites" in changes:
             clean["blocked_sites"] = clean_blocked_sites(changes["blocked_sites"])
+        if "allowed_sites" in changes:
+            clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
+        if "theme" in clean and clean["theme"] not in ("auto", "light", "dark"):
+            raise AppError("Pick auto, light or dark for the theme.")
+        if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
+            raise AppError("Pick whether to block the listed websites or allow only them.")
         merged = dict(self.cfg, **clean)
         for key in ("work_minutes", "rest_minutes"):
             if not PHASE_MIN <= merged[key] <= PHASE_MAX:
@@ -1463,11 +1506,15 @@ class App:
     def run(self) -> None:
         clear_webview_cache()
         api = Api(self)
-        bg = "#16151a" if windows_dark_mode() else "#f6f5f2"
-        visible = not self.cfg.get("todoist_token") or "--show" in sys.argv
+        theme = self.cfg.get("theme", "auto")
+        dark = windows_dark_mode() if theme == "auto" else theme == "dark"
+        bg = "#16151a" if dark else "#f6f5f2"
+        visible = (self.cfg.get("use_todoist") and not self.cfg.get("todoist_token")) or "--show" in sys.argv
         self.main = webview.create_window(
-            APP, str(UI / "main.html"), js_api=api, width=1040, height=720,
-            min_size=(780, 540), hidden=not visible, background_color=bg,
+            APP, str(UI / "main.html"), js_api=api,
+            width=1040 if self.cfg.get("use_todoist") else SOLO_W,
+            height=720 if self.cfg.get("use_todoist") else SOLO_H,
+            min_size=(560, 540), hidden=not visible, background_color=bg,
         )
         self.main.events.closing += self.on_closing
         self.main.events.minimized += self.on_minimized
@@ -1547,8 +1594,8 @@ class Api:
     def preview_filter(self, query):
         return self._do(lambda: {"count": len(self._app.check_query(str(query)))})
 
-    def start(self, task_id):
-        return self._do(self._app.start_task, str(task_id))
+    def start(self, task_id=None, name=""):
+        return self._do(self._app.start_task, None if task_id is None else str(task_id), str(name or ""))
 
     def control(self, action):
         return self._do(self._app.control, str(action))
@@ -1636,6 +1683,14 @@ class Api:
 
     def hide_main(self):
         hide_window(self._app.main)
+
+    def set_solo(self, solo):
+        """Narrow window without the task list (Todoist off), or the full one."""
+        def run():
+            main = self._app.main
+            if main:
+                main.resize(*((SOLO_W, SOLO_H) if solo else (1040, 720)))
+        return self._do(run)
 
     def hide_mini(self):
         self._app.hide_mini()
@@ -2177,29 +2232,49 @@ def clean_blocked_apps(values) -> list[dict]:
     return normalize_blocked_apps(values)
 
 
-def clean_domain(raw) -> str:
-    """'https://www.YouTube.com/watch' -> 'youtube.com'; AppError if it's not one."""
-    domain = str(raw).strip().lower()
-    domain = re.sub(r"^[a-z]+://", "", domain)  # drop any scheme
-    domain = domain.split("/")[0].split("?")[0].split("#")[0].strip()
-    if domain.startswith("www."):
-        domain = domain[4:]
-    if not domain or " " in domain or "." not in domain:
-        raise AppError(f"{str(raw).strip()!r} isn't a website like youtube.com.")
-    return domain
+def clean_site_pattern(raw) -> str:
+    """
+    Tidy one website entry; AppError if it isn't one. An entry is a host,
+    optionally followed by a path, and either part may use * as a wildcard:
+    'https://www.YouTube.com/' -> 'youtube.com', '*.google.com',
+    'google.*', 'youtube.com/shorts/*'. A plain host also covers its
+    subdomains; the extension turns entries into URL rules (background.js).
+    """
+    shown = str(raw).strip()
+    text = shown.lower()
+    text = re.sub(r"^[a-z*]+://", "", text)  # drop any scheme
+    text = text.split("#")[0].strip()
+    text = re.sub(r"\*{2,}", "*", text)
+    host, slash, path = text.partition("/")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host and slash:  # "/path" alone: any host
+        host = "*"
+    if (not host or not re.fullmatch(r"[a-z0-9.*-]+", host)
+            or ("." not in host and "*" not in host) or " " in path):
+        raise AppError(f"{shown!r} isn't a website like youtube.com or *.google.com.")
+    path = "/" + path if slash else ""
+    if path in ("/", "/*"):  # the whole site, same as the bare host
+        path = ""
+    return host + path
 
 
-def clean_blocked_sites(values) -> list[str]:
-    """Check and tidy the domain list Settings sent; AppError if it's wrong."""
+def is_plain_domain(pattern: str) -> bool:
+    """A bare domain, no wildcard or path: what old extensions understand."""
+    return "*" not in pattern and "/" not in pattern
+
+
+def clean_blocked_sites(values, kind: str = "blocked") -> list[str]:
+    """Check and tidy a site list Settings sent; AppError if it's wrong."""
     if not isinstance(values, list):
         raise AppError("The site list didn't come through; try again.")
     out: list[str] = []
     for item in values:
-        domain = clean_domain(item)
+        domain = clean_site_pattern(item)
         if domain not in out:
             out.append(domain)
     if len(out) > MAX_BLOCKED_SITES:
-        raise AppError(f"Keep the blocked sites under {MAX_BLOCKED_SITES}.")
+        raise AppError(f"Keep the {kind} sites under {MAX_BLOCKED_SITES}.")
     return out
 
 
@@ -2208,7 +2283,7 @@ def _sanitize_sites(values) -> list[str]:
     out: list[str] = []
     for item in values if isinstance(values, list) else []:
         try:
-            domain = clean_domain(item)
+            domain = clean_site_pattern(item)
         except AppError:
             continue
         if domain not in out:
