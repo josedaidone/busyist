@@ -49,7 +49,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -2227,12 +2227,21 @@ GW_OWNER = 4
 _ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
 
 
+def pids_with_windows(pids: set[int]) -> set[int]:
+    """Those of these processes that have a visible (or minimized) top-level window."""
+    return _visit_windows(pids, close=False)
+
+
 def close_windows(pids: set[int]) -> set[int]:
     """
     Ask the visible top-level windows of these processes to close, as their
     X button would. Apps that live in the tray (Slack, Discord) just hide and
     stay signed in. Returns the pids that had a window to close.
     """
+    return _visit_windows(pids, close=True)
+
+
+def _visit_windows(pids: set[int], close: bool) -> set[int]:
     user32 = ctypes.windll.user32
     user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
     user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
@@ -2247,7 +2256,7 @@ def close_windows(pids: set[int]) -> set[int]:
         pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value in pids and user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, GW_OWNER):
-            if user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
+            if not close or user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
                 closed.add(pid.value)
         return True
 
@@ -2267,9 +2276,12 @@ class AppBlocker:
 
     A "blocked" toast only fires when the user opens a blocked app *during*
     focus (not for apps already running when focus began, which are swept away
-    silently on the first tick). Every "close" app we end is remembered with
-    its exe path and started again when focus ends (pause, break, stop or
-    finish), so the desktop is left as it was found.
+    silently on the first tick). Every app that was already open when focus
+    began *with a window on screen* is remembered with its exe path and
+    started (or shown) again when focus ends (pause, break, stop or finish),
+    so the desktop is left as it was found. An app first opened during focus,
+    or one only running in the tray with no window, isn't brought back:
+    relaunching it would pop up a window that wasn't there before.
     """
 
     TICK = 1.5
@@ -2314,7 +2326,7 @@ class AppBlocker:
             self.wake.clear()
 
     def reopen(self) -> None:
-        """Bring back every app we closed or hid during the focus that just ended."""
+        """Bring back the apps that were open when the focus that just ended began."""
         for key, target in list(self._closed.items()):
             if relaunch_app(target):
                 log.info("reopened %s after focus", target)
@@ -2331,6 +2343,7 @@ class AppBlocker:
         alive: set[int] = set()
         alive_keys: set[str] = set()  # blocked apps seen running this tick
         to_hide: dict[int, dict] = {}
+        found: list[tuple[int, str, str, dict]] = []
         for pid, image in list_processes():
             alive.add(pid)
             key = app_key(image)
@@ -2340,9 +2353,20 @@ class AppBlocker:
             alive_keys.add(key)
             if self._session is not None and process_session(pid) != self._session:
                 continue  # another user's process: not ours to touch
+            found.append((pid, image, key, entry))
+        # Only apps whose window was open when focus began come back when it
+        # ends. One opened mid-focus, or sitting in the tray with no window,
+        # wasn't on screen before, so it isn't popped up afterwards. Look at
+        # the windows now, before any process is ended.
+        windowed: set[str] = set()
+        if self._first_sweep and found:
+            shown = pids_with_windows({pid for pid, *_ in found})
+            windowed = {key for pid, _, key, _ in found if pid in shown}
+        for pid, image, key, entry in found:
             target = relaunch_target(pid)  # how to start it again, grabbed before it's gone
+            restore = bool(target) and key in windowed
             if entry["action"] == "hide":
-                if target:
+                if restore:
                     self._closed.setdefault(key, target)  # bring its window back later
                 to_hide[pid] = entry
                 continue
@@ -2352,7 +2376,7 @@ class AppBlocker:
                 log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
                 continue
             log.info("closed %s (pid %d) during focus", image, pid)
-            if target:
+            if restore:
                 self._closed.setdefault(key, target)  # reopen it when focus ends
             if not self._first_sweep and key not in self._preexisting:
                 # The app wasn't open when the pomodoro started, so the user
