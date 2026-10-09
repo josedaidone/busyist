@@ -966,7 +966,8 @@ let limitDraft = null;    // {index, rule} while the editor is open
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const unitPlural = (every, unit) => (every === 1 ? unit : `${every} ${unit}s`);
-const budgetText = (b) => `${b.minutes} min per ${unitPlural(b.every, b.unit)}`;
+const budgetText = (b) => `${b.minutes} min per ${unitPlural(b.every, b.unit)}`
+  + (!b.days || b.days.length === 7 ? "" : ", " + daysText(b.days));
 const clockText = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 function daysText(days) {
@@ -1006,7 +1007,8 @@ function renderLimits() {
       if (live && live.budget_s === b.minutes * 60) {
         const used = Math.min(live.used_s, live.budget_s);
         const text = el("div");
-        text.append(el("b", "", budgetText(b)), ` \u00b7 ${Math.floor(used / 60)} of ${b.minutes} min used`);
+        text.append(el("b", "", budgetText(b)),
+          live.active ? ` \u00b7 ${Math.floor(used / 60)} of ${b.minutes} min used` : " \u00b7 not today");
         const bar = el("div", "limit-bar" + (live.remaining_s <= 0 ? " full" : ""));
         const fill = el("i");
         fill.style.width = Math.round((100 * used) / live.budget_s) + "%";
@@ -1040,7 +1042,7 @@ setInterval(() => {
 
 function openLimitEditor(index) {
   const rule = index === undefined
-    ? { pattern: "", enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour" }], windows: [] }
+    ? { pattern: "", enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }], windows: [] }
     : JSON.parse(JSON.stringify(limitRules[index]));
   limitDraft = { index, rule };
   renderLimitEditor();
@@ -1070,6 +1072,23 @@ function removeButton(onclick, title) {
   return x;
 }
 
+// Seven day toggles editing item.days (a time limit or blocked hours).
+function dayButtons(item) {
+  if (!item.days) item.days = [0, 1, 2, 3, 4, 5, 6];
+  const wrap = el("div", "limit-days");
+  DAY_NAMES.forEach((name, d) => {
+    const b = el("button", "day", name);
+    b.type = "button";
+    b.setAttribute("aria-pressed", item.days.includes(d));
+    b.onclick = () => {
+      item.days = item.days.includes(d) ? item.days.filter((x) => x !== d) : [...item.days, d].sort();
+      b.setAttribute("aria-pressed", item.days.includes(d));
+    };
+    wrap.append(b);
+  });
+  return wrap;
+}
+
 function renderLimitEditor() {
   const { rule } = limitDraft;
   const box = $("limitEditor");
@@ -1091,6 +1110,8 @@ function renderLimitEditor() {
   box.append(el("h4", "", "Time allowed"));
   rule.budgets.forEach((b, i) => {
     const row = el("div", "limit-sub");
+    row.append(dayButtons(b));
+    const amount = el("div", "limit-sub");
     const unit = el("select", "input");
     for (const u of ["minute", "hour", "day", "week"]) {
       const o = el("option", "", u + "s");
@@ -1099,29 +1120,22 @@ function renderLimitEditor() {
       unit.append(o);
     }
     unit.onchange = () => { b.unit = unit.value; };
-    row.append(numberInput(b.minutes, 1, (n) => { b.minutes = n; }), "min every",
-               numberInput(b.every, 1, (n) => { b.every = n; }), unit,
-               removeButton(() => { rule.budgets.splice(i, 1); renderLimitEditor(); }, "Remove this limit"));
-    box.append(row);
+    amount.append(numberInput(b.minutes, 1, (n) => { b.minutes = n; }), "min every",
+                  numberInput(b.every, 1, (n) => { b.every = n; }), unit,
+                  removeButton(() => { rule.budgets.splice(i, 1); renderLimitEditor(); }, "Remove this limit"));
+    const group = el("div", "limit-group");
+    group.append(amount, row);
+    box.append(group);
   });
   const addBudget = el("button", "btn sm", "Add a time limit");
   addBudget.type = "button";
-  addBudget.onclick = () => { rule.budgets.push({ minutes: 30, every: 1, unit: "day" }); renderLimitEditor(); };
+  addBudget.onclick = () => { rule.budgets.push({ minutes: 30, every: 1, unit: "day", days: [0, 1, 2, 3, 4, 5, 6] }); renderLimitEditor(); };
   box.append(addBudget);
 
   box.append(el("h4", "", "Blocked hours"));
   rule.windows.forEach((w, i) => {
     const row = el("div", "limit-sub");
-    DAY_NAMES.forEach((name, d) => {
-      const b = el("button", "day", name);
-      b.type = "button";
-      b.setAttribute("aria-pressed", w.days.includes(d));
-      b.onclick = () => {
-        w.days = w.days.includes(d) ? w.days.filter((x) => x !== d) : [...w.days, d].sort();
-        b.setAttribute("aria-pressed", w.days.includes(d));
-      };
-      row.append(b);
-    });
+    row.append(dayButtons(w));
     const from = el("input", "input");
     from.type = "time";
     from.value = w.from;
@@ -1157,6 +1171,7 @@ function commitLimitDraft() {
   const pattern = cleanSitePattern(rule.pattern);
   if (!pattern) { toast("Type a website like instagram.com or *.reddit.com.", true); return false; }
   if (!rule.budgets.length && !rule.windows.length) { toast("Add a time limit or blocked hours.", true); return false; }
+  if (rule.budgets.some((b) => !b.days.length)) { toast("Pick at least one day for each time limit.", true); return false; }
   if (rule.budgets.some((b) => b.minutes < 1 || b.every < 1)) { toast("Time limits need at least 1 minute and a period of at least 1.", true); return false; }
   if (rule.windows.some((w) => !w.days.length || !w.from || !w.to)) { toast("Blocked hours need days and times.", true); return false; }
   if (limitRules.length >= 30 && index === undefined) { toast("Keep the website limits under 30.", true); return false; }

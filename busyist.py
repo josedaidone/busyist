@@ -2460,8 +2460,8 @@ def _sanitize_sites(values) -> list[str]:
 # ------------------------------------------------------------ site limits ---
 #
 # A rule is {"id", "pattern", "enabled", "budgets": [...], "windows": [...]}.
-# A budget {"minutes": 5, "every": 1, "unit": "hour"} allows 5 minutes per
-# period; periods are clock-aligned (the hour, the day, ...) in local time:
+# A budget {"minutes": 5, "every": 1, "unit": "hour", "days": [0..6]} allows 5
+# minutes per period, on those days only (Monday is 0; all days if omitted); periods are clock-aligned (the hour, the day, ...) in local time:
 # minute/hour periods restart at midnight, day/week periods count from
 # SITE_ANCHOR. A window {"days": [0..6], "from": "08:00", "to": "17:00"} blocks
 # the site for those hours (Monday is 0; "to" earlier than "from" runs past
@@ -2501,7 +2501,13 @@ def clean_site_limit(raw) -> dict:
             raise AppError(f"{pattern}: that period is too long.")
         if not 1 <= minutes <= period:
             raise AppError(f"{pattern}: {minutes} minutes doesn't fit in a period of {period} minutes.")
-        item = {"minutes": minutes, "every": every, "unit": unit}
+        try:
+            days = sorted({int(d) for d in b.get("days", range(7))})
+        except (TypeError, ValueError):
+            days = []
+        if not days or days[0] < 0 or days[-1] > 6:
+            raise AppError(f"{pattern}: pick at least one day for each time limit.")
+        item = {"minutes": minutes, "every": every, "unit": unit, "days": days}
         if item not in budgets:
             budgets.append(item)
     for w in raw.get("windows") or []:
@@ -2611,20 +2617,29 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
     at = _ms(now)
     budgets = []
     for b in rule["budgets"]:
+        days = b.get("days", list(range(7)))
         start, end = budget_bounds(now, b["every"], b["unit"])
+        # A budget only applies on its days: it stops at the first midnight of a day it doesn't.
+        for ahead in range(1, 8):
+            day = now.date() + timedelta(days=ahead)
+            if day.weekday() not in days:
+                end = min(end, datetime.combine(day, dtime.min))
+                break
         used = usage.used(rule["id"], _ms(start), at)
         budgets.append({
             "label": f"{b['minutes']} min per {period_label(b['every'], b['unit'])}",
             "used_s": round(used), "budget_s": b["minutes"] * 60,
             "remaining_s": round(b["minutes"] * 60 - used), "end_ms": _ms(end),
+            "active": now.weekday() in days,
         })
     spans = [[_ms(s), _ms(e)] for s, e in window_spans(rule["windows"], now)]
     open_until = next((e for s, e in spans if s <= at < e), 0)
-    spent = [b for b in budgets if b["remaining_s"] <= 0]
+    applying = [b for b in budgets if b["active"]]
+    spent = [b for b in applying if b["remaining_s"] <= 0]
     if spent:
         key = max(spent, key=lambda b: b["end_ms"])
     else:
-        key = min(budgets, key=lambda b: b["remaining_s"]) if budgets else None
+        key = min(applying, key=lambda b: b["remaining_s"]) if applying else None
     pass_until = usage.pass_until(rule["id"])
     reason = "window" if open_until else ("budget" if spent else "")
     return {

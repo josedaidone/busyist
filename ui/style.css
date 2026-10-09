@@ -534,3 +534,5 @@ body[data-phase="idle"] .ring .progress { opacity: 0; }
 .limit-sub .day[aria-pressed=true] { background: var(--focus); border-color: var(--focus); color: #fff; }
 .limit-actions { display: flex; gap: 8px; justify-content: flex-end; }
 #limitEditor > .input { width: 100%; }
+.limit-group { display: grid; gap: 6px; padding-bottom: 4px; }
+.limit-days { display: flex; gap: 4px; flex-wrap: wrap; }
