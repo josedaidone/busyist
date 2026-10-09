@@ -1,17 +1,23 @@
-// The "back to work" page a blocked site is redirected to. It shows the task
-// and a live countdown, keeps asking Busyist whether focus is still on, and
-// sends the tab back to where it came from the moment it isn't.
+// The page a blocked site is redirected to. Two kinds of block land here:
+//
+//  * focus: a pomodoro work phase is running. Shows the task and a live
+//    countdown, and sends the tab back the moment focus ends.
+//  * limit (?l=<rule id>): a site's time budget is used up, or it's inside
+//    blocked hours. Shows why and when it opens again, and offers a short pass.
+//
+// It asks the extension's background worker where things stand, so it also
+// works (from the last known state) while Busyist is closed.
 
-const FOCUS_URL = "http://127.0.0.1:47616/focus";
-
-// The original URL is everything after "?u=" (passed raw, so no decoding).
-const marker = location.href.indexOf("?u=");
+// The original URL is everything after "u=" (passed raw, so no decoding).
+const marker = location.href.search(/[?&]u=/);
 const original = marker >= 0 ? location.href.slice(marker + 3) : "";
+const limitId = new URLSearchParams(location.search).get("l") || "";
+const $ = (id) => document.getElementById(id);
 
 try {
-  document.getElementById("url").textContent = original ? new URL(original).hostname : "";
+  $("url").textContent = original ? new URL(original).hostname : "";
 } catch (e) {
-  document.getElementById("url").textContent = "";
+  $("url").textContent = "";
 }
 
 function goBack() {
@@ -19,30 +25,64 @@ function goBack() {
   else history.length > 1 ? history.back() : location.replace("about:blank");
 }
 
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const when = (ms) => {
+  const day = new Date(ms).toDateString() === new Date().toDateString()
+    ? "" : new Date(ms).toLocaleDateString([], { weekday: "short" }) + " ";
+  return day + clock(ms);
+};
+const minutes = (s) => Math.round(s / 60);
+
 let endsAt = 0;
+let passMinutes = 2;
 
 function renderCount() {
-  const count = document.getElementById("count");
+  const count = $("count");
   if (!endsAt) { count.textContent = ""; return; }
-  const left = Math.max(0, endsAt - Date.now());
-  const mins = Math.ceil(left / 60000);
-  const until = new Date(endsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  count.innerHTML = `Focus until <b>${until}</b> &middot; <b>${mins}</b> min left`;
+  const mins = Math.ceil(Math.max(0, endsAt - Date.now()) / 60000);
+  count.innerHTML = `Focus until <b>${clock(endsAt)}</b> &middot; <b>${mins}</b> min left`;
 }
 
-async function check() {
-  let focus;
-  try {
-    const res = await fetch(FOCUS_URL, { cache: "no-store" });
-    focus = res.ok ? await res.json() : { active: false };
-  } catch (e) {
-    focus = { active: false }; // Busyist closed or unreachable: let the tab back
+function render(status) {
+  const { focus, limit } = status;
+  if (limitId) {
+    if (!limit) { goBack(); return; }
+    $("eyebrow").lastChild.textContent = "Busyist limit";
+    if (limit.reason === "window") {
+      $("title").textContent = "Blocked right now.";
+      $("task").textContent = `${limit.pattern} is blocked at this time.`;
+    } else {
+      $("title").textContent = "That's enough for now.";
+      $("task").textContent = `You've used ${minutes(limit.used_s)} of ${minutes(limit.budget_s)} min on ${limit.pattern} (${limit.label}).`;
+    }
+    endsAt = 0;
+    $("count").innerHTML = `Opens again at <b>${when(limit.until)}</b>`;
+    passMinutes = limit.pass_minutes;
+    $("pass").textContent = `Allow ${passMinutes} more minutes`;
+    $("pass").classList.remove("hidden");
+    return;
   }
   if (!focus.active) { goBack(); return; }
-  document.getElementById("task").textContent = focus.task || "";
+  $("task").textContent = focus.task || "";
   endsAt = focus.ends_at_ms || 0;
   renderCount();
 }
+
+async function check() {
+  try {
+    render(await chrome.runtime.sendMessage({ type: "status", limit: limitId }));
+  } catch (e) {
+    // The worker is waking up; ask again on the next round.
+  }
+}
+
+$("pass").onclick = async () => {
+  $("pass").disabled = true;
+  try {
+    render(await chrome.runtime.sendMessage({ type: "grant", id: limitId, limit: limitId }));
+  } catch (e) { /* the next check picks it up */ }
+  $("pass").disabled = false;
+};
 
 check();
 setInterval(check, 4000);   // re-ask Busyist

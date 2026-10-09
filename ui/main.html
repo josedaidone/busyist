@@ -125,6 +125,7 @@
     <button type="button" class="stab" role="tab" data-tab="timer" aria-controls="p_timer">BUSY Bar</button>
     <button type="button" class="stab" role="tab" data-tab="apps" aria-controls="p_apps">Apps</button>
     <button type="button" class="stab" role="tab" data-tab="sites" aria-controls="p_sites">Websites<i class="dot warn hidden" id="sitesDot"></i></button>
+    <button type="button" class="stab" role="tab" data-tab="limits" aria-controls="p_limits">Limits<i class="dot warn hidden" id="limitsDot"></i></button>
     <button type="button" class="stab" role="tab" data-tab="general" aria-controls="p_general">General</button>
     <button type="button" class="stab" role="tab" data-tab="about" aria-controls="p_about">About<i class="dot good hidden" id="aboutDot"></i></button>
   </div>
@@ -237,6 +238,18 @@
           <button type="button" class="btn sm" id="copyExtensionPath">Copy path</button>
           <button type="button" class="btn sm ghost" id="openExtensionFolder">Show folder</button>
         </div>
+      </div>
+    </div>
+
+    <div class="section" role="tabpanel" id="p_limits" data-panel="limits">
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="site_limits_on" id="s_site_limits_on"><span class="knob"></span>Enforce website limits</label>
+      </div>
+      <div class="help">These work all day, with or without a pomodoro running. A site is blocked once any of its time limits is used up, or during its blocked hours. Time counts while the site is the active tab in a browser window you're using. Needs the browser extension (Websites tab); reload it after updating Busyist.</div>
+      <div id="limitsFields">
+        <div class="limit-list" id="limitList"></div>
+        <div class="limit-editor hidden" id="limitEditor"></div>
+        <button type="button" class="btn" id="addLimitBtn">Add a website limit</button>
       </div>
     </div>
 
