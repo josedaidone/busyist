@@ -1088,12 +1088,22 @@ window.App = {
   onShown(focusSearch) {
     if (Date.now() - lastTaskLoad > 30000) loadTasks(true);
     poll();
+    // A window that was hidden in the tray can still be throttled for a
+    // moment after it shows; poll again so the end-of-session prompt
+    // doesn't wait for a click.
+    setTimeout(poll, 200);
+    setTimeout(poll, 800);
     if (focusSearch) {
       $("search").focus();
       $("search").select();
     }
   },
 };
+
+// Re-sync as soon as the window is restored or focused.
+document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+window.addEventListener("focus", () => poll());
+window.addEventListener("resize", () => poll());
 
 async function boot() {
   api = window.pywebview.api;

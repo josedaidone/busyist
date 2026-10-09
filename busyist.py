@@ -888,11 +888,13 @@ class App:
         off = {"active": False, "task": "", "ends_at_ms": 0}
         with self.lock:
             session, snap = self.session, self.snap
-            if not session or snap is None:
+            if snap is None:
                 return off
+            if session is None and self.bar.is_local:
+                return off  # no bar: only our own sessions exist
             if not self.bar_ok and self.bar_fails >= 3:
                 return off  # fail open on a lost bar
-            if snap.snapshot_timestamp_ms < session["stamp"]:
+            if session and snap.snapshot_timestamp_ms < session["stamp"]:
                 return off  # a reading from before our own start
             state = timer_state(snap)
             if (state.mode != "interval" or state.is_finished
@@ -900,7 +902,9 @@ class App:
                 return off
             return {
                 "active": True,
-                "task": session["task"]["content"],
+                # No session here: the timer was started on the bar itself
+                # (or from another PC), but this PC still blocks.
+                "task": session["task"]["content"] if session else "",
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
             }
 
@@ -1055,9 +1059,9 @@ class App:
             self.notify("Session complete", f"{done} pomodoro{'s' * (done != 1)} on {task['content']}")
             if self.cfg["open_on_finish"]:
                 self.show_main()
-        elif reason == "stopped":
-            self.show_main()
         self.hide_mini()
+        if reason == "stopped":
+            self.show_main()  # after hiding the mini timer, which may hold the focus
 
     # ------------------------------------------------------------ updates
 
@@ -1344,7 +1348,16 @@ class App:
         if not self.main:
             return
         show_window(self.main)
+        wake_window(self.main)
         self._js(self.main, "App.onShown(%s)" % json.dumps(focus_search))
+        # The page may still be throttled; nudge it again shortly after.
+        for delay in (0.15, 0.5, 1.2):
+            threading.Timer(delay, self._rewake).start()
+
+    def _rewake(self) -> None:
+        if self.main and not self.quitting and window_shown(self.main):
+            wake_window(self.main)
+            self._js(self.main, "window.poll && poll()")
 
     def cycle_windows(self) -> None:
         """
@@ -1863,7 +1876,58 @@ def show_window(window: webview.Window) -> None:
         return
     user32 = ctypes.windll.user32
     user32.ShowWindow(hwnd, 9 if user32.IsIconic(hwnd) else 5)  # SW_RESTORE / SW_SHOW
+    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
     user32.SetForegroundWindow(hwnd)
+    if window_focused(window):
+        return
+    # Windows refuses SetForegroundWindow from a process that isn't the
+    # foreground one (e.g. right after the mini timer, which we may just have
+    # hidden). Attach to the foreground thread's input queue to get around it.
+    kernel32 = ctypes.windll.kernel32
+    fg = user32.GetForegroundWindow()
+    fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    this_thread = kernel32.GetCurrentThreadId()
+    attached = bool(fg_thread and fg_thread != this_thread
+                    and user32.AttachThreadInput(this_thread, fg_thread, True))
+    try:
+        user32.keybd_event(0x12, 0, 0, 0)  # a synthetic Alt press lifts the foreground lock
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0003 | 0x0040)  # TOPMOST, no move/size, show
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0003 | 0x0040)  # back to NOTOPMOST
+    finally:
+        if attached:
+            user32.AttachThreadInput(this_thread, fg_thread, False)
+
+
+def wake_window(window: webview.Window) -> None:
+    """
+    Nudge the WebView2 inside a window that was just un-hidden. After a stay
+    in the tray its renderer can stay throttled (timers and repaints stalled)
+    until the first input event, so send it a harmless mouse move and force a
+    repaint.
+    """
+    hwnd = _hwnd(window)
+    if not hwnd:
+        return
+    user32 = ctypes.windll.user32
+    children = []
+    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(
+        lambda h, _l: children.append(h) or True)
+    user32.EnumChildWindows(hwnd, proc, 0)
+    for target in children or [hwnd]:
+        user32.PostMessageW(target, 0x0200, 0, 0x00010001)  # WM_MOUSEMOVE
+    if not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
+        # A one-pixel resize and back makes WebView2 update its bounds and
+        # visibility, which restarts rendering after a stay on the taskbar.
+        rect = ctypes.wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            flags = 0x0002 | 0x0004 | 0x0010  # NOMOVE | NOZORDER | NOACTIVATE
+            user32.SetWindowPos(hwnd, None, 0, 0, w + 1, h, flags)
+            user32.SetWindowPos(hwnd, None, 0, 0, w, h, flags)
+    user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400)  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
 
 
 def mini_position(width: int, height: int) -> tuple[int, int]:
