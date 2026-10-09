@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Busyist</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icon.png" alt="" width="22" height="22">
+    <h1>Busyist</h1>
+    <span class="status" id="status">Checking&hellip;</span>
+  </header>
+
+  <section id="help" class="notice hidden"></section>
+
+  <section class="card" id="focusCard">
+    <h2>Pomodoro</h2>
+    <div id="focus"></div>
+  </section>
+
+  <section class="card hidden" id="hereCard">
+    <h2>This site</h2>
+    <div id="here"></div>
+  </section>
+
+  <section class="card" id="limitsCard">
+    <h2>Website limits</h2>
+    <div id="limits"></div>
+  </section>
+
+  <footer id="footer"></footer>
+  <script src="popup.js"></script>
+</body>
+</html>

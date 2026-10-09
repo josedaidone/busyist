@@ -140,20 +140,32 @@ function addPending(ids, seconds, now) {
   }
 }
 
-// Which limited rules is the user on right now? The active tab of the focused
-// window, while they're at the PC.
-async function currentIds(focus, now) {
-  const rules = limitRules(focus);
-  if (!rules.length) return [];
+// The page the user is looking at: the active tab of the focused window.
+async function activeUrl() {
+  const win = await chrome.windows.getLastFocused().catch(() => null);
+  if (!win || !win.focused) return "";
+  const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
+  return (tab && tab.url) || "";
+}
+
+const rulesFor = (focus, url) =>
+  limitRules(focus).filter((r) => patternsOf(r).some((p) => matches(p, url)));
+
+// Seconds left on a rule's time budget, or null if it has none that applies
+// (or the answer is too old to say). Counts the time measured since Busyist
+// was last asked.
+function secondsLeft(rule, now) {
+  if (rule.remaining_s == null || now >= rule.limit_end_ms) return null;
+  return Math.max(0, rule.remaining_s - pendingSeconds(rule.id));
+}
+
+// Which limited rules is the user using right now? Their current page, while
+// they're at the PC.
+async function currentIds(focus, now, url) {
+  if (!url || !limitRules(focus).length) return [];
   const idle = await chrome.idle.queryState(IDLE_SECONDS);
   if (idle !== "active") return [];
-  const win = await chrome.windows.getLastFocused().catch(() => null);
-  if (!win || !win.focused) return [];
-  const [tab] = await chrome.tabs.query({ active: true, windowId: win.id });
-  if (!tab || !tab.url) return [];
-  return rules
-    .filter((r) => patternsOf(r).some((p) => matches(p, tab.url)) && !limitState(r, now))
-    .map((r) => r.id);
+  return rulesFor(focus, url).filter((r) => !limitState(r, now)).map((r) => r.id);
 }
 
 // --------------------------------------------------------- talking to Busyist
@@ -203,7 +215,7 @@ async function fetchState(force) {
   } else {
     // Busyist isn't running or can't be reached. Focus blocking fails open;
     // limits go on from the last answer.
-    data = Object.assign({}, lastGood || {}, { active: false, patterns: [], sites: [] });
+    data = Object.assign({}, lastGood || {}, { active: false, patterns: [], sites: [], offline: true });
   }
   cache = { at: Date.now(), data };
   saveState();
@@ -276,13 +288,33 @@ async function sweepTabs(focus, now) {
   }
 }
 
-function updateBadge(focus) {
-  if (focus.active && focus.ends_at_ms) {
-    const mins = Math.max(0, Math.round((focus.ends_at_ms - Date.now()) / 60000));
+// 45s, 12m, 3h: short enough for the badge.
+function shortTime(seconds) {
+  const s = Math.max(0, Math.ceil(seconds));
+  if (s < 60) return s + "s";
+  const m = Math.ceil(s / 60);
+  return m < 100 ? m + "m" : Math.floor(m / 60) + "h";
+}
+
+// The badge shows the time left on the current page's limit, or else the
+// minutes left in the pomodoro work phase; the tooltip says which.
+function updateBadge(focus, now, url) {
+  const here = (url ? rulesFor(focus, url) : [])
+    .map((rule) => ({ rule, left: secondsLeft(rule, now) }))
+    .filter((x) => x.left != null && !limitState(x.rule, now))
+    .sort((a, b) => a.left - b.left)[0];
+  if (here) {
+    chrome.action.setBadgeText({ text: shortTime(here.left) });
+    chrome.action.setBadgeBackgroundColor({ color: here.left <= 30 ? "#db4035" : here.left <= 120 ? "#e08a00" : "#2e9e6b" });
+    chrome.action.setTitle({ title: `Busyist: ${shortTime(here.left)} left on ${patternsOf(here.rule).join(", ")} (${here.rule.limit_label})` });
+  } else if (focus.active && focus.ends_at_ms) {
+    const mins = Math.max(0, Math.round((focus.ends_at_ms - now) / 60000));
     chrome.action.setBadgeText({ text: String(mins) });
     chrome.action.setBadgeBackgroundColor({ color: "#db4035" });
+    chrome.action.setTitle({ title: `Busyist: focus, ${mins} min left` });
   } else {
     chrome.action.setBadgeText({ text: "" });
+    chrome.action.setTitle({ title: "Busyist Focus" });
   }
 }
 
@@ -303,9 +335,10 @@ async function tick(force) {
   const focus = await fetchState(force);
   now = Date.now();
   await setRules(focus, now);
-  updateBadge(focus);
   await sweepTabs(focus, now);
-  counting = { ids: await currentIds(focus, now), since: Date.now() };
+  const url = await activeUrl();
+  counting = { ids: await currentIds(focus, now, url), since: Date.now() };
+  updateBadge(focus, Date.now(), url);
   // While something is being timed, keep ticking (and keep the worker awake).
   if (counting.ids.length && !timer) timer = setInterval(() => sync(false), TICK_MS);
   if (!counting.ids.length && timer) { clearInterval(timer); timer = null; }
@@ -341,6 +374,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       try { await post(GRANT_URL, { id: msg.id, version: VERSION }); } catch (e) { /* the local pass still holds */ }
       await sync(true);
     }
+    if (msg.type === "popup") { reply(await popupData(now)); return; }
     const focus = (await fetchState(msg.type === "grant")) || {};
     const rule = limitRules(focus).find((r) => r.id === msg.limit);
     const state = rule && limitState(rule, now);
@@ -359,6 +393,46 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   })();
   return true; // reply asynchronously
 });
+
+// What the toolbar popup shows (popup.js): the pomodoro, the limits and where
+// each stands, and whether Busyist is reachable.
+async function popupData(now) {
+  const focus = (await fetchState(false)) || {};
+  const url = await activeUrl();
+  const here = new Set((url ? rulesFor(focus, url) : []).map((r) => r.id));
+  const upcoming = (rule) => (rule.windows_ms || []).find(([start]) => start > now);
+  return {
+    version: VERSION,
+    offline: !!focus.offline || !lastGood,
+    known: !!lastGood,
+    focus: {
+      active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0,
+      mode: focus.mode || "block", sites: (focus.patterns || []).length,
+    },
+    limits_on: !!focus.limits_on,
+    pass_minutes: focus.pass_minutes || 2,
+    limits: limitRules(focus).map((rule) => {
+      const state = limitState(rule, now);
+      const next = upcoming(rule);
+      return {
+        id: rule.id,
+        patterns: patternsOf(rule),
+        here: here.has(rule.id),
+        state,                                  // {reason, until} while blocked
+        left_s: (() => {                        // null: no time limit applies now
+          const left = secondsLeft(rule, now);
+          const live = counting.ids.includes(rule.id) ? Math.min((now - counting.since) / 1000, MAX_GAP_S) : 0;
+          return left == null ? null : Math.max(0, left - live);
+        })(),
+        budget_s: rule.budget_s,
+        label: rule.limit_label,
+        resets_ms: rule.limit_end_ms,
+        next_window: next || null,              // [start, end] of the next blocked hours
+        pass_until_ms: Math.max(rule.pass_until_ms || 0, passes[rule.id] || 0),
+      };
+    }),
+  };
+}
 
 // Also run when the worker first loads (e.g. right after "Load unpacked").
 ensureAlarm();
