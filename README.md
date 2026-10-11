@@ -1,29 +1,32 @@
 <p align="center"><img src="busyist.png" width="96" alt=""></p>
 
-# Busyist
+# buZyist
 
-**Todoist pomodoros on your BUSY Bar.** Busyist is a small Windows tray app: pick a task from
-Todoist, and your BUSY Bar runs its focus timer while Busyist keeps track of
-what you're working on. No bar? Busyist runs the timer on your PC instead.
+**Todoist pomodoros on your BUSY Bar.** buZyist is a small Windows tray app: pick a task from
+Todoist, and your BUSY Bar runs its focus timer while buZyist keeps track of
+what you're working on. No bar? buZyist runs the timer on your PC instead.
 
-![Busyist window](docs/screenshot.png)
+![buZyist window](docs/screenshot.png)
 
-> Unofficial. Busyist is a hobby project and is not affiliated with BUSY or Todoist.
+> Unofficial. buZyist is a hobby project and is not affiliated with BUSY or Todoist.
+>
+> buZyist was called Busyist until 1.5.0. Updating keeps your settings and the browser extension
+> where they were (`%APPDATA%\Busyist`).
 
 ## Download
 
-Get **`Busyist-Setup-x.y.z.exe`** from the [latest release](https://github.com/josedaidone/busyist/releases/latest)
-and run it. It installs for your user only (no admin rights needed), adds Busyist to the Start
+Get **`Buzyist-Setup-x.y.z.exe`** from the [latest release](https://github.com/josedaidone/busyist/releases/latest)
+and run it. It installs for your user only (no admin rights needed), adds buZyist to the Start
 menu, and starts it.
 
-- **"Windows protected your PC"?** Busyist isn't code-signed yet, so SmartScreen warns on first run.
+- **"Windows protected your PC"?** buZyist isn't code-signed yet, so SmartScreen warns on first run.
   Click **More info → Run anyway**. You can check the download against `SHA256SUMS.txt` on the
   release page.
-- **Updates install themselves.** Busyist checks GitHub for a new release every few hours, verifies
+- **Updates install themselves.** buZyist checks GitHub for a new release every few hours, verifies
   the download against `SHA256SUMS.txt`, and installs it while no session is running and the
   window is closed. Turn that off in Settings, or use **Settings → About → Check for updates**.
   An install for all users asks for admin rights before updating.
-- Prefer no installer? Download the **portable zip**, unzip it anywhere and run `Busyist.exe`.
+- Prefer no installer? Download the **portable zip**, unzip it anywhere and run `Buzyist.exe`.
   The portable copy tells you when there's a new version but doesn't update itself.
 - Needs Windows 10 or 11 (64-bit) and Microsoft's WebView2 Runtime, which Windows 11 already has.
   The installer adds it if it's missing.
@@ -32,13 +35,13 @@ menu, and starts it.
 
 1. **Todoist** (optional; turn off **Use Todoist** in Settings to run plain focus sessions without a
    task list): in Todoist, open *Settings → Integrations → Developer* and copy your **API token**.
-2. **BUSY Bar** (optional; without one, Busyist runs the timer itself, shown by the mini timer and
+2. **BUSY Bar** (optional; without one, buZyist runs the timer itself, shown by the mini timer and
    the tray icon). In Settings, turn on **Run the timer on a BUSY Bar**, then:
    - **Over Wi-Fi**: the bar's HTTP API is off by default. Plug the bar in over USB, open
      <http://10.0.4.20>, go to *Network → HTTP API*, turn it on and set a PIN. Then find the bar's IP
      under *Settings → Wi-Fi → (your network) → View IP Address*.
-   - **Over USB only**: nothing to do, Busyist also tries the bar's USB address.
-3. Start Busyist. The first time, it opens on **Settings**: paste the token and, if you have a bar,
+   - **Over USB only**: nothing to do, buZyist also tries the bar's USB address.
+3. Start buZyist. The first time, it opens on **Settings**: paste the token and, if you have a bar,
    turn it on, enter its IP and PIN and click **Test connection**. Then **Save**.
 
 ## Using it
@@ -81,29 +84,29 @@ menu, and starts it.
   - Time counts only while the site is the active tab in the browser window you're using. Once a
     limit is used up, the site shows a page saying when it opens again, with a button to allow a
     couple more minutes.
-  - The extension keeps enforcing limits while Busyist is closed and reports the time it measured
-    the next time Busyist runs.
+  - The extension keeps enforcing limits while buZyist is closed and reports the time it measured
+    the next time buZyist runs.
 - **The extension's toolbar button**: its badge shows the time left on the current site's limit
   (otherwise the pomodoro minutes left). Click it to see the current pomodoro and your limits.
 - **Installing the extension**: in **Settings → Websites**, click **Open Chrome's extensions
   page**. It opens `chrome://extensions`, copies the extension's folder path and shows the folder
   in Explorer. Turn on **Developer mode**, then drag the folder onto the page (or click **Load
-  unpacked** and paste the path). The folder is `%APPDATA%\Busyist\chrome-extension`, and Busyist
-  keeps it up to date, so it survives updates. When an update changes the extension, Busyist
+  unpacked** and paste the path). The folder is `%APPDATA%\Busyist\chrome-extension`, and buZyist
+  keeps it up to date, so it survives updates. When an update changes the extension, buZyist
   shows a **Reload extension** button: click the extension's reload arrow in `chrome://extensions`
   (you don't need to load the folder again).
-- Closing or minimizing the window sends it to the tray. Busyist starts with Windows; turn that
+- Closing or minimizing the window sends it to the tray. buZyist starts with Windows; turn that
   off in Settings.
 
 ## Privacy
 
-- Busyist talks to three places only: `api.todoist.com` (only when Todoist is on), your BUSY Bar on
+- buZyist talks to three places only: `api.todoist.com` (only when Todoist is on), your BUSY Bar on
   your own network, and GitHub, to check for and download new releases. There is no telemetry and
   no account.
-- For website blocking and limits, Busyist answers the browser extension on `127.0.0.1:47616` (your
-  PC only). It only replies to the Busyist extension itself, so web pages can't read what you're
+- For website blocking and limits, buZyist answers the browser extension on `127.0.0.1:47616` (your
+  PC only). It only replies to the buZyist extension itself, so web pages can't read what you're
   working on. The extension reports only the time spent on the sites you set limits for, and only
-  to Busyist on your PC. It doesn't send your browsing anywhere else.
+  to buZyist on your PC. It doesn't send your browsing anywhere else.
 - Your settings live in `%APPDATA%\Busyist`: `config.json` (including your Todoist token and bar
   PIN, unencrypted), the session, your history, the time spent on limited sites (`usage.json`)
   and a log. **Settings → About → Open data folder**
@@ -115,13 +118,13 @@ menu, and starts it.
 - **"Bar offline"**: check the IP and PIN in Settings, and that your PC and the bar are on the same
   network. Some office and guest networks block devices from talking to each other.
 - **Websites aren't blocked**: **Settings → Websites** should say *Browser extension: connected*.
-  If not, check that the extension is turned on in `chrome://extensions`, and that Busyist is
-  running. If Busyist shows **Reload extension**, click the extension's reload arrow in
+  If not, check that the extension is turned on in `chrome://extensions`, and that buZyist is
+  running. If buZyist shows **Reload extension**, click the extension's reload arrow in
   `chrome://extensions` (or restart Chrome) to load the new version.
 - **A website limit doesn't count down**: time only counts while the site is the active tab in
   the focused browser window and you're not idle. Check that **Enforce website limits** is on in
   Settings → Limits.
-- **The hotkey does nothing**: another app may own that combination. Busyist warns about this; pick
+- **The hotkey does nothing**: another app may own that combination. buZyist warns about this; pick
   another one in Settings.
 - **Something else**: the log at `%APPDATA%\Busyist\busyist.log` usually says why. Please attach it
   to an [issue](https://github.com/josedaidone/busyist/issues). Check it first, since it can contain
@@ -152,7 +155,7 @@ git push origin v1.4.0
 ```
 
 Installed copies update themselves from the latest release, so keep the asset names
-(`Busyist-Setup-x.y.z.exe`, `SHA256SUMS.txt`) as `build.ps1` makes them.
+(`Buzyist-Setup-x.y.z.exe`, `SHA256SUMS.txt`) as `build.ps1` makes them.
 
 The full steps, including test builds and what to do when one fails, are in
 [docs/RELEASING.md](docs/RELEASING.md).
@@ -166,5 +169,5 @@ Project layout:
 
 ## License
 
-[MIT](LICENSE). Busyist bundles third-party components under their own licenses; see
+[MIT](LICENSE). buZyist bundles third-party components under their own licenses; see
 `THIRD_PARTY_LICENSES.txt` in the app folder.

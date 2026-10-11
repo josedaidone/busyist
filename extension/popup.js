@@ -1,6 +1,6 @@
-// The toolbar popup: what Busyist is doing, and where each website limit
+// The toolbar popup: what buZyist is doing, and where each website limit
 // stands. Everything comes from the background worker (popupData), which also
-// works while Busyist is closed, from the last answer it got.
+// works while buZyist is closed, from the last answer it got.
 
 const $ = (id) => document.getElementById(id);
 
@@ -63,12 +63,12 @@ function renderFocus(data) {
       ? "Only your allowed websites open until it ends."
       : f.sites ? `${f.sites} website${f.sites === 1 ? " is" : "s are"} blocked until it ends.` : "No websites are blocked during focus."));
   } else if (data.offline && !data.known) {
-    box.append(el("div", "small muted", "Unknown: Busyist hasn't answered yet."));
+    box.append(el("div", "small muted", "Unknown: buZyist hasn't answered yet."));
   } else if (data.offline) {
-    box.append(el("div", "small muted", "Unknown while Busyist is closed."));
+    box.append(el("div", "small muted", "Unknown while buZyist is closed."));
   } else {
     box.append(el("div", "small", "No work phase running."));
-    box.append(el("div", "small muted", "Start one in Busyist to block distracting websites."));
+    box.append(el("div", "small muted", "Start one in buZyist to block distracting websites."));
   }
   swap($("focus"), ...out);
 }
@@ -104,7 +104,7 @@ function ruleRow(rule) {
 
 function render(data) {
   const status = $("status");
-  setText(status, data.offline ? "Busyist not running" : "Connected");
+  setText(status, data.offline ? "buZyist not running" : "Connected");
   setClass(status, "status " + (data.offline ? "bad" : "ok"));
 
   // Help: what to do when something is missing. The extension can't open the
@@ -113,19 +113,19 @@ function render(data) {
   const helpParts = [];
   const tip = (info, ...parts) => { helpClass = "notice" + (info ? " info" : ""); helpParts.push(...parts); };
   if (data.offline) {
-    tip(false, el("b", "", "Busyist isn't running. "),
+    tip(false, el("b", "", "buZyist isn't running. "),
       data.known ? "Limits keep working from what it last said, and time is saved until it's back. "
                  : "Nothing is blocked until it runs. ",
-      "Start Busyist from the Start menu, or open it from its tray icon.");
+      "Start buZyist from the Start menu, or open it from its tray icon.");
   } else if (!data.limits_on && !data.limits.length) {
     tip(true, el("b", "", "Website limits are off. "),
-      "In Busyist, open Settings \u2192 Limits, add a website and turn on \u201cEnforce website limits\u201d.");
+      "In buZyist, open Settings \u2192 Limits, add a website and turn on \u201cEnforce website limits\u201d.");
   } else if (!data.limits_on) {
     tip(true, el("b", "", "Website limits are switched off. "),
-      "Turn on \u201cEnforce website limits\u201d in Busyist \u2192 Settings \u2192 Limits.");
+      "Turn on \u201cEnforce website limits\u201d in buZyist \u2192 Settings \u2192 Limits.");
   } else if (!data.limits.length) {
     tip(true, el("b", "", "No limits yet. "),
-      "Open Busyist, then Settings \u2192 Limits \u2192 Add a website limit (for example 5 minutes per hour).");
+      "Open buZyist, then Settings \u2192 Limits \u2192 Add a website limit (for example 5 minutes per hour).");
   }
 
   setClass($("help"), helpClass);
@@ -151,7 +151,7 @@ function render(data) {
   $("limitsCard").classList.toggle("hidden", !data.limits.length);
   swap($("limits"), ...data.limits.map(ruleRow));
 
-  swap($("footer"), "Change limits in ", el("b", "", "Busyist \u2192 Settings \u2192 Limits"),
+  swap($("footer"), "Change limits in ", el("b", "", "buZyist \u2192 Settings \u2192 Limits"),
     ". Blocking during pomodoros is in the Websites tab. ", el("span", "", `Extension ${data.version}`));
 }
 

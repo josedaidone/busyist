@@ -5,31 +5,49 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Back to work</title>
   <style>
+    /* buZyist: the block page wasn't in the design handoff. It uses the
+       "Blocked" state colour (Terra) as the page, with the dark-background
+       logo, a state chip and the display face for the line. */
+    @font-face { font-family: "Fredoka"; font-weight: 600; src: url("fonts/fredoka-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Figtree"; font-weight: 400; src: url("fonts/figtree-latin-400-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Figtree"; font-weight: 600; src: url("fonts/figtree-latin-600-normal.woff2") format("woff2"); }
+    @font-face { font-family: "Figtree"; font-weight: 700; src: url("fonts/figtree-latin-700-normal.woff2") format("woff2"); }
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     body {
       margin: 0; min-height: 100vh; display: grid; place-items: center;
-      font: 15px/1.5 -apple-system, "Segoe UI", system-ui, sans-serif;
-      background: #16151a; color: #f2f1ee;
+      font: 400 16px/1.5 "Figtree", "Segoe UI", system-ui, sans-serif;
+      background: #3A1410; color: #FFF7F3;
     }
-    .card { text-align: center; padding: 40px; max-width: 560px; }
-    .eyebrow { text-transform: uppercase; letter-spacing: .12em; font-size: 12px; color: #db4035; font-weight: 700; }
-    h1 { font-size: 30px; margin: 14px 0 6px; }
-    .task { font-size: 18px; color: #c9c7c2; margin: 0 0 24px; }
-    .count { font-size: 15px; color: #9a988f; }
-    .count b { color: #f2f1ee; }
-    .url { margin-top: 26px; font-size: 12.5px; color: #6f6d66; word-break: break-all; }
+    .card { text-align: center; padding: 40px 28px; max-width: 580px; display: grid; justify-items: center; }
+    .logo { height: 36px; width: auto; margin-bottom: 36px; }
+    .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 16px; border-radius: 999px;
+      background: #D9361B; color: #fff; font-size: 15px; font-weight: 700;
+    }
+    .eyebrow.limit { background: #FFF7F3; color: #3A1410; }
+    .eyebrow svg { width: 18px; height: 18px; }
+    h1 { font: 600 44px/1.1 "Fredoka", "Arial Rounded MT Bold", sans-serif; letter-spacing: -.01em; margin: 20px 0 8px; text-wrap: balance; }
+    .task { font-size: 19px; font-weight: 600; color: #F7D5C9; margin: 0 0 22px; }
+    .task:empty { display: none; }
+    .count { font-size: 16px; color: #D9A99C; margin: 0; }
+    .count b { color: #FFF7F3; font-weight: 700; }
+    .url { margin-top: 30px; font-size: 13px; color: #A07A72; word-break: break-all; }
     .hidden { display: none; }
-    .pass { margin-top: 22px; background: none; border: 1px solid #3a3942; color: #c9c7c2; font: inherit; font-size: 13.5px; padding: 8px 16px; border-radius: 8px; cursor: pointer; }
-    .pass:hover { border-color: #6f6d66; color: #f2f1ee; }
+    .pass {
+      margin-top: 24px; height: 48px; padding: 0 22px; background: transparent; border: 2px solid #7A4A42;
+      color: #FFF7F3; font: inherit; font-size: 15px; font-weight: 700; border-radius: 999px; cursor: pointer;
+    }
+    .pass:hover { background: #4A1D17; }
     .pass:disabled { opacity: .5; cursor: default; }
-    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #db4035; margin-right: 7px; vertical-align: middle; }
+    .pass:focus-visible { outline: 2px solid #FF7A5C; outline-offset: 2px; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="eyebrow" id="eyebrow"><span class="dot"></span>Busyist focus</div>
-    <h1 id="title">Back to work.</h1>
+    <img class="logo" src="logo-dark.svg" alt="buZyist">
+    <div class="eyebrow" id="eyebrow"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l7 3v5.5c0 4.4-2.9 7.6-7 9.5-4.1-1.9-7-5.1-7-9.5V6l7-3z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span>Focus</span></div>
+    <h1 id="title">The feed can wait.</h1>
     <p class="task" id="task"></p>
     <p class="count" id="count">Checking focus&hellip;</p>
     <button class="pass hidden" id="pass" type="button"></button>

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Busyist is a Windows-only tray app that runs Todoist pomodoros on a BUSY Bar (a hardware timer), or on the PC when there is no bar. Python backend (`busyist.py`) + pywebview/WebView2 UI (`ui/`). There is no test suite and no linter configured.
+buZyist (spelled with a capital Z in anything people read; called Busyist before 1.5.0) is a Windows-only tray app that runs Todoist pomodoros on a BUSY Bar (a hardware timer), or on the PC when there is no bar. Python backend (`busyist.py`) + pywebview/WebView2 UI (`ui/`). There is no test suite and no linter configured.
 
 ## Commands
 
@@ -18,7 +18,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 - Logs go to `%APPDATA%\Busyist\busyist.log` (only a console when run with `python`, not `pythonw`).
 - Release: bump `__version__` in `busyist.py`, commit, push a matching tag `vX.Y.Z`. CI (`.github/workflows/release.yml`) fails if the tag and `__version__` differ; `build.ps1`, the PyInstaller spec and the Inno script all read the version from that one line by regex, so keep its `__version__ = "x.y.z"` format.
-- The in-app updater depends on the release assets: it looks for `Busyist-Setup-<version>.exe` and `SHA256SUMS.txt` on the GitHub "latest release", so keep those names. It runs the new Setup with `/VERYSILENT /RELAUNCH=1`, and `DeinitializeSetup` in `packaging/busyist.iss` starts the app again afterwards.
+- The in-app updater depends on the release assets: it looks for `Buzyist-Setup-<version>.exe` (falling back to `Busyist-Setup-<version>.exe`) and `SHA256SUMS.txt` on the GitHub "latest release", so keep those names. `build.ps1` also copies the installer to `Busyist-Setup-<version>.exe`, because copies from before the rename only look for that name. It runs the new Setup with `/VERYSILENT /RELAUNCH=1`, and `DeinitializeSetup` in `packaging/busyist.iss` starts the app again afterwards.
+- **The rename**: `APP_NAME = "buZyist"` is what people see (window titles, tray, notifications); `APP = "Busyist"` stays for the data folder `%APPDATA%\Busyist` (Chrome loads the unpacked extension from there, so moving it would orphan the extension), the sign-in Run value and the logger. The exe is `Buzyist.exe`; the Inno `AppId` is unchanged so Setup installs over old copies, removes `Busyist.exe` and its shortcuts, and repoints an old Run entry. The extension id (manifest `key`), the repo name and `busyist.py` keep their names.
 - `build.ps1` aborts if `config.json`/`session.json`/`history.json` end up in `dist\`. Those files are gitignored personal data (tokens, PIN); never commit them.
 
 ## Architecture
@@ -41,6 +42,9 @@ All backend logic is one file, `busyist.py`, in four layers:
 Also in `busyist.py`: pystray tray icon (drawn with Pillow, shows minutes left), `GlobalHotkey` (Win32 `RegisterHotKey` on its own thread; hotkey cycles window → mini → tray), launch-at-login via the registry Run key, and single-instance enforcement (a second launch connects to `127.0.0.1:47615`, which makes the first instance show its window).
 
 ### UI
+
+The look follows the "Tomate" identity in `buzyist-handoff/` (gitignored, local only): its tokens are the `--bz-*` variables at the top of `ui/style.css`, mapped to role variables (`--bg`, `--surface`, `--ink`, `--primary-text`, `--done`, ...) that the components use. Fredoka (display, numbers) and Figtree (text) are embedded from `ui/fonts/` (and `extension/fonts/`), logos are `ui/img/`. No shadows; Tomate is the main action, Manteiga a break, the switch-off grey a pause, Terra "blocked". Small red text uses Molho (`--primary-text`), not Tomate, for contrast. Light only: there is no dark theme (the handoff has none; one was dropped before 1.5.0). `tools/make_icon.py` draws the symbol into `busyist.ico`, `busyist.png` and `extension/icon.png`.
+
 
 `ui/main.html|js` (main window: task list, saved filters, settings) and `ui/mini.html|js` (frameless always-on-top timer) are plain JS with no build step or framework. Both are separate pywebview windows sharing one `Api`. The pages **poll `get_state()`** (mini: every 1s, interpolating the countdown locally from `state.now`); Python can also push with `window.evaluate_js` (e.g. `window.Mini.refresh`), but failures there are swallowed because the page may not be loaded yet. `Api.get_state` / `App.state()` is the single source of truth for what the UI shows.
 

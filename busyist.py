@@ -1,5 +1,5 @@
 """
-Busyist: Todoist -> BUSY Bar pomodoros, as a Windows tray app.
+buZyist: Todoist -> BUSY Bar pomodoros, as a Windows tray app.
 
 Click the tray tomato (or press the hotkey, default Ctrl+Alt+P, which cycles
 window -> mini timer -> tray), pick a task from Todoist, and the BUSY Bar
@@ -13,7 +13,8 @@ runs its standard interval timer. While it runs:
 
     .venv\\Scripts\\pythonw.exe busyist.py      (or double-click run.bat)
 
-Settings, the running session and history live in %APPDATA%\\Busyist and can
+Settings, the running session and history live in %APPDATA%\\Busyist (the name from
+before buZyist, kept so the loaded browser extension stays put) and can
 all be changed from the window. Packaged builds are made with build.ps1.
 """
 from __future__ import annotations
@@ -50,12 +51,16 @@ from busylib import BusyBar, exceptions, types
 from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
+# APP names what Windows and the disk see from before the rename: the data
+# folder (%APPDATA%\Busyist, where Chrome loads the extension from), the
+# sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
-__version__ = "1.4.2"
+APP_NAME = "buZyist"
+__version__ = "1.5.0"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
-FROZEN = getattr(sys, "frozen", False)  # running as the packaged Busyist.exe
+FROZEN = getattr(sys, "frozen", False)  # running as the packaged Buzyist.exe
 SOURCE_DIR = Path(__file__).resolve().parent
 # Files that ship with the app (ui/, the icon): next to this script, or where
 # PyInstaller unpacked them.
@@ -132,7 +137,6 @@ DEFAULTS = {
     "notifications": True,
     "launch_at_login": True,
     "open_on_finish": True,
-    "theme": "auto",  # auto follows Windows; or light / dark
     "auto_update": True,
     # Keep distracting apps away while a work phase runs (issue #1). Off by
     # default for other users. The list is APP_PRESETS (each switchable)
@@ -581,7 +585,9 @@ def latest_release() -> dict | None:
         return None
     version = tag.lstrip("v")
     assets = {a.get("name"): a for a in release.get("assets", [])}
-    setup = assets.get(f"Busyist-Setup-{version}.exe")
+    # Releases from 1.5.0 on ship the installer under both names, so copies
+    # from before the rename (which look for Busyist-Setup) still update.
+    setup = assets.get(f"Buzyist-Setup-{version}.exe") or assets.get(f"Busyist-Setup-{version}.exe")
     sums = assets.get("SHA256SUMS.txt")
     return {
         "version": version,
@@ -637,7 +643,10 @@ def app_dir_writable() -> bool:
 
 # --------------------------------------------------------------- tray icon ---
 
-FOCUS_RGB, REST_RGB, PAUSE_RGB, IDLE_RGB = (228, 67, 50), (47, 158, 107), (224, 160, 40), (222, 60, 48)
+# The buZyist palette (buzyist-handoff tokens): Tomate for focus, Manteiga for
+# a break, the switched-off grey for a pause, all on a Terra disc.
+FOCUS_RGB, REST_RGB, PAUSE_RGB = (217, 54, 27), (245, 184, 61), (160, 122, 114)
+TERRA_RGB, TRACK_RGB, NATA_RGB, LEAF_RGB = (58, 20, 16), (92, 42, 34), (255, 247, 243), (30, 107, 67)
 
 
 def _font(size: int):
@@ -650,19 +659,21 @@ def _font(size: int):
 
 
 def tray_image(view: dict | None) -> Image.Image:
-    """A tomato when idle; a progress ring with the minutes left otherwise."""
+    """The tomato when idle; a progress ring with the minutes left otherwise."""
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     if not view:
         if ICON_PATH.exists():
             return Image.open(ICON_PATH).convert("RGBA").resize((size, size), Image.LANCZOS)
-        d.ellipse((6, 12, 58, 62), fill=IDLE_RGB)
-        d.polygon([(32, 16), (20, 4), (32, 10), (44, 4)], fill=(70, 160, 70))
+        d.ellipse((7, 17, 57, 62), fill=FOCUS_RGB)
+        d.rounded_rectangle((30, 2, 34, 16), radius=2, fill=LEAF_RGB)
+        d.ellipse((14, 10, 32, 20), fill=LEAF_RGB)
+        d.ellipse((32, 10, 50, 20), fill=LEAF_RGB)
         return img
     color = PAUSE_RGB if view["paused"] else (FOCUS_RGB if view["phase"] == "work" else REST_RGB)
-    d.ellipse((2, 2, 62, 62), fill=(32, 32, 36))
-    d.arc((2, 2, 62, 62), 0, 360, fill=(80, 80, 88), width=7)
+    d.ellipse((2, 2, 62, 62), fill=TERRA_RGB)
+    d.arc((2, 2, 62, 62), 0, 360, fill=TRACK_RGB, width=7)
     sweep = 360 * max(0.0, min(1.0, view["fraction"]))
     d.arc((2, 2, 62, 62), -90, -90 + max(sweep, 1), fill=color, width=7)
     minutes = view["minutes"]
@@ -670,7 +681,7 @@ def tray_image(view: dict | None) -> Image.Image:
     font = _font(30 if len(text) < 3 else 22)
     box = d.textbbox((0, 0), text, font=font)
     w, h = box[2] - box[0], box[3] - box[1]
-    d.text(((size - w) / 2 - box[0], (size - h) / 2 - box[1]), text, font=font, fill=(255, 255, 255))
+    d.text(((size - w) / 2 - box[0], (size - h) / 2 - box[1]), text, font=font, fill=NATA_RGB)
     return img
 
 
@@ -682,6 +693,7 @@ class App:
         self.cfg = dict(DEFAULTS)
         saved = read_json(CONFIG_PATH, {})
         self.cfg.update(saved)
+        self.cfg.pop("theme", None)  # there was a dark theme before 1.5.0
         self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
         # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
         self.cfg["blocked_sites"] = _sanitize_sites(self.cfg.get("blocked_sites"))
@@ -867,12 +879,33 @@ class App:
             minutes += self.session.get("done", 0) * self.session["work_ms"] // 60000
         return {"pomodoros": count, "minutes": minutes, "completed": completed}
 
+    def task_tomatoes(self) -> dict[str, int]:
+        """Finished pomodoros per task id, from the history plus the running session."""
+        counts: dict[str, int] = {}
+        for h in self.history:
+            if h.get("task_id") and h.get("pomodoros"):
+                counts[h["task_id"]] = counts.get(h["task_id"], 0) + h["pomodoros"]
+        if self.session and self.session["task"]["id"] and self.session.get("done"):
+            tid = self.session["task"]["id"]
+            counts[tid] = counts.get(tid, 0) + self.session["done"]
+        return counts
+
+    def blocks_view(self) -> dict:
+        """What focus blocks are switched on, for the timer's "focus guard" line."""
+        cfg = self.cfg
+        apps = sum(1 for a in cfg.get("blocked_apps") or [] if a.get("on")) if cfg.get("block_apps") else 0
+        mode = cfg.get("site_mode", "block")
+        sites = len(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if cfg.get("block_sites") else 0
+        limits = (sum(1 for r in cfg.get("site_limits") or [] if r.get("enabled"))
+                  if cfg.get("site_limits_on") else 0)
+        return {"apps": apps, "sites": sites, "site_mode": mode, "limits": limits,
+                "sites_on": bool(cfg.get("block_sites")), "active": self._focus_active}
+
     def state(self) -> dict:
         with self.lock:
             view = self.timer_view()
             return {
                 "now": now_ms(),
-                "theme": self.cfg["theme"],
                 "timer": view,
                 "session": self.session and {
                     k: self.session[k] for k in ("task", "started_at", "done", "label_added")
@@ -880,6 +913,8 @@ class App:
                 "ended": self.ended,
                 "bar": {"ok": self.bar_ok, "via": self.bar.via, "error": self.bar_error, "local": self.bar.is_local},
                 "today": self.today_stats(),
+                "task_tomatoes": self.task_tomatoes(),
+                "blocks": self.blocks_view(),
                 "pomodoro": {k: self.cfg[k] for k in ("work_minutes", "rest_minutes", "cycles", "autostart")},
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
@@ -960,7 +995,7 @@ class App:
         return bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000
 
     def extension_outdated(self) -> bool:
-        """The extension in the browser is older than the one that ships with this Busyist."""
+        """The extension in the browser is older than the one that ships with this buZyist."""
         return self.extension_connected() and (
             version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
 
@@ -974,8 +1009,8 @@ class App:
         self.extension_version = str(version or "")[:20]
         if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
             self._ext_warned = EXTENSION_VERSION
-            self.notify("Reload the Busyist extension",
-                        "Busyist was updated. Open your browser's extensions page and click Reload on Busyist Focus.")
+            self.notify("Reload the buZyist extension",
+                        "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.")
 
     def site_limits_status(self, enabled_only: bool = False) -> list[dict]:
         """Where every site-limit rule stands right now (see site_limit_status)."""
@@ -1192,9 +1227,9 @@ class App:
             if not found or found["version"] != self.update_failed:
                 self.update_error = ""
         if found:
-            log.info("Busyist %s is available", found["version"])
+            log.info("buZyist %s is available", found["version"])
         if new and not (self.cfg["auto_update"] and self.can_auto_update):
-            self.notify("Update available", f"Busyist {found['version']} is out. Open Busyist → Settings to update.")
+            self.notify("Update available", f"buZyist {found['version']} is out. Open buZyist → Settings to update.")
         if self.tray:
             self.tray.update_menu()
         return {"update": self.update_view()}
@@ -1206,15 +1241,15 @@ class App:
             if not release:
                 raise AppError("There's no update to install.")
             if not UPDATABLE:
-                raise AppError("Only an installed Busyist can update itself; download the new version from GitHub.")
+                raise AppError("Only an installed buZyist can update itself; download the new version from GitHub.")
             if self.updating:
                 raise AppError("The update is already on its way.")
             self.updating, self.update_error = True, ""
         try:
             path = download_setup(release)
             write_json(UPDATE_MARK, {"from": __version__, "to": release["version"]})
-            log.info("installing Busyist %s from %s", release["version"], path)
-            # /RELAUNCH=1 makes Setup start Busyist again when it is done,
+            log.info("installing buZyist %s from %s", release["version"], path)
+            # /RELAUNCH=1 makes Setup start buZyist again when it is done,
             # whether or not the update went through.
             subprocess.Popen(
                 [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1", f"/LOG={SETUP_LOG}"],
@@ -1241,13 +1276,13 @@ class App:
         UPDATE_MARK.unlink(missing_ok=True)
         if mark.get("to") == __version__:
             log.info("updated from %s to %s", mark.get("from"), __version__)
-            self.notify(APP, f"Updated to version {__version__}.")
+            self.notify(APP_NAME, f"Updated to version {__version__}.")
         else:
             log.warning("the update to %s didn't install; see %s", mark.get("to"), SETUP_LOG)
             with self.lock:
                 self.update_failed = str(mark.get("to"))
                 self.update_error = f"Updating to {mark.get('to')} didn't work (details in {SETUP_LOG.name})."
-            self.notify(APP, f"Couldn't update to version {mark.get('to')}.")
+            self.notify(APP_NAME, f"Couldn't update to version {mark.get('to')}.")
 
     # ------------------------------------------------------------ actions
 
@@ -1377,8 +1412,6 @@ class App:
             clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
         if "site_limits" in changes:
             clean["site_limits"] = clean_site_limits(changes["site_limits"])
-        if "theme" in clean and clean["theme"] not in ("auto", "light", "dark"):
-            raise AppError("Pick auto, light or dark for the theme.")
         if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
             raise AppError("Pick whether to block the listed websites or allow only them.")
         merged = dict(self.cfg, **clean)
@@ -1528,7 +1561,7 @@ class App:
             if task:
                 title += f"\n{task}"
         else:
-            title = APP + " · pick a task"
+            title = APP_NAME + " · pick a task"
         self.tray.title = title[:127]
 
     def make_tray(self) -> pystray.Icon:
@@ -1544,7 +1577,7 @@ class App:
                 try:
                     self.control(action)
                 except AppError as err:
-                    self.notify(APP, str(err))
+                    self.notify(APP_NAME, str(err))
             return handler
 
         def toggle_mini(icon, item):
@@ -1573,11 +1606,11 @@ class App:
                 try:
                     self.install_update()
                 except AppError as err:
-                    self.notify(APP, str(err))
+                    self.notify(APP_NAME, str(err))
             threading.Thread(target=go, daemon=True).start()
 
         menu = pystray.Menu(
-            pystray.MenuItem("Open Busyist", lambda i, it: self.show_main(), default=True),
+            pystray.MenuItem("Open buZyist", lambda i, it: self.show_main(), default=True),
             pystray.MenuItem(lambda it: f"Pick a task ({self.cfg['hotkey']})", lambda i, it: self.show_main(True)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(now_line, nothing, enabled=False),
@@ -1590,19 +1623,17 @@ class App:
             pystray.MenuItem(update_line, get_update, visible=lambda it: bool(self.update) and not self.updating),
             pystray.MenuItem("Quit", lambda i, it: self.quit()),
         )
-        return pystray.Icon("busyist", tray_image(None), APP, menu)
+        return pystray.Icon("busyist", tray_image(None), APP_NAME, menu)
 
     # ----------------------------------------------------------------- run
 
     def run(self) -> None:
         clear_webview_cache()
         api = Api(self)
-        theme = self.cfg.get("theme", "auto")
-        dark = windows_dark_mode() if theme == "auto" else theme == "dark"
-        bg = "#16151a" if dark else "#f6f5f2"
+        bg = "#fff7f3"  # Nata, the window colour, so it doesn't flash white while loading
         visible = (self.cfg.get("use_todoist") and not self.cfg.get("todoist_token")) or "--show" in sys.argv
         self.main = webview.create_window(
-            APP, str(UI / "main.html"), js_api=api,
+            APP_NAME, str(UI / "main.html"), js_api=api,
             width=1040 if self.cfg.get("use_todoist") else SOLO_W,
             height=720 if self.cfg.get("use_todoist") else SOLO_H,
             min_size=(560, 540), hidden=not visible, background_color=bg,
@@ -1611,7 +1642,7 @@ class App:
         self.main.events.minimized += self.on_minimized
         x, y = mini_position(MINI_W, MINI_H)
         self.mini = webview.create_window(
-            "Busyist timer", str(UI / "mini.html"), js_api=api, width=MINI_W, height=MINI_H,
+            "buZyist timer", str(UI / "mini.html"), js_api=api, width=MINI_W, height=MINI_H,
             x=x, y=y, frameless=True, easy_drag=False, on_top=True, resizable=False,
             hidden=True, focus=False, background_color=bg,
         )
@@ -1629,7 +1660,7 @@ class App:
             self.bind_hotkey()
         except AppError as err:
             log.warning("%s", err)
-            self.notify(APP, f"{err} Change it in Settings.")
+            self.notify(APP_NAME, f"{err} Change it in Settings.")
         threading.Thread(target=self.engine, daemon=True).start()
         self.blocker.start()
         self.site_server.start()
@@ -1746,13 +1777,14 @@ class Api:
         def go():
             sync_extension()
             if not EXTENSION_DIR.exists():
-                raise AppError("The extension folder is missing; reinstall Busyist.")
+                raise AppError("The extension folder is missing; reinstall buZyist.")
             copied = set_clipboard(str(EXTENSION_DIR))
-            show_in_explorer(EXTENSION_DIR)
             browser = find_browser()
             if browser:
-                name, exe, page = browser
-                subprocess.Popen([exe, page], close_fds=True)
+                threading.Thread(target=open_browser_page, args=(browser[1], browser[2]),
+                                 daemon=True).start()
+            else:
+                show_in_explorer(EXTENSION_DIR)
             return {"browser": browser[0] if browser else None,
                     "page": browser[2] if browser else "chrome://extensions",
                     "copied": copied, "path": str(EXTENSION_DIR)}
@@ -1813,7 +1845,7 @@ def clear_webview_cache() -> None:
 
 
 def bundled_extension_version() -> str:
-    """The version in the manifest of the extension that ships with this Busyist."""
+    """The version in the manifest of the extension that ships with this buZyist."""
     manifest = read_json(EXTENSION_SRC / "manifest.json", {})
     return str(manifest.get("version") or "") if isinstance(manifest, dict) else ""
 
@@ -1874,6 +1906,99 @@ def find_browser() -> tuple[str, str, str] | None:
     return None
 
 
+def open_browser_page(exe: str, page: str) -> None:
+    """
+    Open `page` (chrome://extensions/) in the browser at `exe`, then select
+    the extension folder in Explorer.
+
+    Chrome and Edge drop chrome:// / edge:// URLs given on the command line,
+    so this opens a new window and types the address into it (Ctrl+L, URL,
+    Enter), but only once the foreground window really is that browser's.
+    """
+    try:
+        u32 = ctypes.WinDLL("user32")
+        before = u32.GetForegroundWindow()
+        subprocess.Popen([exe, "--new-window"], close_fds=True)
+        hwnd, deadline = None, time.monotonic() + 10
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            fg = u32.GetForegroundWindow()
+            if fg and fg != before and window_exe(fg) == Path(exe).name.lower():
+                hwnd = fg
+                break
+        if hwnd:
+            time.sleep(0.5)  # let the new window's address bar get ready
+            if u32.GetForegroundWindow() == hwnd:
+                send_keys(page)
+            else:
+                log.info("browser window lost focus; not typing %s", page)
+        else:
+            log.info("no browser window came up; not typing %s", page)
+    except Exception:
+        log.exception("could not open %s", page)
+    show_in_explorer(EXTENSION_DIR)
+
+
+def window_exe(hwnd) -> str:
+    """Lower-case file name of the program that owns window `hwnd` ('' if unknown)."""
+    u32, k32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    pid = ctypes.wintypes.DWORD()
+    u32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
+    handle = k32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.wintypes.DWORD(len(buf))
+        if not k32.QueryFullProcessImageNameW(ctypes.wintypes.HANDLE(handle), 0, buf, ctypes.byref(size)):
+            return ""
+        return Path(buf.value).name.lower()
+    finally:
+        k32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.wintypes.WORD), ("wScan", ctypes.wintypes.WORD),
+                ("dwFlags", ctypes.wintypes.DWORD), ("time", ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
+    _fields_ = [("dx", ctypes.wintypes.LONG), ("dy", ctypes.wintypes.LONG),
+                ("mouseData", ctypes.wintypes.DWORD), ("dwFlags", ctypes.wintypes.DWORD),
+                ("time", ctypes.wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _U)]
+
+
+def send_keys(text: str) -> None:
+    """Ctrl+L, type `text`, Enter, into the foreground window."""
+    KEYUP, UNICODE, CTRL, L, ENTER = 0x2, 0x4, 0x11, 0x4C, 0x0D
+
+    def key(vk=0, scan=0, flags=0):
+        i = _INPUT(type=1)  # INPUT_KEYBOARD
+        i.ki = _KEYBDINPUT(vk, scan, flags, 0, 0)
+        return i
+
+    seq = [key(CTRL), key(L), key(L, flags=KEYUP), key(CTRL, flags=KEYUP)]
+    u32 = ctypes.WinDLL("user32")
+    arr = (_INPUT * len(seq))(*seq)
+    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
+    time.sleep(0.15)
+    seq = []
+    for ch in text:
+        seq += [key(scan=ord(ch), flags=UNICODE), key(scan=ord(ch), flags=UNICODE | KEYUP)]
+    seq += [key(ENTER), key(ENTER, flags=KEYUP)]
+    arr = (_INPUT * len(seq))(*seq)
+    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
+
+
 def show_in_explorer(path: Path) -> None:
     """Open Explorer on the folder holding `path`, with `path` selected."""
     try:
@@ -1914,16 +2039,6 @@ def set_clipboard(text: str) -> bool:
         return True
     finally:
         u32.CloseClipboard()
-
-
-def windows_dark_mode() -> bool:
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
-                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
-            return winreg.QueryValueEx(key, "AppsUseLightTheme")[0] == 0
-    except OSError:
-        return False
 
 
 # The main window is shown and hidden with plain Win32 calls rather than
@@ -2106,7 +2221,7 @@ def parse_hotkey(combo: str) -> tuple[int, int]:
     elif key in NAMED_KEYS:
         vk = NAMED_KEYS[key]
     else:
-        raise AppError(f"Busyist doesn't know the key “{key}”.")
+        raise AppError(f"buZyist doesn't know the key “{key}”.")
     if not mods and not 0x70 <= vk <= 0x87:
         raise AppError("Add ctrl, alt, shift or win to the hotkey so it doesn't steal a normal key.")
     return mods, vk
@@ -2462,7 +2577,7 @@ def _sanitize_sites(values) -> list[str]:
 # the site for those hours (Monday is 0; "to" earlier than "from" runs past
 # midnight, and 00:00 as "to" means the end of the day). A site is blocked when
 # any budget is used up or any window is open. The extension measures the time
-# and enforces; Busyist keeps the totals and says where each rule stands.
+# and enforces; buZyist keeps the totals and says where each rule stands.
 
 
 def _hhmm(text) -> int:
@@ -2619,7 +2734,7 @@ def _ms(moment: datetime) -> int:
 def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
     """
     Where one rule stands at `now`. The extension needs enough to keep
-    enforcing for a while without Busyist: `remaining_s` of the budget that
+    enforcing for a while without buZyist: `remaining_s` of the budget that
     matters (the exhausted one that frees up last, else the tightest) until
     `limit_end_ms`, and the blocked-hours spans `windows_ms` of the next 48 h.
     `blocked`, `reason` and `until_ms` are the same decision, for the UI.
@@ -3114,7 +3229,7 @@ def webview2_installed() -> bool:
 
 
 def message_box(text: str, flags: int = 0x40) -> int:
-    return ctypes.windll.user32.MessageBoxW(None, text, APP, flags | 0x10000)  # MB_SETFOREGROUND
+    return ctypes.windll.user32.MessageBoxW(None, text, APP_NAME, flags | 0x10000)  # MB_SETFOREGROUND
 
 
 def listen_for_second_launch(app: App) -> None:
@@ -3152,12 +3267,12 @@ def main() -> None:
     if instance is None:
         return  # already running; it has been asked to show its window
     setup_logging()
-    log.info("%s %s starting (%s)", APP, __version__, "packaged" if FROZEN else "from source")
+    log.info("%s %s starting (%s)", APP_NAME, __version__, "packaged" if FROZEN else "from source")
     if not webview2_installed():
         answer = message_box(
-            "Busyist needs the Microsoft Edge WebView2 Runtime, which draws its window.\n\n"
+            "buZyist needs the Microsoft Edge WebView2 Runtime, which draws its window.\n\n"
             "Open Microsoft's download page now? Install the \"Evergreen\" runtime, "
-            "then start Busyist again.", 0x04 | 0x30)  # MB_YESNO | MB_ICONWARNING
+            "then start buZyist again.", 0x04 | 0x30)  # MB_YESNO | MB_ICONWARNING
         if answer == 6:  # IDYES
             webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/#download-section")
         return

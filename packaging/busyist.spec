@@ -1,4 +1,4 @@
-# PyInstaller spec for Busyist. Built by build.ps1:
+# PyInstaller spec for buZyist (Buzyist.exe). Built by build.ps1:
 #   pyinstaller packaging/busyist.spec --noconfirm --distpath dist --workpath build
 # A one-folder build: it starts faster than --onefile and trips fewer
 # antivirus heuristics, and the installer ships the folder.
@@ -18,13 +18,13 @@ version_info = VSVersionInfo(
     ffi=FixedFileInfo(filevers=NUMS, prodvers=NUMS),
     kids=[
         StringFileInfo([StringTable("040904B0", [
-            StringStruct("CompanyName", "Busyist"),
-            StringStruct("FileDescription", "Busyist - Todoist pomodoros on the BUSY Bar"),
+            StringStruct("CompanyName", "buZyist"),
+            StringStruct("FileDescription", "buZyist"),
             StringStruct("FileVersion", VERSION),
-            StringStruct("InternalName", "Busyist"),
+            StringStruct("InternalName", "Buzyist"),
             StringStruct("LegalCopyright", "MIT License"),
-            StringStruct("OriginalFilename", "Busyist.exe"),
-            StringStruct("ProductName", "Busyist"),
+            StringStruct("OriginalFilename", "Buzyist.exe"),
+            StringStruct("ProductName", "buZyist"),
             StringStruct("ProductVersion", VERSION),
         ])]),
         VarFileInfo([VarStruct("Translation", [0x0409, 1200])]),
@@ -61,10 +61,10 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="Busyist",
+    name="Buzyist",
     icon=str(ROOT / "busyist.ico"),
     version=version_info,
     console=False,
     upx=False,  # UPX-packed exes are a classic antivirus false positive
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="Busyist", upx=False)
+coll = COLLECT(exe, a.binaries, a.datas, name="Buzyist", upx=False)

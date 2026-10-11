@@ -4,8 +4,9 @@
 #
 # Needs Python 3.11+ (the "py" launcher) and Inno Setup 6. Everything else is
 # installed into .venv-build. Output:
-#   dist\Busyist-Setup-<version>.exe
-#   dist\Busyist-<version>-portable.zip
+#   dist\Buzyist-Setup-<version>.exe
+#   dist\Busyist-Setup-<version>.exe  (the same installer, for copies from before the rename)
+#   dist\Buzyist-<version>-portable.zip
 #   dist\SHA256SUMS.txt
 param([switch]$SkipInstaller)
 
@@ -18,7 +19,7 @@ function Run($exe, [string[]]$arguments) {
 }
 
 $version = (Select-String -Path busyist.py -Pattern '__version__ = "([\d.]+)"').Matches[0].Groups[1].Value
-Write-Host "Building Busyist $version" -ForegroundColor Cyan
+Write-Host "Building buZyist $version" -ForegroundColor Cyan
 
 # 1. Build environment, kept apart from the one used to run from source.
 $py = Join-Path $PSScriptRoot ".venv-build\Scripts\python.exe"
@@ -33,16 +34,16 @@ Run $py @("-m", "pip", "install", "--quiet", "-r", "requirements.txt", "-r", "re
 # 2. The app folder.
 Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue
 Run $py @("-m", "PyInstaller", "packaging\busyist.spec", "--noconfirm", "--distpath", "dist", "--workpath", "build\pyinstaller")
-Run $py @("tools\third_party_licenses.py", "dist\Busyist\THIRD_PARTY_LICENSES.txt")
-Copy-Item LICENSE dist\Busyist\LICENSE.txt
+Run $py @("tools\third_party_licenses.py", "dist\Buzyist\THIRD_PARTY_LICENSES.txt")
+Copy-Item LICENSE dist\Buzyist\LICENSE.txt
 
 # Never ship anyone's settings: the app keeps them in %APPDATA%, but check.
-$leaks = Get-ChildItem dist\Busyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") }
+$leaks = Get-ChildItem dist\Buzyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") }
 if ($leaks) { throw "Personal files ended up in the build: $($leaks.FullName -join ', ')" }
 
 # 3. Portable zip.
-$zip = "dist\Busyist-$version-portable.zip"
-Compress-Archive -Path dist\Busyist -DestinationPath $zip -CompressionLevel Optimal
+$zip = "dist\Buzyist-$version-portable.zip"
+Compress-Archive -Path dist\Buzyist -DestinationPath $zip -CompressionLevel Optimal
 
 # 4. Installer.
 if (-not $SkipInstaller) {
@@ -61,6 +62,10 @@ if (-not $SkipInstaller) {
     ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
     if (-not $iscc) { throw "Inno Setup 6 not found. Install it from https://jrsoftware.org/isdl.php" }
     Run $iscc @("/Q", "/DAppVersion=$version", "packaging\busyist.iss")
+    # Copies from before the rename (1.4.x and older) update from the release
+    # asset named Busyist-Setup-<version>.exe, so ship the installer under that
+    # name too (both are listed in SHA256SUMS.txt).
+    Copy-Item "dist\Buzyist-Setup-$version.exe" "dist\Busyist-Setup-$version.exe"
 }
 
 # 5. Checksums, so people can check what they downloaded.

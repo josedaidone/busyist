@@ -1,55 +1,61 @@
-"""Draw the tomato and save busyist.ico (16-256 px). Run: python tools/make_icon.py"""
+"""
+Draw the buZyist symbol (the tomato with the Z, buzyist-handoff
+assets/logo/simbolo.svg) and save busyist.ico (16-256 px), busyist.png and
+the browser extension's icon.png. Run: python tools/make_icon.py
+
+The handoff's square app icon (Nata background, no corners) is meant for
+systems that mask icons themselves; Windows doesn't, so the .ico is the
+symbol on a transparent background.
+"""
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
-OUT = Path(__file__).resolve().parent.parent / "busyist.ico"
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "busyist.ico"
 S = 1024  # drawn large, then scaled down for clean edges
+K = S / 120  # the symbol's viewBox is 120 x 120
+
+TOMATE = (217, 54, 27, 255)
+FOLHA = (30, 107, 67, 255)
+NATA = (255, 247, 243, 255)
 
 
-def tomato() -> Image.Image:
+def _ellipse(img: Image.Image, cx, cy, rx, ry, fill, angle=0.0) -> None:
+    """An ellipse in viewBox units, rotated `angle` degrees about its centre (SVG sense)."""
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).ellipse(((cx - rx) * K, (cy - ry) * K, (cx + rx) * K, (cy + ry) * K), fill=fill)
+    if angle:
+        # PIL rotates counter-clockwise; SVG's rotate() is clockwise on screen.
+        layer = layer.rotate(-angle, resample=Image.BICUBIC, center=(cx * K, cy * K))
+    img.alpha_composite(layer)
+
+
+def symbol() -> Image.Image:
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-
-    # body: a slightly squat circle with a soft lower shadow and a highlight
-    body = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(body)
-    box = (36, 170, S - 36, S - 24)
-    d.ellipse(box, fill=(226, 64, 50, 255))
-    shade = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(shade).ellipse((140, 420, S - 40, S - 30), fill=(160, 30, 24, 105))
-    shade = shade.filter(ImageFilter.GaussianBlur(70))
-    mask = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(mask).ellipse(box, fill=255)
-    body.alpha_composite(Image.composite(shade, Image.new("RGBA", (S, S)), mask))
-    shine = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    ImageDraw.Draw(shine).ellipse((230, 330, 400, 440), fill=(255, 255, 255, 150))
-    body.alpha_composite(shine.filter(ImageFilter.GaussianBlur(22)))
-    img.alpha_composite(body)
-
-    # leaves: a five-point calyx, then the stem
+    _ellipse(img, 60, 68, 47, 42, TOMATE)
     d = ImageDraw.Draw(img)
-    cx, cy = S // 2, 250
-    leaf = (64, 160, 72, 255)
-    for points in (
-        [(cx, cy - 10), (cx - 250, cy - 60), (cx - 90, cy + 40)],
-        [(cx, cy - 10), (cx + 250, cy - 60), (cx + 90, cy + 40)],
-        [(cx - 40, cy), (cx - 170, cy + 130), (cx + 10, cy + 60)],
-        [(cx + 40, cy), (cx + 170, cy + 130), (cx - 10, cy + 60)],
-        [(cx - 60, cy), (cx, cy - 120), (cx + 60, cy)],
-    ):
-        d.polygon(points, fill=leaf)
-    d.ellipse((cx - 70, cy - 50, cx + 70, cy + 60), fill=leaf)
-    d.rounded_rectangle((cx - 22, cy - 175, cx + 22, cy - 20), radius=22, fill=(52, 128, 58, 255))
+    d.rounded_rectangle((57 * K, 8 * K, 63 * K, 26 * K), radius=3 * K, fill=FOLHA)
+    _ellipse(img, 46, 27, 16, 7, FOLHA, -16)
+    _ellipse(img, 74, 27, 16, 7, FOLHA, 16)
+    # the Z: a polyline with round ends and joins, stroke 11
+    d = ImageDraw.Draw(img)
+    points = [(42 * K, 53 * K), (78 * K, 53 * K), (42 * K, 87 * K), (78 * K, 87 * K)]
+    w = 11 * K
+    d.line(points, fill=NATA, width=round(w), joint="curve")
+    for x, y in points:
+        d.ellipse((x - w / 2, y - w / 2, x + w / 2, y + w / 2), fill=NATA)
     return img
 
 
 def main() -> None:
-    big = tomato()
+    big = symbol()
     sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
     frames = [big.resize((n, n), Image.LANCZOS) for n in sizes]
     frames[-1].save(OUT, format="ICO", sizes=[(n, n) for n in sizes], append_images=frames[:-1])
     big.resize((512, 512), Image.LANCZOS).save(OUT.with_suffix(".png"))
-    print("wrote", OUT, "and", OUT.with_suffix(".png").name)
+    big.resize((128, 128), Image.LANCZOS).save(ROOT / "extension" / "icon.png")
+    print("wrote", OUT.name, OUT.with_suffix(".png").name, "and extension/icon.png")
 
 
 if __name__ == "__main__":

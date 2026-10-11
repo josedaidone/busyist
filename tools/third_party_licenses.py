@@ -1,7 +1,7 @@
 """
 Write the licenses of everything bundled into the packaged app.
 
-    python tools/third_party_licenses.py dist/Busyist/THIRD_PARTY_LICENSES.txt
+    python tools/third_party_licenses.py dist/Buzyist/THIRD_PARTY_LICENSES.txt
 
 Run with the build environment's Python: it lists that environment's
 packages, minus the build tools that are not shipped.
@@ -38,7 +38,7 @@ def license_texts(dist) -> list[str]:
 
 def main(out: str) -> None:
     lines = [
-        "Busyist bundles the following third-party software.",
+        "buZyist bundles the following third-party software.",
         "Each is used under its own license, reproduced below.",
         "LGPL components (pystray, zeroconf) are shipped as separate, replaceable",
         "Python modules inside the _internal folder.",
@@ -56,8 +56,15 @@ def main(out: str) -> None:
         home = meta.get("Home-page") or next(
             (u.split(",", 1)[-1].strip() for u in meta.get_all("Project-URL") or []), "")
         sections.append((meta["Name"], dist.version, license_name(meta), home, license_texts(dist)))
+    # The fonts embedded in the UI and the browser extension.
+    fonts = Path(__file__).resolve().parent.parent / "ui" / "fonts"
+    for name, home in (("Fredoka", "https://github.com/hafontia/Fredoka-One"),
+                       ("Figtree", "https://github.com/erikdkennedy/figtree")):
+        text = fonts / f"LICENSE-{name}.txt"
+        sections.append((f"{name} (font)", "", "OFL-1.1", home,
+                         [text.read_text(encoding="utf-8", errors="replace")] if text.exists() else []))
     for name, version, lic, home, texts in sections:
-        lines += ["=" * 78, f"{name} {version}", f"License: {lic}"]
+        lines += ["=" * 78, f"{name} {version}".strip(), f"License: {lic}"]
         if home:
             lines.append(f"Home: {home}")
         lines.append("")
