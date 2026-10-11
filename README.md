@@ -15,7 +15,7 @@ what you're working on. No bar? buZyist runs the timer on your PC instead.
 
 ## Download
 
-Get **`Buzyist-Setup-x.y.z.exe`** from the [latest release](https://github.com/josedaidone/busyist/releases/latest)
+Get **`Buzyist-Setup-x.y.z.exe`** from the [latest release](https://github.com/josedaidone/buzyist/releases/latest)
 and run it. It installs for your user only (no admin rights needed), adds buZyist to the Start
 menu, and starts it.
 
@@ -127,7 +127,7 @@ menu, and starts it.
 - **The hotkey does nothing**: another app may own that combination. buZyist warns about this; pick
   another one in Settings.
 - **Something else**: the log at `%APPDATA%\Busyist\busyist.log` usually says why. Please attach it
-  to an [issue](https://github.com/josedaidone/busyist/issues). Check it first, since it can contain
+  to an [issue](https://github.com/josedaidone/buzyist/issues). Check it first, since it can contain
   task names.
 
 ## Run from source or build it yourself

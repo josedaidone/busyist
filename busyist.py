@@ -57,8 +57,8 @@ from PIL import Image, ImageDraw, ImageFont
 APP = "Busyist"
 APP_NAME = "buZyist"
 __version__ = "1.5.0"
-REPO_URL = "https://github.com/josedaidone/busyist"
-RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
+REPO_URL = "https://github.com/josedaidone/buzyist"
+RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged Buzyist.exe
 SOURCE_DIR = Path(__file__).resolve().parent
