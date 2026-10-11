@@ -51,7 +51,7 @@ from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
 
 APP = "Busyist"
-__version__ = "1.4.1"
+__version__ = "1.4.2"
 REPO_URL = "https://github.com/josedaidone/busyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/busyist/releases/latest"
 
@@ -551,10 +551,10 @@ UPDATE_EVERY = 6 * 3600  # seconds between checks for a new release
 UPDATABLE = FROZEN and (Path(sys.executable).parent / "unins000.exe").exists()
 
 
-def version_tuple(text: str) -> tuple[int, ...] | None:
-    """'v1.2.0' or '1.2.0' -> (1, 2, 0); None if it isn't a version."""
-    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", text.strip())
-    return tuple(int(x) for x in match.group(1).split(".")) if match else None
+def version_tuple(text) -> tuple[int, ...]:
+    """'v1.2.0' or '1.2.0' -> (1, 2, 0); () if it isn't one, which sorts before every version."""
+    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", str(text).strip())
+    return tuple(int(x) for x in match.group(1).split(".")) if match else ()
 
 
 def github_open(url: str, timeout: float = 20, api: bool = False):
@@ -1810,14 +1810,6 @@ def clear_webview_cache() -> None:
     profile = WEBVIEW_DIR / "EBWebView" / "Default"
     for name in ("Cache", "Code Cache"):
         shutil.rmtree(profile / name, ignore_errors=True)
-
-
-def version_tuple(text) -> tuple[int, ...]:
-    """'1.2.0' -> (1, 2, 0); () if it isn't one, which sorts before every version."""
-    try:
-        return tuple(int(part) for part in str(text).split("."))
-    except ValueError:
-        return ()
 
 
 def bundled_extension_version() -> str:
