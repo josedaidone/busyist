@@ -1,4 +1,4 @@
-# Releasing Busyist
+# Releasing buZyist
 
 Releases are built and published by GitHub Actions (`.github/workflows/release.yml`). Pushing a
 tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
@@ -15,7 +15,7 @@ tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
 2. Commit and push:
 
    ```powershell
-   git commit -am "Busyist 1.0.1"
+   git commit -am "buZyist 1.0.1"
    git push
    ```
 
@@ -33,7 +33,7 @@ tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
    `build.ps1` and publishes the release.
 
 5. When it's green, the [latest release](https://github.com/josedaidone/busyist/releases/latest)
-   has `Busyist-Setup-x.y.z.exe`, the portable zip and `SHA256SUMS.txt`, with notes generated from
+   has `Buzyist-Setup-x.y.z.exe`, the portable zip and `SHA256SUMS.txt`, with notes generated from
    the commits. Edit the notes on the release page if you want.
 
 ## Test a build without publishing

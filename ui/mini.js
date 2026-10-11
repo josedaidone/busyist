@@ -20,8 +20,8 @@ function render() {
   $("mTime").textContent = t ? clock(left) : "--:--";
   $("mProgress").style.strokeDasharray = RING;
   $("mProgress").style.strokeDashoffset = t ? RING * (1 - left / t.total_ms) : RING;
-  $("mPhase").textContent = { idle: "Idle", paused: "Paused", work: "Focus", rest: "Break" }[phase];
-  $("mRound").textContent = t ? `· ${t.round}/${t.rounds}` : "";
+  $("mPhase").textContent = { idle: "Ready", paused: "Paused", work: "Focus", rest: "Break" }[phase];
+  $("mRound").textContent = t ? `Tomato ${t.round} of ${t.rounds}` : "";
   $("mTask").textContent = s ? s.task.content : t ? (state.bar.local ? "Timer running" : "Running on the bar") : "No session";
   $("mProject").textContent = s ? s.task.project : "";
   $("mPauseIcon").setAttribute("href", t && t.paused ? "#i-play" : "#i-pause");
@@ -32,7 +32,6 @@ function render() {
 async function poll() {
   try {
     state = await api.get_state();
-    document.documentElement.dataset.theme = state.theme || "auto";
     render();
   } catch (err) {
     /* the window is being torn down */

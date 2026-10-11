@@ -6,7 +6,7 @@
 //    blocked hours. Shows why and when it opens again, and offers a short pass.
 //
 // It asks the extension's background worker where things stand, so it also
-// works (from the last known state) while Busyist is closed.
+// works (from the last known state) while buZyist is closed.
 
 // The original URL is everything after "u=" (passed raw, so no decoding).
 const marker = location.href.search(/[?&]u=/);
@@ -58,7 +58,8 @@ function render(status) {
   if (limitId) {
     if (!limit) { goBack(); return; }
     const eyebrow = $("eyebrow").lastChild;
-    if (eyebrow.textContent !== "Busyist limit") eyebrow.textContent = "Busyist limit";
+    if (eyebrow.textContent !== "Limit") eyebrow.textContent = "Limit";
+    $("eyebrow").classList.add("limit");
     if (limit.reason === "window") {
       setText("title", "Blocked right now.");
       setText("task", `${limit.pattern} is blocked at this time.`);
@@ -97,5 +98,5 @@ $("pass").onclick = async () => {
 };
 
 check();
-setInterval(check, 4000);   // re-ask Busyist
+setInterval(check, 4000);   // re-ask buZyist
 setInterval(renderCount, 1000); // tick the countdown between asks

@@ -1,24 +1,24 @@
-// Busyist Focus - MV3 service worker.
+// buZyist Focus - MV3 service worker.
 //
-// Two jobs, both driven by what the local Busyist app says (see /focus):
+// Two jobs, both driven by what the local buZyist app says (see /focus):
 //
 // 1. Focus blocking (issue #2): while a pomodoro work phase runs, redirect
 //    the blocked sites to blocked.html. In "block" mode the listed sites are
 //    blocked; in "allow" mode every site is, except the listed ones. No
-//    session, a break, a pause, or Busyist being closed all report
+//    session, a break, a pause, or buZyist being closed all report
 //    active:false, which removes those rules.
 //
 // 2. Site limits: per-website time budgets ("5 min per hour") and blocked
 //    hours, all day, pomodoro or not. This worker measures the time you spend
 //    on each limited site (active tab of the focused window, not idle, not
-//    locked), reports it to Busyist, and redirects a site once it's used up or
-//    inside blocked hours. Busyist keeps the totals; if it isn't running, the
+//    locked), reports it to buZyist, and redirects a site once it's used up or
+//    inside blocked hours. buZyist keeps the totals; if it isn't running, the
 //    last answer is cached and enforced, and the time measured meanwhile is
-//    kept and sent when Busyist is back.
+//    kept and sent when buZyist is back.
 
 const BASE = "http://127.0.0.1:47616";
 const VERSION = chrome.runtime.getManifest().version;
-// Busyist compares this with the extension it ships, to say when to reload.
+// buZyist compares this with the extension it ships, to say when to reload.
 const FOCUS_URL = BASE + "/focus?v=" + VERSION;
 const USAGE_URL = BASE + "/usage";
 const GRANT_URL = BASE + "/grant";
@@ -37,9 +37,9 @@ const MAX_GAP_S = 65; // a longer gap than this (sleep, worker killed) isn't cou
 
 // ----------------------------------------------------------------- state
 
-let lastGood = null; // the last answer from Busyist, kept across restarts
+let lastGood = null; // the last answer from buZyist, kept across restarts
 let pending = {}; // {ruleId: {epochMinute: seconds}} measured, not yet sent
-let passes = {}; // {ruleId: untilMs} granted from the block page while Busyist was out
+let passes = {}; // {ruleId: untilMs} granted from the block page while buZyist was out
 let counting = { ids: [], since: 0 }; // the rules being timed right now
 let timer = null;
 let cache = { at: 0, data: null };
@@ -54,7 +54,7 @@ const saveState = () => chrome.storage.local.set({ lastGood, pending, passes });
 
 // ------------------------------------------------------------- patterns
 //
-// A site entry (tidied by Busyist's clean_site_pattern) is a host, optionally
+// A site entry (tidied by buZyist's clean_site_pattern) is a host, optionally
 // followed by a path, where * matches anything:
 //   youtube.com           youtube.com and its subdomains, any page
 //   *.google.com          any subdomain of google.com (not google.com itself)
@@ -83,7 +83,7 @@ function matches(pattern, url) {
   try { return new RegExp(patternRegex(pattern), "i").test(url); } catch (e) { return false; }
 }
 
-// Busyist versions before allowlists only send `sites` (domains to block).
+// buZyist versions before allowlists only send `sites` (domains to block).
 function rulesOf(focus) {
   if (Array.isArray(focus.patterns)) {
     return { mode: focus.mode === "allow" ? "allow" : "block", patterns: focus.patterns };
@@ -103,7 +103,7 @@ function focusBlocks(url, focus) {
 const pendingSeconds = (id) =>
   Object.values(pending[id] || {}).reduce((sum, s) => sum + s, 0);
 
-// Is this limit rule blocking right now, and until when? Works from Busyist's
+// Is this limit rule blocking right now, and until when? Works from buZyist's
 // last answer plus the time measured since, so it keeps enforcing without it.
 function limitState(rule, now) {
   if (Math.max(rule.pass_until_ms || 0, passes[rule.id] || 0) > now) return null;
@@ -130,7 +130,7 @@ function limitBlocks(url, focus, now) {
 
 function addPending(ids, seconds, now) {
   const minute = Math.floor(now / 60000);
-  // Busyist ignores anything older than 3 days, so don't keep it either.
+  // buZyist ignores anything older than 3 days, so don't keep it either.
   for (const per of Object.values(pending)) {
     for (const m of Object.keys(per)) if (Number(m) < minute - 3 * 1440) delete per[m];
   }
@@ -156,7 +156,7 @@ const rulesFor = (focus, url) =>
   limitRules(focus).filter((r) => patternsOf(r).some((p) => matches(p, url)));
 
 // Seconds left on a rule's time budget, or null if it has none that applies
-// (or the answer is too old to say). Counts the time measured since Busyist
+// (or the answer is too old to say). Counts the time measured since buZyist
 // was last asked.
 function secondsLeft(rule, now) {
   if (rule.remaining_s == null || now >= rule.limit_end_ms) return null;
@@ -172,7 +172,7 @@ async function currentIds(focus, now, url) {
   return rulesFor(focus, url).filter((r) => !limitState(r, now)).map((r) => r.id);
 }
 
-// --------------------------------------------------------- talking to Busyist
+// --------------------------------------------------------- talking to buZyist
 
 async function post(url, body) {
   const res = await fetch(url, {
@@ -184,7 +184,7 @@ async function post(url, body) {
   return res.ok ? res.json() : null;
 }
 
-// Send what's been measured and get the current answer back. Without Busyist
+// Send what's been measured and get the current answer back. Without buZyist
 // (not running, or an old one with no /usage) fall back to what we last knew:
 // focus blocking lets go, limits keep being enforced.
 async function fetchState(force) {
@@ -195,7 +195,7 @@ async function fetchState(force) {
   try {
     data = await post(USAGE_URL, { usage: sent, version: VERSION });
     if (data) {
-      // What we sent is now in Busyist's totals; anything measured while the
+      // What we sent is now in buZyist's totals; anything measured while the
       // request was out stays pending.
       for (const [id, per] of Object.entries(sent)) {
         for (const [minute, seconds] of Object.entries(per)) {
@@ -206,7 +206,7 @@ async function fetchState(force) {
         if (pending[id] && !Object.keys(pending[id]).length) delete pending[id];
       }
     } else {
-      const res = await fetch(FOCUS_URL, { cache: "no-store" }); // an older Busyist
+      const res = await fetch(FOCUS_URL, { cache: "no-store" }); // an older buZyist
       data = res.ok ? await res.json() : null;
     }
   } catch (e) {
@@ -214,10 +214,10 @@ async function fetchState(force) {
   }
   if (data) {
     lastGood = data;
-    // Remember a pass that Busyist now knows about, and drop the local copy.
+    // Remember a pass that buZyist now knows about, and drop the local copy.
     for (const rule of limitRules(data)) if (rule.pass_until_ms) delete passes[rule.id];
   } else {
-    // Busyist isn't running or can't be reached. Focus blocking fails open;
+    // buZyist isn't running or can't be reached. Focus blocking fails open;
     // limits go on from the last answer.
     data = Object.assign({}, lastGood || {}, { active: false, patterns: [], sites: [], offline: true });
   }
@@ -266,13 +266,13 @@ async function setRules(focus, now) {
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
   } catch (e) {
     // One rejected regex fails the whole batch; add the rules one by one.
-    console.warn("Busyist: rules rejected, adding them one at a time", e);
+    console.warn("buZyist: rules rejected, adding them one at a time", e);
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules: [] });
     for (const rule of addRules) {
       try {
         await chrome.declarativeNetRequest.updateDynamicRules({ addRules: [rule] });
       } catch (err) {
-        console.warn("Busyist: skipped rule", rule.condition.regexFilter, err);
+        console.warn("buZyist: skipped rule", rule.condition.regexFilter, err);
       }
     }
   }
@@ -300,6 +300,11 @@ function shortTime(seconds) {
   return m < 100 ? m + "m" : Math.floor(m / 60) + "h";
 }
 
+// setBadgeTextColor is Chrome 110+; older browsers keep their default.
+function badgeText(color) {
+  if (chrome.action.setBadgeTextColor) chrome.action.setBadgeTextColor({ color });
+}
+
 // The badge shows the time left on the current page's limit, or else the
 // minutes left in the pomodoro work phase; the tooltip says which.
 function updateBadge(focus, now, url) {
@@ -309,30 +314,34 @@ function updateBadge(focus, now, url) {
     .sort((a, b) => a.left - b.left)[0];
   if (here) {
     chrome.action.setBadgeText({ text: shortTime(here.left) });
-    chrome.action.setBadgeBackgroundColor({ color: here.left <= 30 ? "#db4035" : here.left <= 120 ? "#e08a00" : "#2e9e6b" });
-    chrome.action.setTitle({ title: `Busyist: ${shortTime(here.left)} left on ${patternsOf(here.rule).join(", ")} (${here.rule.limit_label})` });
+    // buZyist colours: Tomate when nearly out, Manteiga (dark text) when low, Folha otherwise.
+    const low = here.left > 30 && here.left <= 120;
+    chrome.action.setBadgeBackgroundColor({ color: here.left <= 30 ? "#D9361B" : low ? "#F5B83D" : "#1E6B43" });
+    badgeText(low ? "#3A1410" : "#FFFFFF");
+    chrome.action.setTitle({ title: `buZyist: ${shortTime(here.left)} left on ${patternsOf(here.rule).join(", ")} (${here.rule.limit_label})` });
   } else if (focus.active && focus.ends_at_ms) {
     const mins = Math.max(0, Math.round((focus.ends_at_ms - now) / 60000));
     chrome.action.setBadgeText({ text: String(mins) });
-    chrome.action.setBadgeBackgroundColor({ color: "#db4035" });
-    chrome.action.setTitle({ title: `Busyist: focus, ${mins} min left` });
+    chrome.action.setBadgeBackgroundColor({ color: "#D9361B" });
+    badgeText("#FFFFFF");
+    chrome.action.setTitle({ title: `buZyist: focus, ${mins} min left` });
   } else {
     chrome.action.setBadgeText({ text: "" });
-    chrome.action.setTitle({ title: "Busyist Focus" });
+    chrome.action.setTitle({ title: "buZyist Focus" });
   }
 }
 
 // ------------------------------------------------------------------ tick
 
 // Everything happens in one place, one at a time: credit the time since the
-// last tick, exchange it with Busyist, apply the rules, work out what's being
+// last tick, exchange it with buZyist, apply the rules, work out what's being
 // timed now. The popup and the block page queue up here too: two exchanges in
 // flight at once would send the same pending time twice and let an older
 // answer overwrite a newer one (the time left jumping up and down).
 let chain = Promise.resolve();
 function exclusive(fn) {
   const run = chain.then(fn);
-  chain = run.catch((e) => console.warn("Busyist", e));
+  chain = run.catch((e) => console.warn("buZyist", e));
   return run;
 }
 const sync = (force) => exclusive(() => tick(force));
@@ -347,7 +356,7 @@ async function tick(force) {
   const now = Date.now();
   await setRules(focus, now);
   await sweepTabs(focus, now);
-  // Counted from the start of this tick, so the time spent talking to Busyist isn't lost.
+  // Counted from the start of this tick, so the time spent talking to buZyist isn't lost.
   counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: started };
   updateBadge(focus, Date.now(), await activeUrl(false));
   // While something is being timed, keep ticking (and keep the worker awake).
@@ -372,7 +381,7 @@ chrome.idle.onStateChanged.addListener(() => sync(false));
 
 // ------------------------------------------------------- the block page
 
-// blocked.js asks where things stand (so it works while Busyist is closed too)
+// blocked.js asks where things stand (so it works while buZyist is closed too)
 // and can grant a short pass ("allow 2 more minutes").
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
@@ -386,7 +395,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     }
     if (msg.type === "popup") { reply(await exclusive(() => popupData())); return; }
     reply(await exclusive(() => blockPageData(msg)));
-  })().catch((e) => { console.warn("Busyist", e); reply(null); });
+  })().catch((e) => { console.warn("buZyist", e); reply(null); });
   return true; // reply asynchronously
 });
 
@@ -411,7 +420,7 @@ async function blockPageData(msg) {
 }
 
 // What the toolbar popup shows (popup.js): the pomodoro, the limits and where
-// each stands, and whether Busyist is reachable.
+// each stands, and whether buZyist is reachable.
 async function popupData() {
   const focus = (await fetchState(false)) || {};
   const now = Date.now(); // after the exchange, so it's never before counting.since

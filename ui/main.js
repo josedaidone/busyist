@@ -1,7 +1,7 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const RING = 2 * Math.PI * 104;
+const RING = 2 * Math.PI * 120;  // the ring's r in ui/main.html
 const PRESETS = [
   { name: "Classic", work_minutes: 25, rest_minutes: 5, cycles: 4 },
   { name: "Short", work_minutes: 15, rest_minutes: 5, cycles: 4 },
@@ -82,6 +82,20 @@ function dueText(t) {
 }
 
 const prioClass = (p) => ({ 4: "p1", 3: "p2", 2: "p3" })[p] || "";
+// Todoist's priorities (its API counts 4 as P1), with a word so the colour is never the only cue.
+const PRIO_WORD = { p1: "Urgent", p2: "High", p3: "Medium" };
+
+// One of the three tomatinhos: "done" (full), "now" (ring with a core), "plan" (outline).
+function tomato(kind, cls) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  const use = document.createElementNS(ns, "use");
+  use.setAttribute("href", "#t-" + kind);
+  svg.setAttribute("aria-hidden", "true");
+  if (cls) svg.setAttribute("class", cls);
+  svg.append(use);
+  return svg;
+}
 
 // ---------------------------------------------------------- timer view
 
@@ -96,34 +110,48 @@ function renderTimer() {
   const t = state.timer, s = state.session;
   const phase = !t ? "idle" : t.paused ? "paused" : t.phase === "work" ? "work" : "rest";
   document.body.dataset.phase = phase;
+  const p = pomo || state.pomodoro;
 
-  // ring + time
+  // ring + time: the ring shows the time left and empties as it passes
   let left, total;
   if (t) {
     left = Math.max(0, timeLeft());
     total = t.total_ms;
   } else {
-    left = total = (pomo ? pomo.work_minutes : state.pomodoro.work_minutes) * 60000;
+    left = total = p.work_minutes * 60000;
   }
   $("time").textContent = clock(left);
   $("ringProgress").style.strokeDasharray = RING;
-  $("ringProgress").style.strokeDashoffset = t ? RING * (1 - left / total) : RING;
+  $("ringProgress").style.strokeDashoffset = t ? RING * (1 - left / total) : 0;
+  $("timeLabel").textContent = !t ? "per tomato" : t.paused ? "paused" : "left";
+  $("timerBox").setAttribute("aria-label", `${clock(left)} ${t ? "left" : "per tomato"}`);
   $("phaseTag").textContent = { idle: "Ready", paused: "Paused", work: "Focus", rest: "Break" }[phase];
 
-  // round dots
-  const rounds = t ? t.rounds : (pomo || state.pomodoro).cycles;
+  // this session's tomatoes: done, now, planned
+  const rounds = t ? t.rounds : p.cycles;
+  const done = !t ? 0 : t.round - (t.phase === "rest" ? 0 : 1);
+  const now = t && t.phase === "work" ? t.round : 0;
+  const key = `${rounds}/${done}/${now}`;
   const dots = $("rounds");
-  if (dots.childElementCount !== rounds) {
+  if (dots.dataset.key !== key) {
+    dots.dataset.key = key;
     dots.textContent = "";
-    for (let i = 0; i < Math.min(rounds, 12); i++) dots.append(el("i"));
+    if (rounds <= 12) {
+      for (let n = 1; n <= rounds; n++) dots.append(tomato(n <= done ? "done" : n === now ? "now" : "plan"));
+    }
+    dots.setAttribute("aria-label", t ? `Tomato ${Math.min(t.round, rounds)} of ${rounds}` : `${rounds} tomatoes`);
   }
-  [...dots.children].forEach((dot, i) => {
-    const n = i + 1;
-    dot.className = !t ? "" : n < t.round || (n === t.round && t.phase === "rest") ? "done" : n === t.round ? "now" : "";
-  });
-  document.title = t ? `${clock(left)} · ${s ? s.task.content : "Busyist"}` : "Busyist";
+  const restMin = Math.round((t ? t.rest_ms : p.rest_minutes * 60000) / 60000);
+  let line;
+  if (!t) line = `${p.cycles} tomatoes of ${p.work_minutes} min, ${p.rest_minutes} min breaks`;
+  else if (t.phase === "rest") line = `Break · tomato ${t.round + 1} of ${t.rounds} next`;
+  else if (t.round >= t.rounds) line = `Tomato ${t.round} of ${t.rounds} · the last one`;
+  else line = `Tomato ${t.round} of ${t.rounds} · ${restMin} min break after`;
+  $("roundsText").textContent = line;
+  document.title = t ? `${clock(left)} · ${s ? s.task.content : "buZyist"}` : "buZyist";
 }
 
+let wasRunning = null;
 function renderCurrent() {
   const t = state.timer, s = state.session;
   const box = $("current");
@@ -132,12 +160,12 @@ function renderCurrent() {
   box.classList.toggle("idle", !s);
   $("controls").classList.toggle("hidden", !t);
   if (s) {
-    const phase = t && t.phase === "rest" ? "On a break" : "Focusing";
-    $("curEyebrow").textContent = t ? `${phase} · round ${t.round} of ${t.rounds} · since ${s.started_at}` : "Wrapping up";
+    $("curEyebrow").textContent = t
+      ? (t.phase === "rest" ? `Break time. Since ${s.started_at}` : `${t.paused ? "Paused" : "Just this"} · since ${s.started_at}`)
+      : "Wrapping up…";
     $("curTask").textContent = s.task.content;
     if (s.task.project) {
       const proj = el("span", "", s.task.project);
-      proj.style.color = s.task.color;
       meta.append(proj);
     }
     if (s.label_added && state.label) meta.append(el("span", "", "@" + state.label));
@@ -147,30 +175,80 @@ function renderCurrent() {
       meta.append(open);
     }
   } else if (t) {
-    $("curEyebrow").textContent = state.bar.local ? "Timer running" : "Running on the bar";
-    $("curTask").textContent = state.bar.local ? "No task linked" : "Started on the bar, no task linked";
-    meta.append(el("span", "", "Pick a task to replace it"));
+    $("curEyebrow").textContent = state.bar.local ? "No task linked" : "Started on the bar, no task linked";
+    $("curTask").textContent = "Timer running";
+    meta.append(el("span", "", state.todoist ? "Pick a task to put it in focus" : ""));
   } else {
-    $("curEyebrow").textContent = "Nothing in focus";
-    $("curTask").textContent = state.todoist ? "Pick a task to start a session" : "Start a pomodoro session";
+    $("curEyebrow").textContent = state.todoist ? "One tomato at a time." : "Name it if you like, then go.";
+    $("curTask").textContent = state.todoist ? "Pick a task to start" : "Ready when you are";
   }
   $("freeBox").classList.toggle("hidden", !!t || !!s);
+  // One Tomate button per screen: with a task list, its play buttons are the main action.
+  $("startFree").classList.toggle("primary", !state.todoist);
   if (t) {
     $("pauseIcon").setAttribute("href", t.paused ? "#i-play" : "#i-pause");
     $("btnPause").title = t.paused ? "Resume" : "Pause";
+    $("btnPause").setAttribute("aria-label", $("btnPause").title);
   }
-  $("setupHint").textContent = t ? "Changes apply to the next session" : "Used for the next session";
+  $("setupHint").textContent = t ? "Applies to the next session" : "Used for the next session";
+  // Settings stay open while idle and fold away once a timer runs.
+  const running = !!t;
+  if (running !== wasRunning) $("setup").open = !running;
+  wasRunning = running;
+}
+
+function renderGuard() {
+  const b = state.blocks;
+  if (!b) return;
+  const parts = [];
+  if (b.apps) parts.push(`${b.apps} app${b.apps === 1 ? "" : "s"}`);
+  if (b.sites_on) parts.push(b.site_mode === "allow" ? "allowlist" : `${b.sites} site${b.sites === 1 ? "" : "s"}`);
+  if (b.limits) parts.push(`${b.limits} limit${b.limits === 1 ? "" : "s"}`);
+  const count = (b.apps || 0) + (b.limits || 0) + (!b.sites_on ? 0 : b.site_mode === "allow" ? 1 : b.sites);
+  const blocks = `${count} block${count === 1 ? "" : "s"}`;
+  const guard = $("guard");
+  let text;
+  if (!parts.length) text = "Focus guard off · set it up";
+  else if (b.active) text = `Focus guard on · ${blocks} active`;
+  else text = `Focus guard ready · ${blocks}`;
+  if ($("guardText").textContent !== text) $("guardText").textContent = text;
+  guard.classList.toggle("on", parts.length > 0);
+  guard.classList.toggle("active", !!b.active);
+  $("guardIcon").setAttribute("href", b.active ? "#i-shield-check" : "#i-shield");
+  guard.title = parts.length ? "What stays blocked during focus: " + parts.join(", ") : "Block distracting apps and websites during focus";
+  guard.dataset.tab = b.apps || !b.sites_on ? "apps" : "sites";
+}
+
+function renderToday() {
+  const today = state.today;
+  const n = today.pomodoros;
+  const date = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  if ($("todayDate").textContent !== date) $("todayDate").textContent = date;
+  $("sumTitle").textContent = n ? `${n} tomato${n === 1 ? "" : "es"} today` : "No tomatoes yet today";
+  const side = [];
+  if (today.minutes) side.push(duration(today.minutes) + " of focus");
+  if (today.completed) side.push(`${today.completed} done`);
+  $("sumSide").textContent = side.join(" · ");
+  const box = $("sumTomatoes");
+  const key = String(n);
+  if (box.dataset.key !== key) {
+    box.dataset.key = key;
+    box.textContent = "";
+    if (!n) box.append(el("span", "none", "Pick a task. 25 minutes, just that."));
+    for (let i = 0; i < Math.min(n, 16); i++) box.append(tomato("done"));
+    if (n > 16) box.append(el("span", "more", `+${n - 16}`));
+    box.setAttribute("aria-label", `${n} tomato${n === 1 ? "" : "es"} finished today`);
+  }
+  // Without the task list (no Todoist) the header chip carries the count.
+  const chip = $("today");
+  chip.textContent = "";
+  chip.append(tomato("done", "t"), el("b", "", String(n)), n === 1 ? " tomato today" : " tomatoes today");
+  if (today.minutes) chip.append(" · " + duration(today.minutes));
 }
 
 function renderChrome() {
-  const today = state.today;
-  const chip = $("today");
-  chip.textContent = "";
-  chip.append("🍅 ", el("b", "", String(today.pomodoros)), today.pomodoros === 1 ? " pomodoro today" : " pomodoros today");
-  if (today.minutes) chip.append(" · " + duration(today.minutes));
-  const done = $("completed");
-  done.textContent = "";
-  done.append("✓ ", el("b", "", String(today.completed)), " completed");
+  renderToday();
+  renderGuard();
 
   const bar = state.bar;
   $("barChip").className = "chip" + (bar.ok === true ? " ok" : bar.ok === false ? " bad" : "");
@@ -199,7 +277,7 @@ function renderUpdate() {
   btn.disabled = u.busy;
   const out = $("updateResult");
   out.className = "test-result " + (u.error ? "bad" : "ok");
-  out.textContent = u.error || (u.busy ? "Downloading the update…" : `Busyist ${u.version} is available. Installing it restarts Busyist.`);
+  out.textContent = u.error || (u.busy ? "Downloading the update…" : `buZyist ${u.version} is out. Installing it restarts buZyist.`);
 }
 
 function renderEnded() {
@@ -207,20 +285,27 @@ function renderEnded() {
   $("endedWrap").classList.toggle("on", !!e);
   $("scrim").classList.toggle("on", !!e || $("drawer").classList.contains("on") || editing !== undefined);
   if (!e) return;
-  $("endedTomatoes").textContent = e.done ? (e.done > 8 ? "🍅 × " + e.done : "🍅".repeat(e.done)) : "⏹";
-  $("endedTitle").textContent = e.reason === "finished" ? "Session complete" : "Session stopped";
+  const finished = e.reason === "finished";
+  $("endedChip").textContent = finished ? "Done" : "Stopped";
+  $("endedChip").className = "state-chip " + (finished ? "done-chip" : "stopped-chip");
+  const box = $("endedTomatoes");
+  box.textContent = "";
+  for (let i = 0; i < Math.min(e.done, 8); i++) box.append(tomato("done"));
+  if (e.done > 8) box.append(el("span", "more", `+${e.done - 8}`));
+  box.classList.toggle("hidden", !e.done);
+  box.setAttribute("aria-label", `${e.done} tomato${e.done === 1 ? "" : "es"}`);
+  $("endedTitle").textContent = finished ? "Done. Take a breather." : "Session stopped";
   $("endedTask").textContent = e.task.content;
   $("endedComplete").classList.toggle("hidden", !e.task.id || !state.todoist);
   $("endedSummary").textContent = e.done
-    ? `${e.done} pomodoro${e.done === 1 ? "" : "s"} · ${duration(e.minutes)} of focus`
-    : "No full pomodoro this time.";
+    ? `${e.done} tomato${e.done === 1 ? "" : "es"} · ${duration(e.minutes)} of focus`
+    : "No full tomato this time. That's fine.";
   $("endedProblems").textContent = (e.problems || []).join(" ");
 }
 
 async function poll() {
   try {
     state = await api.get_state();
-    document.documentElement.dataset.theme = state.theme || "auto";
   } catch (err) {
     return;
   }
@@ -442,7 +527,7 @@ function renderTasks() {
   $("count").textContent = `${shown.length} of ${tasks.length}`;
   const list = $("list");
   list.textContent = "";
-  if (!tasks.length) return showEmpty("All clear", "Nothing matches your filter. Enjoy it.");
+  if (!tasks.length) return showEmpty("All clear", "Nothing in this filter. Enjoy it.");
   if (!shown.length) return showEmpty("No match", `No task contains “${$("search").value}”.`);
 
   shown.forEach((t, i) => {
@@ -461,14 +546,31 @@ function renderTasks() {
     const due = dueText(t);
     if (due) meta.append(el("span", t.overdue ? "late" : "", due));
     for (const l of t.labels) meta.append(el("span", "lbl" + (l === state?.label ? " mine" : ""), "@" + l));
-    if (meta.childElementCount) body.append(meta);
+    const dots = el("span", "t-dots");
+    meta.prepend(dots);
+    // Priority: a pill (filled flag, P1-P3 and a word) first in the meta line,
+    // and the checkbox takes the same colour, like in Todoist.
+    const prio = prioClass(t.priority);
+    if (prio) {
+      li.classList.add(prio);
+      const pill = el("span", "prio-pill " + prio);
+      pill.title = `Priority ${prio.slice(1)} in Todoist`;
+      pill.append(icon("flag-fill"), el("b", "", prio.toUpperCase()), PRIO_WORD[prio]);
+      meta.prepend(pill);
+    }
+    body.append(meta);
     const play = el("button", "play");
-    play.append(icon("play"), "Start");
+    play.append(icon("play"));
+    play.title = "Start a tomato";
+    play.setAttribute("aria-label", "Start a tomato on: " + t.content);
     play.tabIndex = -1;
-    const check = el("button", "prio " + prioClass(t.priority));
+    const check = el("button", "prio");
     check.title = "Mark as done";
+    check.setAttribute("aria-label", "Mark as done: " + t.content + (prio ? ` (priority ${prio.slice(1)})` : ""));
     check.tabIndex = -1;
-    check.append(icon("check"));
+    const box = el("span", "box");
+    box.append(icon("check"));
+    check.append(box);
     check.onclick = (e) => { e.stopPropagation(); completeTask(t, li); };
     li.append(check, body, play);
     play.onclick = (e) => { e.stopPropagation(); startTask(t, li); };
@@ -493,16 +595,34 @@ function markSelection(scroll) {
   });
 }
 
+// The task in focus gets a Tomate border and a state badge; every row shows
+// one small tomato per pomodoro done on it.
 function markCurrentTask() {
   const id = state && state.session && state.session.task.id;
+  const t = state && state.timer;
+  const word = !t ? "Wrapping up" : t.paused ? "Paused" : t.phase === "rest" ? "Break" : "In focus";
+  const counts = (state && state.task_tomatoes) || {};
   for (const li of $("list").querySelectorAll(".task")) {
     const on = li.dataset.id === id;
+    li.classList.toggle("in-focus", on);
     let badge = li.querySelector(".badge");
     if (on && !badge) {
-      badge = el("span", "badge", "In focus");
+      badge = el("span", "badge", word);
       li.insertBefore(badge, li.querySelector(".play"));
     } else if (!on && badge) {
       badge.remove();
+    }
+    if (badge && badge.textContent !== word) badge.textContent = word;
+    const dots = li.querySelector(".t-dots");
+    const n = counts[li.dataset.id] || 0;
+    if (dots && dots.dataset.n !== String(n)) {
+      dots.dataset.n = String(n);
+      dots.textContent = "";
+      for (let k = 0; k < Math.min(n, 8); k++) dots.append(el("i"));
+      if (n > 8) dots.append(el("span", "", "+" + (n - 8)));
+      dots.classList.toggle("hidden", !n);
+      dots.setAttribute("role", "img");
+      dots.setAttribute("aria-label", `${n} tomato${n === 1 ? "" : "es"} done`);
     }
   }
 }
@@ -518,7 +638,7 @@ async function startTask(task, li) {
   const result = await api.start(task.id);
   if (li) li.classList.remove("busy");
   if (!result.ok) return toast(result.error, true);
-  toast(`Started${state && state.bar.local ? "" : " on the bar"} · ${pomo.work_minutes} min focus`);
+  toast(`Go. ${pomo.work_minutes} minutes, just this${state && state.bar.local ? "" : " (on the bar)"}.`);
   $("search").value = "";
   renderTasks();
   poll();
@@ -537,7 +657,7 @@ async function completeTask(task, li) {
     if (li) li.classList.remove("busy", "done");
     return toast(result.error, true);
   }
-  toast("Completed in Todoist ✓");
+  toast("Done in Todoist.");
   tasks = tasks.filter((t) => t.id !== task.id);
   renderTasks();
   poll();
@@ -680,13 +800,14 @@ async function startFree(name) {
   flushPomodoro();
   const result = await api.start(null, name);
   if (!result.ok) return toast(result.error, true);
-  toast(`Started${state && state.bar.local ? "" : " on the bar"} · ${pomo.work_minutes} min focus`);
+  toast(`Go. ${pomo.work_minutes} minutes, just this${state && state.bar.local ? "" : " (on the bar)"}.`);
   $("freeName").value = "";
   poll();
 }
 $("startFree").onclick = () => startFree();
 $("freeName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.stopPropagation(); startFree(); } });
 $("btnStop").onclick = () => control("stop");
+$("guard").onclick = () => openSettings($("guard").dataset.tab || "apps");
 $("btnSkip").onclick = () => control("skip");
 $("btnPause").onclick = () => control(state.timer && state.timer.paused ? "resume" : "pause");
 
@@ -695,7 +816,7 @@ $("endedComplete").onclick = async () => {
   const e = state.ended;
   const result = await api.complete(e.task.id);
   if (!result.ok) return toast(result.error, true);
-  toast("Completed in Todoist ✓");
+  toast("Done in Todoist.");
   // drop it at once, then reload so the filter shows what Todoist now has
   tasks = tasks.filter((t) => t.id !== e.task.id);
   renderTasks();
@@ -780,7 +901,7 @@ async function openSettings(tab) {
   renderExtension(s.extension_connected, s.extension_outdated);
   showBarFields();
   showTodoistFields();
-  $("aboutVersion").textContent = "Busyist " + s.version;
+  $("aboutVersion").textContent = "buZyist " + s.version;
   $("aboutData").textContent = s.data_dir;
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
   $("updateResult").textContent = "";
@@ -882,7 +1003,7 @@ $("s_block_apps").onchange = renderBlockedApps;
 
 // The website lists, one per mode: blocked during focus, or the only ones
 // allowed. Entries are domains or URL patterns with * wildcards; the Chrome
-// extension reads them from Busyist. Edited here, saved with the rest.
+// extension reads them from buZyist. Edited here, saved with the rest.
 let siteLists = { block: [], allow: [] };
 const siteMode = () => (document.querySelector('input[name="site_mode"]:checked') || {}).value || "block";
 
@@ -912,8 +1033,8 @@ function renderBlockedSites() {
   renderTabDots();
 }
 
-// The setup steps show until the extension has called Busyist.
-// A connected extension older than the one Busyist ships needs a reload.
+// The setup steps show until the extension has called buZyist.
+// A connected extension older than the one buZyist ships needs a reload.
 function renderExtension(connected, outdated) {
   const status = $("extStatus");
   const good = connected && !outdated;
@@ -957,9 +1078,9 @@ function cleanSitePattern(raw) {
 // ------------------------------------------------------- website limits
 //
 // Per-site time budgets and blocked hours that apply all day (the Limits
-// tab). Rules are edited in memory and saved with the rest; Busyist checks
+// tab). Rules are edited in memory and saved with the rest; buZyist checks
 // them (clean_site_limit) and the extension enforces them. Usage comes from
-// Busyist, which keeps the totals.
+// buZyist, which keeps the totals.
 let limitRules = [];
 let limitUsage = {};      // rule id -> where it stands, from api.site_usage
 let limitDraft = null;    // {index, rule} while the editor is open
@@ -1254,12 +1375,12 @@ $("installUpdate").onclick = async () => {
   if (!u) return;
   if (!u.installable) return api.open_url(u.url);
   const where = state.bar.local ? "" : " on the bar";
-  if (state.session && !confirm(`Busyist restarts to update. The session keeps running${where} and picks up again after the restart. Update now?`)) return;
+  if (state.session && !confirm(`buZyist restarts to update. The session keeps running${where} and picks up again after the restart. Update now?`)) return;
   $("installUpdate").disabled = true;
   $("installUpdate").textContent = "Installing…";
   const result = await api.install_update();
   if (!result.ok) { await poll(); return toast(result.error, true); }
-  toast(`Installing Busyist ${u.version}. It restarts by itself.`);
+  toast(`Installing buZyist ${u.version}. It restarts by itself.`);
 };
 $("releaseNotes").onclick = () => state && state.update && api.open_url(state.update.url);
 $("cancelSettings").onclick = closeSettings;
@@ -1367,7 +1488,7 @@ async function boot() {
   api = window.pywebview.api;
   await poll();
   if (state.needs_setup) {
-    showEmpty("Welcome to Busyist", "Add your Todoist API token to see your tasks, or turn Todoist off in Settings to run sessions without tasks.", true);
+    showEmpty("Welcome to buZyist", "Add your Todoist API token to see your tasks, or turn Todoist off in Settings to run sessions without tasks.", true);
     tasksWereOff = true;
     openSettings();
   } else if (state.todoist) {

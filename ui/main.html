@@ -3,109 +3,141 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Busyist</title>
+<title>buZyist</title>
+<link rel="stylesheet" href="fonts/fonts.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body data-phase="idle">
-<svg width="0" height="0" style="position:absolute">
-  <symbol id="i-tomato" viewBox="0 0 24 24"><circle cx="12" cy="14" r="8.5" fill="#e0483a"/><path d="M12 6.5 8.5 3.5l3.5 1.6 3.5-1.6z" fill="#4caf50"/><path d="M12 6.5v-3" stroke="#3d8b40" stroke-width="1.6" stroke-linecap="round"/></symbol>
-  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
-  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></symbol>
-  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><path d="M7 4.5v15a1 1 0 0 0 1.5.86l12.5-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></symbol>
-  <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="5.5" y="4" width="4.5" height="16" rx="1.3"/><rect x="14" y="4" width="4.5" height="16" rx="1.3"/></symbol>
-  <symbol id="i-stop" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2.5"/></symbol>
-  <symbol id="i-skip" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5.2v13.6a1 1 0 0 0 1.55.83L15 13.2v5.3a1 1 0 0 0 2 0V5.5a1 1 0 0 0-2 0v5.3L5.55 4.37A1 1 0 0 0 4 5.2z"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
-  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <!-- Interface icons from the buZyist handoff: 24 grid, 2.2 stroke, round ends. -->
+  <symbol id="i-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.4" fill="currentColor" stroke="none"/><circle cx="4.5" cy="12" r="1.4" fill="currentColor" stroke="none"/><circle cx="4.5" cy="18" r="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5.5c0 4.4-2.9 7.6-7 9.5-4.1-1.9-7-5.1-7-9.5V6l7-3z"/></symbol>
+  <symbol id="i-shield-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5.5c0 4.4-2.9 7.6-7 9.5-4.1-1.9-7-5.1-7-9.5V6l7-3z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 5.5v13l10.5-6.5L8 5.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2.5"/></symbol>
+  <symbol id="i-skip" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 5.5v13l9-6.5-9-6.5zM18.5 5.5v13"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
-  <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/></symbol>
-  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12a7 7 0 1 0 2.2-5.1M4.5 4.5v4.2h4.2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4.5M5 4.5h11l-2 4 2 4H5"/></symbol>
+  <symbol id="i-flag-fill" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4.5"/><path d="M5 4.5h11l-2 4 2 4H5z" fill="currentColor"/></symbol>
+  <!-- Tomatinhos: done (full), now (ring with a core), planned (outline at 45%). -->
+  <symbol id="t-done" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="8.5" fill="#D9361B"/><ellipse cx="9" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" transform="rotate(-18 9 5.6)"/><ellipse cx="15" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" transform="rotate(18 15 5.6)"/></symbol>
+  <symbol id="t-now" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7.4" fill="none" stroke="#D9361B" stroke-width="2.2"/><circle cx="12" cy="13.5" r="3.6" fill="#D9361B"/><ellipse cx="9" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" transform="rotate(-18 9 5.6)"/><ellipse cx="15" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" transform="rotate(18 15 5.6)"/></symbol>
+  <symbol id="t-plan" viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7.4" fill="none" stroke="#D9361B" stroke-opacity="0.45" stroke-width="2.2"/><ellipse cx="9" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" fill-opacity="0.45" transform="rotate(-18 9 5.6)"/><ellipse cx="15" cy="5.6" rx="3.6" ry="1.7" fill="var(--leaf)" fill-opacity="0.45" transform="rotate(18 15 5.6)"/></symbol>
 </svg>
 
 <div class="app">
   <header class="top">
-    <div class="brand"><svg><use href="#i-tomato"/></svg>Busyist</div>
-    <span class="chip" id="today" title="Finished pomodoros today"></span>
-    <span class="chip" id="completed" title="Tasks completed from Busyist today"></span>
+    <div class="brand" role="img" aria-label="buZyist">
+      <img class="logo" src="img/logo.svg" alt="" height="30">
+    </div>
+    <span class="chip solo-only" id="today" title="Tomatoes finished today"></span>
     <div class="spacer"></div>
-    <button class="chip update hidden" id="updateChip" title="A new version of Busyist is out"></button>
+    <button class="chip update hidden" id="updateChip" title="A new version of buZyist is out"></button>
     <button class="chip update hidden" id="extChip" title="The browser extension is out of date">Reload extension</button>
     <span class="chip" id="barChip"><span class="led"></span><span id="barText">Looking for the bar</span></span>
-    <button class="icon-btn" id="openSettings" title="Settings"><svg><use href="#i-gear"/></svg></button>
+    <button class="icon-btn" id="openSettings" title="Settings" aria-label="Settings"><svg><use href="#i-gear"/></svg></button>
   </header>
 
   <div class="body">
-    <section class="card focus">
+    <section class="panel focus" aria-label="Timer">
+      <span class="state-chip" id="phaseTag">Ready</span>
+
+      <div class="current idle" id="current">
+        <h2 id="curTask">Pick a task to start</h2>
+        <div class="eyebrow" id="curEyebrow">One tomato at a time.</div>
+        <div class="cur-meta" id="curMeta"></div>
+      </div>
+
       <div class="ring-wrap">
-        <svg class="ring" viewBox="0 0 240 240">
-          <circle class="glow" cx="120" cy="120" r="104"/>
-          <circle class="track" cx="120" cy="120" r="104"/>
-          <circle class="progress" id="ringProgress" cx="120" cy="120" r="104"/>
+        <svg class="ring" viewBox="0 0 300 320" aria-hidden="true">
+          <circle class="track" cx="150" cy="170" r="120"/>
+          <circle class="progress" id="ringProgress" cx="150" cy="170" r="120" transform="rotate(-90 150 170)"/>
+          <rect class="leaf" x="144" y="12" width="12" height="36" rx="6"/>
+          <ellipse class="leaf" cx="121" cy="50" rx="33" ry="13.5" transform="rotate(-16 121 50)"/>
+          <ellipse class="leaf" cx="179" cy="50" rx="33" ry="13.5" transform="rotate(16 179 50)"/>
         </svg>
-        <div class="ring-center">
-          <div class="phase-tag" id="phaseTag">Ready</div>
+        <div class="ring-center" role="timer" id="timerBox">
           <div class="time" id="time">25:00</div>
-          <div class="rounds" id="rounds"></div>
+          <div class="time-label" id="timeLabel">per tomato</div>
         </div>
       </div>
 
-      <div class="current idle" id="current">
-        <div class="eyebrow" id="curEyebrow">Nothing in focus</div>
-        <h2 id="curTask">Pick a task to start a session</h2>
-        <div class="cur-meta" id="curMeta"></div>
-        <div class="free hidden" id="freeBox" style="margin-top:12px;display:flex;flex-direction:column;align-items:center;gap:8px">
-          <input class="input" id="freeName" maxlength="80" placeholder="Session name (optional)" autocomplete="off" spellcheck="false" style="width:100%;max-width:280px;text-align:center">
-          <button class="btn primary" id="startFree"><svg><use href="#i-play"/></svg>Start without a task</button>
-        </div>
+      <div class="rounds-wrap">
+        <div class="rounds" id="rounds" role="img"></div>
+        <div class="rounds-text" id="roundsText"></div>
+      </div>
+
+      <div class="free hidden" id="freeBox">
+        <input class="input" id="freeName" maxlength="80" placeholder="What are you working on? (optional)" autocomplete="off" spellcheck="false">
+        <button class="btn primary lg" id="startFree"><svg><use href="#i-play"/></svg>Start a tomato</button>
       </div>
 
       <div class="controls hidden" id="controls">
-        <button class="round-btn" id="btnStop" title="Stop session"><svg><use href="#i-stop"/></svg></button>
-        <button class="round-btn big" id="btnPause" title="Pause"><svg><use href="#i-pause" id="pauseIcon"/></svg></button>
-        <button class="round-btn" id="btnSkip" title="Skip to next phase"><svg><use href="#i-skip"/></svg></button>
+        <button class="round-btn" id="btnStop" title="Stop session" aria-label="Stop session"><svg><use href="#i-stop"/></svg></button>
+        <button class="round-btn big" id="btnPause" title="Pause" aria-label="Pause"><svg><use href="#i-pause" id="pauseIcon"/></svg></button>
+        <button class="round-btn" id="btnSkip" title="Skip to next phase" aria-label="Skip to next phase"><svg><use href="#i-skip"/></svg></button>
       </div>
 
-      <div class="setup">
-        <div class="setup-head"><span>Pomodoro</span><span class="hint" id="setupHint">Used for the next session</span></div>
+      <button class="guard" id="guard" type="button"><svg><use href="#i-shield" id="guardIcon"/></svg><span id="guardText">Focus guard off</span></button>
+
+      <details class="setup" id="setup">
+        <summary><span>Tomato settings</span><span class="hint" id="setupHint">Used for the next session</span></summary>
         <div class="presets" id="presets"></div>
         <div class="steppers">
           <div class="stepper" data-key="work_minutes" data-step="5" data-min="5" data-max="480">
             <label>Focus</label>
-            <div class="row"><button data-d="-1">−</button><input type="number" inputmode="numeric"><button data-d="1">+</button></div>
+            <div class="row"><button data-d="-1" aria-label="Less focus time">−</button><input type="number" inputmode="numeric" aria-label="Focus minutes"><button data-d="1" aria-label="More focus time">+</button></div>
             <small>min</small>
           </div>
           <div class="stepper" data-key="rest_minutes" data-step="1" data-min="5" data-max="480">
             <label>Break</label>
-            <div class="row"><button data-d="-1">−</button><input type="number" inputmode="numeric"><button data-d="1">+</button></div>
+            <div class="row"><button data-d="-1" aria-label="Shorter break">−</button><input type="number" inputmode="numeric" aria-label="Break minutes"><button data-d="1" aria-label="Longer break">+</button></div>
             <small>min</small>
           </div>
           <div class="stepper" data-key="cycles" data-step="1" data-min="2" data-max="35">
-            <label>Rounds</label>
-            <div class="row"><button data-d="-1">−</button><input type="number" inputmode="numeric"><button data-d="1">+</button></div>
-            <small>pomodoros</small>
+            <label>Tomatoes</label>
+            <div class="row"><button data-d="-1" aria-label="Fewer tomatoes">−</button><input type="number" inputmode="numeric" aria-label="Tomatoes per session"><button data-d="1" aria-label="More tomatoes">+</button></div>
+            <small>per session</small>
           </div>
         </div>
         <div class="setup-foot">
-          <label class="switch"><input type="checkbox" id="autostart"><span class="knob"></span>Auto-start next phase</label>
+          <label class="switch"><input type="checkbox" id="autostart" role="switch"><span class="knob"></span>Auto-start next phase</label>
           <span class="total" id="total"></span>
         </div>
-      </div>
+      </details>
     </section>
 
-    <section class="card tasks" id="tasksCard">
+    <section class="tasks" id="tasksCard" aria-label="Tasks">
+      <div class="today-head">
+        <div class="today-date" id="todayDate"></div>
+        <div class="summary" id="summary">
+          <div class="summary-top">
+            <div class="summary-title" id="sumTitle">No tomatoes yet</div>
+            <div class="summary-side" id="sumSide"></div>
+          </div>
+          <div class="summary-tomatoes" id="sumTomatoes" role="img"></div>
+        </div>
+      </div>
       <div class="tasks-head">
         <label class="search">
           <svg><use href="#i-search"/></svg>
           <input id="search" placeholder="Search tasks" autocomplete="off" spellcheck="false">
           <kbd id="hotkeyHint"></kbd>
         </label>
-        <button class="icon-btn" id="refresh" title="Reload from Todoist"><svg><use href="#i-refresh"/></svg></button>
+        <button class="icon-btn" id="refresh" title="Reload from Todoist" aria-label="Reload from Todoist"><svg><use href="#i-refresh"/></svg></button>
       </div>
       <div class="filters">
         <div class="filter-tabs" id="filterTabs" role="tablist" aria-label="Saved filters"></div>
-        <button class="icon-btn sm" id="editFilter" title="Edit this filter"><svg><use href="#i-pencil"/></svg></button>
-        <button class="icon-btn sm" id="addFilter" title="New filter"><svg><use href="#i-plus"/></svg></button>
+        <button class="icon-btn sm" id="editFilter" title="Edit this filter" aria-label="Edit this filter"><svg><use href="#i-pencil"/></svg></button>
+        <button class="icon-btn sm" id="addFilter" title="New filter" aria-label="New filter"><svg><use href="#i-plus"/></svg></button>
       </div>
       <div class="filter-line"><code id="filterText"></code><span id="count"></span></div>
       <ul class="list" id="list"></ul>
@@ -160,7 +192,7 @@
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="use_busybar" id="s_use_busybar"><span class="knob"></span>Run the timer on a BUSY Bar</label>
       </div>
-      <div class="help hidden" id="noBarHelp">Off: the timer runs in Busyist on this PC, with the mini timer and tray icon as the countdown.</div>
+      <div class="help hidden" id="noBarHelp">Off: the timer runs in buZyist on this PC, with the mini timer and tray icon as the countdown.</div>
       <div id="barFields">
         <div class="two">
           <div class="field">
@@ -221,7 +253,7 @@
       <div class="extension-box" id="extBox">
         <div class="extension-status" id="extStatus">Browser extension: not connected</div>
         <div id="extSetup">
-          <div class="help">Blocking websites needs the Busyist extension in your browser. It's a one-time setup:</div>
+          <div class="help">Blocking websites needs the buZyist extension in your browser. It's a one-time setup:</div>
           <ol class="steps">
             <li>
               <button type="button" class="btn primary" id="installExtension">Open <span class="browser-name">Chrome</span>'s extensions page</button>
@@ -234,16 +266,16 @@
           <div class="help">The status above turns green within a few seconds of loading the extension.</div>
         </div>
         <div class="hidden" id="extOutdated">
-          <div class="help">Busyist was updated and so was its extension, but your browser is still running the old one (<span id="extOldVersion">older</span>, now <span id="extNewVersion"></span>). Reload it:</div>
+          <div class="help">buZyist was updated and so was its extension, but your browser is still running the old one (<span id="extOldVersion">older</span>, now <span id="extNewVersion"></span>). Reload it:</div>
           <ol class="steps">
             <li>
               <button type="button" class="btn primary" id="openExtensionsPage">Open <span class="browser-name">Chrome</span>'s extensions page</button>
             </li>
-            <li>Find <b>Busyist Focus</b> and click its <b>Reload</b> icon (the circular arrow). No need to load the folder again.</li>
+            <li>Find <b>buZyist Focus</b> and click its <b>Reload</b> icon (the circular arrow). No need to load the folder again.</li>
           </ol>
           <div class="help">This message goes away within a few seconds of reloading.</div>
         </div>
-        <div class="help hidden" id="extDone">All set. Keep the extension turned on and Busyist tells it when to block.</div>
+        <div class="help hidden" id="extDone">All set. Keep the extension turned on and buZyist tells it when to block.</div>
         <div class="path-row">
           <code id="extDir">extension</code>
           <button type="button" class="btn sm" id="copyExtensionPath">Copy path</button>
@@ -256,7 +288,7 @@
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="site_limits_on" id="s_site_limits_on"><span class="knob"></span>Enforce website limits</label>
       </div>
-      <div class="help">These work all day, with or without a pomodoro running. A site is blocked once any of its time limits is used up, or during its blocked hours. Time counts while the site is the active tab in a browser window you're using. Needs the browser extension (Websites tab); reload it after updating Busyist.</div>
+      <div class="help">These work all day, with or without a pomodoro running. A site is blocked once any of its time limits is used up, or during its blocked hours. Time counts while the site is the active tab in a browser window you're using. Needs the browser extension (Websites tab); reload it after updating buZyist.</div>
       <div id="limitsFields">
         <div class="limit-list" id="limitList"></div>
         <div class="limit-editor hidden" id="limitEditor"></div>
@@ -270,24 +302,18 @@
         <input class="input" id="s_hotkey" name="hotkey" spellcheck="false" placeholder="ctrl+alt+p">
         <div class="help">ctrl / alt / shift / win + a key, e.g. <code>ctrl+alt+p</code>. Empty for none.</div>
       </div>
-      <div class="field">
-        <label>Theme</label>
-        <div class="seg" role="radiogroup" aria-label="Theme">
-          <label><input type="radio" name="theme" value="auto"><span>Match Windows</span></label>
-          <label><input type="radio" name="theme" value="light"><span>Light</span></label>
-          <label><input type="radio" name="theme" value="dark"><span>Dark</span></label>
-        </div>
-      </div>
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="notifications"><span class="knob"></span>Notify at breaks and when a session ends</label>
         <label class="switch"><input type="checkbox" name="open_on_finish"><span class="knob"></span>Open this window when a session finishes</label>
-        <label class="switch"><input type="checkbox" name="launch_at_login"><span class="knob"></span>Start Busyist when I sign in to Windows</label>
+        <label class="switch"><input type="checkbox" name="launch_at_login"><span class="knob"></span>Start buZyist when I sign in to Windows</label>
         <label class="switch" id="autoUpdateRow"><input type="checkbox" name="auto_update"><span class="knob"></span>Install updates automatically when no session is running</label>
       </div>
     </div>
 
     <div class="section about" role="tabpanel" id="p_about" data-panel="about">
-      <p class="help"><b id="aboutVersion">Busyist</b> · unofficial; not affiliated with BUSY or Todoist.</p>
+      <div class="brand"><img class="logo about-logo" src="img/logo.svg" alt="buZyist"></div>
+      <p class="help">One tomato at a time. You pick a task, start the tomato, and the rest of the world waits.</p>
+      <p class="help"><b id="aboutVersion">buZyist</b> · unofficial; not affiliated with BUSY or Todoist.</p>
       <div class="input-row">
         <button type="button" class="btn primary hidden" id="installUpdate"></button>
         <button type="button" class="btn" id="checkUpdate">Check for updates</button>
@@ -309,7 +335,8 @@
 
 <div class="modal-wrap" id="endedWrap">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="endedTitle">
-    <div class="tomatoes" id="endedTomatoes"></div>
+    <span class="state-chip done-chip" id="endedChip">Done</span>
+    <div class="tomatoes" id="endedTomatoes" role="img"></div>
     <h3 id="endedTitle">Session complete</h3>
     <p class="task-name" id="endedTask"></p>
     <p id="endedSummary"></p>

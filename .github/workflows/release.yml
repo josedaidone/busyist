@@ -40,7 +40,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: busyist-build
+          name: buzyist-build
           path: |
             dist/*.exe
             dist/*.zip
