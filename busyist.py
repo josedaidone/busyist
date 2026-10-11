@@ -1748,11 +1748,12 @@ class Api:
             if not EXTENSION_DIR.exists():
                 raise AppError("The extension folder is missing; reinstall Busyist.")
             copied = set_clipboard(str(EXTENSION_DIR))
-            show_in_explorer(EXTENSION_DIR)
             browser = find_browser()
             if browser:
-                name, exe, page = browser
-                subprocess.Popen([exe, page], close_fds=True)
+                threading.Thread(target=open_browser_page, args=(browser[1], browser[2]),
+                                 daemon=True).start()
+            else:
+                show_in_explorer(EXTENSION_DIR)
             return {"browser": browser[0] if browser else None,
                     "page": browser[2] if browser else "chrome://extensions",
                     "copied": copied, "path": str(EXTENSION_DIR)}
@@ -1872,6 +1873,99 @@ def find_browser() -> tuple[str, str, str] | None:
             if base and (Path(base) / folder / exe).is_file():
                 return name, str(Path(base) / folder / exe), page
     return None
+
+
+def open_browser_page(exe: str, page: str) -> None:
+    """
+    Open `page` (chrome://extensions/) in the browser at `exe`, then select
+    the extension folder in Explorer.
+
+    Chrome and Edge drop chrome:// / edge:// URLs given on the command line,
+    so this opens a new window and types the address into it (Ctrl+L, URL,
+    Enter), but only once the foreground window really is that browser's.
+    """
+    try:
+        u32 = ctypes.WinDLL("user32")
+        before = u32.GetForegroundWindow()
+        subprocess.Popen([exe, "--new-window"], close_fds=True)
+        hwnd, deadline = None, time.monotonic() + 10
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            fg = u32.GetForegroundWindow()
+            if fg and fg != before and window_exe(fg) == Path(exe).name.lower():
+                hwnd = fg
+                break
+        if hwnd:
+            time.sleep(0.5)  # let the new window's address bar get ready
+            if u32.GetForegroundWindow() == hwnd:
+                send_keys(page)
+            else:
+                log.info("browser window lost focus; not typing %s", page)
+        else:
+            log.info("no browser window came up; not typing %s", page)
+    except Exception:
+        log.exception("could not open %s", page)
+    show_in_explorer(EXTENSION_DIR)
+
+
+def window_exe(hwnd) -> str:
+    """Lower-case file name of the program that owns window `hwnd` ('' if unknown)."""
+    u32, k32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
+    k32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    pid = ctypes.wintypes.DWORD()
+    u32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
+    handle = k32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = ctypes.wintypes.DWORD(len(buf))
+        if not k32.QueryFullProcessImageNameW(ctypes.wintypes.HANDLE(handle), 0, buf, ctypes.byref(size)):
+            return ""
+        return Path(buf.value).name.lower()
+    finally:
+        k32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+
+
+class _KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.wintypes.WORD), ("wScan", ctypes.wintypes.WORD),
+                ("dwFlags", ctypes.wintypes.DWORD), ("time", ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
+    _fields_ = [("dx", ctypes.wintypes.LONG), ("dy", ctypes.wintypes.LONG),
+                ("mouseData", ctypes.wintypes.DWORD), ("dwFlags", ctypes.wintypes.DWORD),
+                ("time", ctypes.wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _INPUT(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _U)]
+
+
+def send_keys(text: str) -> None:
+    """Ctrl+L, type `text`, Enter, into the foreground window."""
+    KEYUP, UNICODE, CTRL, L, ENTER = 0x2, 0x4, 0x11, 0x4C, 0x0D
+
+    def key(vk=0, scan=0, flags=0):
+        i = _INPUT(type=1)  # INPUT_KEYBOARD
+        i.ki = _KEYBDINPUT(vk, scan, flags, 0, 0)
+        return i
+
+    seq = [key(CTRL), key(L), key(L, flags=KEYUP), key(CTRL, flags=KEYUP)]
+    u32 = ctypes.WinDLL("user32")
+    arr = (_INPUT * len(seq))(*seq)
+    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
+    time.sleep(0.15)
+    seq = []
+    for ch in text:
+        seq += [key(scan=ord(ch), flags=UNICODE), key(scan=ord(ch), flags=UNICODE | KEYUP)]
+    seq += [key(ENTER), key(ENTER, flags=KEYUP)]
+    arr = (_INPUT * len(seq))(*seq)
+    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
 
 
 def show_in_explorer(path: Path) -> None:
