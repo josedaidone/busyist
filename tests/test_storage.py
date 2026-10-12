@@ -45,7 +45,9 @@ def test_concurrent_writers_leave_a_valid_file(data_dir, monkeypatch):
     assert leftovers(data_dir) == []
 
 
-def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch, clock):
+def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch):
+    pauses = []
+    monkeypatch.setattr(busyist, "replace_pause", pauses.append)
     path = data_dir / "config.json"
     busyist.write_json(path, {"old": True})
     real_replace = os.replace
@@ -61,11 +63,12 @@ def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch, clock):
     busyist.write_json(path, {"new": True})
     assert len(calls) == 3
     assert busyist.read_json(path, None) == {"new": True}
-    assert clock.sleeps == [0.05, 0.1]
+    assert pauses == [0.05, 0.1]
     assert leftovers(data_dir) == []
 
 
-def test_replace_that_keeps_failing_raises_and_cleans_up(data_dir, monkeypatch, clock):
+def test_replace_that_keeps_failing_raises_and_cleans_up(data_dir, monkeypatch):
+    monkeypatch.setattr(busyist, "replace_pause", lambda s: None)
     path = data_dir / "config.json"
     busyist.write_json(path, {"old": True})
 
@@ -145,7 +148,7 @@ def test_save_config_keeps_an_hourly_backup(make_app, clock):
     def read(path):
         return json.loads(path.read_text(encoding="utf-8"))
 
-    app = make_app({"todoist_token": "", "filters": [{"name": "Today", "query": "today"}], "active_filter": "Today"})
+    app = make_app({"todoist_token": "", "config_version": busyist.CONFIG_VERSION})
     assert not busyist.CONFIG_BACKUP.exists()  # nothing to migrate: nothing written yet
     first = read(busyist.CONFIG_PATH)
     app.save_settings({"work_minutes": 30})

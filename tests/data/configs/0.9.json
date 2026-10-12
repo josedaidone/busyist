@@ -1,0 +1,10 @@
+{
+  "todoist_token": "tok-0-9",
+  "todoist_filter": "today & #Work",
+  "busybar_ip": "192.168.1.50",
+  "busybar_pin": "1234",
+  "work_minutes": 50,
+  "rest_minutes": 10,
+  "cycles": 3,
+  "hotkey": "ctrl+alt+p"
+}

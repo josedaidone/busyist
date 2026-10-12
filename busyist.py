@@ -27,6 +27,7 @@ import ctypes
 import ctypes.wintypes
 import hashlib
 import http.server
+import ipaddress
 import json
 import logging
 import os
@@ -50,6 +51,7 @@ from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Annotated, Literal
 
 import httpx2
 import pystray
@@ -57,6 +59,8 @@ import webview
 from busylib import BusyBar, exceptions, types
 from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
+from pydantic_core import PydanticCustomError
 
 # APP names what Windows and the disk see from before the rename: the data
 # folder (%APPDATA%\Busyist, where Chrome loads the extension from), the
@@ -143,8 +147,8 @@ SOLO_W, SOLO_H = 580, 740  # main window size without the task list
 DEFAULTS = {
     "use_todoist": True,  # off: sessions run without tasks, no API token needed
     "todoist_token": "",
-    "filters": [],  # [{"name": ..., "query": ...}], the task lists to pick from
-    "active_filter": "",
+    "filters": [{"name": "Today", "query": "today | overdue"}],  # the task lists to pick from
+    "active_filter": "Today",
     "use_busybar": False,  # off: the timer runs on this PC, no bar needed
     "busybar_ip": "",
     "busybar_pin": "",
@@ -213,6 +217,8 @@ APP_ACTIONS = ("close", "hide")
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
 CYCLES_MIN, CYCLES_MAX = 1, 35
+POLL_MIN, POLL_MAX = 2, 60  # seconds between two looks at the bar
+MAX_LABEL = 60  # the Todoist label a running task gets
 # The bar itself refuses fewer than 2 work phases, so a 1-tomato session runs
 # as 2 on the bar and the app stops it when the first break would begin.
 BAR_CYCLES_MIN = 2
@@ -293,6 +299,7 @@ _write_locks: dict[Path, threading.Lock] = {}
 _write_locks_lock = threading.Lock()
 BACKUP_EVERY_S = 3600  # config.json.bak is refreshed at most this often
 REPLACE_TRIES = 5  # antivirus, the indexer or OneDrive can hold a file for a few ms
+replace_pause = time.sleep  # between tries; real time even when tests fake the clock
 
 
 def _write_lock(path: Path) -> threading.Lock:
@@ -325,7 +332,7 @@ def write_bytes_atomic(path: Path, data: bytes) -> None:
                 except PermissionError:
                     if attempt == REPLACE_TRIES:
                         raise
-                    time.sleep(0.05 * attempt)
+                    replace_pause(0.05 * attempt)
         finally:
             with contextlib.suppress(FileNotFoundError):
                 os.remove(tmp)
@@ -417,7 +424,11 @@ def unprotect_secrets(cfg: dict) -> tuple[list[str], bool]:
     """
     lost, plain = [], False
     for key in SECRET_KEYS:
-        value = cfg.get(key)
+        if key not in cfg:
+            continue
+        value = cfg[key]
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = cfg[key] = str(value)  # a PIN typed into an old config by hand
         if not isinstance(value, str):
             cfg[key] = ""
         elif value.startswith(DPAPI_PREFIX):
@@ -442,7 +453,8 @@ class ConfigStore(Mapping):
     Copy-on-write: the current dict is never changed in place. A change is a
     transaction, `with cfg.edit() as c: c[...] = ...`, on a deep copy that
     replaces the whole dict when the block ends (an exception inside discards
-    it) and is saved to config.json; edits are serialized by one lock.
+    it) and is saved to config.json; edits are serialized by one lock. With
+    `validate` (App passes Config.check) the draft must pass it to be kept.
     Readers need no lock: `cfg.get(key)` / `cfg[key]` read the current dict,
     and `cfg.view()` is that dict itself, a consistent picture of all the
     keys for a reader that looks at several. Never change what they return
@@ -453,8 +465,9 @@ class ConfigStore(Mapping):
     other way round.
     """
 
-    def __init__(self, path: Path, data: dict, backup: Path | None = None):
+    def __init__(self, path: Path, data: dict, backup: Path | None = None, validate=None):
         self._lock = threading.RLock()
+        self._validate = validate  # draft -> the dict to keep (Config.check); raises AppError
         self._data = data
         self._path = path
         self._backup = backup
@@ -486,6 +499,8 @@ class ConfigStore(Mapping):
         with self._lock:
             draft = copy.deepcopy(self._data)
             yield draft
+            if self._validate is not None:
+                draft = self._validate(draft)  # a draft that isn't valid isn't kept
             if draft != self._data:
                 if save:
                     self._save(draft)
@@ -1038,26 +1053,19 @@ def tray_image(view: dict | None) -> Image.Image:
 
 class App:
     def __init__(self):
-        cfg = copy.deepcopy(DEFAULTS)
         saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
-        cfg.update(saved)
+        if not isinstance(saved, dict):
+            log.error("config.json doesn't hold settings (%s); starting from the defaults", type(saved).__name__)
+            saved = {}
+        saved = dict(saved)
         # Secrets the config holds but this user can't decrypt (shown in Settings).
-        self.secret_lost, resave = unprotect_secrets(cfg)
-        cfg.pop("theme", None)  # there was a dark theme before 1.5.0
-        cfg["blocked_apps"] = normalize_blocked_apps(cfg.get("blocked_apps"))
-        # Drop junk quietly.
-        cfg["blocked_sites"] = _sanitize_sites(cfg.get("blocked_sites"))
-        cfg["allowed_sites"] = _sanitize_sites(cfg.get("allowed_sites"))
-        if cfg.get("site_mode") not in SITE_MODES:
-            cfg["site_mode"] = "block"
-        cfg["site_limits"] = _sanitize_site_limits(cfg.get("site_limits"))
-        if saved and "use_busybar" not in saved:
-            # Set up before the bar was optional, so set up for one.
-            cfg["use_busybar"] = True
-            resave = True
-        if migrate_filters(cfg) and CONFIG_PATH.exists():
-            resave = True
-        self.cfg = ConfigStore(CONFIG_PATH, cfg, backup=CONFIG_BACKUP)
+        self.secret_lost, resave = unprotect_secrets(saved)
+        if saved:
+            resave = migrate_config(saved) or resave
+            resave = resave or not CONFIG_PATH.exists()  # read from the backup: put config.json back
+        else:
+            saved["config_version"] = CONFIG_VERSION  # a new install is current already
+        self.cfg = ConfigStore(CONFIG_PATH, Config.load(saved), backup=CONFIG_BACKUP, validate=Config.check)
         if resave:
             self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(USAGE_PATH)
@@ -2173,8 +2181,11 @@ class App:
                 del changes[key]
             if changes.pop("clear_" + key, False) and key not in changes:
                 clean[key] = ""
+        # What the form sends, as the types Config expects (inputs give
+        # strings); Config.check does every other check. The filters have
+        # their own calls (save_filter, ...), so they aren't taken here.
         for key, value in changes.items():
-            if key not in DEFAULTS or isinstance(DEFAULTS[key], list):
+            if key not in DEFAULTS or key == "filters":
                 continue
             kind = type(DEFAULTS[key])
             if kind is bool:
@@ -2184,30 +2195,14 @@ class App:
                     value = int(value)
                 except (TypeError, ValueError):
                     raise AppError(f"{key.replace('_', ' ')} must be a number.")
-            else:
+            elif kind is not list:
                 value = str(value).strip()
             clean[key] = value
-        if "blocked_apps" in changes:
-            clean["blocked_apps"] = clean_blocked_apps(changes["blocked_apps"])
-        if "blocked_sites" in changes:
-            clean["blocked_sites"] = clean_blocked_sites(changes["blocked_sites"])
-        if "allowed_sites" in changes:
-            clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
-        if "site_limits" in changes:
-            clean["site_limits"] = clean_site_limits(changes["site_limits"])
-        if "sync_owner" in clean and not re.fullmatch(r"[a-z0-9]{0,32}", clean["sync_owner"]):
-            raise AppError("Pick the browser profile that shares the limits.")
-        if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
-            raise AppError("Pick whether to block the listed websites or allow only them.")
         # One transaction from the checks to the sync stamps, so an apply_sync
         # can't slip in between (config lock, then sync_lock inside).
         with self.cfg.edit() as c:
-            merged = dict(c, **clean)
-            for key in ("work_minutes", "rest_minutes"):
-                if not PHASE_MIN <= merged[key] <= PHASE_MAX:
-                    raise AppError(f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.")
-            if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
-                raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
+            merged = Config.check({**c, **clean})  # AppError with the message Settings shows
+            clean = {k: merged[k] for k in clean}
             old_hotkey = c["hotkey"]
             bar_changed = any(
                 c.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
@@ -3602,6 +3597,273 @@ def _sanitize_site_limits(values) -> list[dict]:
         except AppError:
             continue
     return out[:MAX_SITE_LIMITS]
+
+
+# ------------------------------------------------------------ config model ---
+#
+# Config is the settings' schema: types, bounds and the checks of every key,
+# reusing the clean_* functions Settings already relied on. DEFAULTS still
+# holds the default values (a key added there must be added here too; a test
+# checks they match). Two ways to validate:
+#
+# - Config.check(data): what an edit must pass (ConfigStore.edit, save_settings).
+#   The first problem becomes an AppError with the message Settings shows.
+# - Config.load(raw): for config.json at start-up. Lists are tidied first
+#   (unusable entries dropped, as before), then a key that still fails falls
+#   back to its default, with a log line, without touching the others.
+#
+# Files carry config_version; MIGRATIONS turn an older file into the current
+# shape before it is validated (see migrate_config).
+
+
+def _default(key: str):
+    return Field(default_factory=lambda: copy.deepcopy(DEFAULTS[key]))
+
+
+def _app_error(fn, *args):
+    """Run a clean_* check; its AppError becomes a validation error with the same message."""
+    try:
+        return fn(*args)
+    except AppError as err:
+        raise PydanticCustomError("app", "{message}", {"message": str(err)})
+
+
+def _loading(info: ValidationInfo, value=None) -> bool:
+    """Validating config.json at start-up (Config.load); there, a list key must hold a list."""
+    loading = bool(info.context and info.context.get("load"))
+    if loading and info.field_name in LIST_KEYS and not isinstance(value, list):
+        raise PydanticCustomError("app", "{message}", {"message": "not a list"})
+    return loading
+
+
+def clean_bar_address(raw) -> str:
+    """
+    The bar's Wi-Fi address: '' (none), an IPv4/IPv6 address or a host name,
+    optionally with :port. A pasted 'http://192.168.1.50/' is tidied to
+    '192.168.1.50'; paths and anything else are refused.
+    """
+    shown = str(raw).strip()
+    text = re.sub(r"^https?://", "", shown, flags=re.IGNORECASE).rstrip("/")
+    if not text:
+        return ""
+    bad = AppError(f"{shown!r} isn't the bar's address; type one like 192.168.1.50.")
+    bracketed = re.fullmatch(r"\[([0-9a-fA-F:.]+)\](?::(\d{1,5}))?", text)
+    try:
+        if bracketed:
+            ipaddress.IPv6Address(bracketed[1])
+            port = bracketed[2]
+        elif text.count(":") > 1:
+            ipaddress.IPv6Address(text)
+            port = None
+        else:
+            host, _, port = text.partition(":")
+            if not re.fullmatch(
+                r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*",
+                host,
+                re.IGNORECASE,
+            ):
+                raise bad
+            port = port or None
+    except ValueError:
+        raise bad
+    if port is not None and not (port.isdigit() and 1 <= int(port) <= 65535):
+        raise bad
+    return text
+
+
+class Filter(BaseModel):
+    """One saved task list: a name and a Todoist filter query."""
+
+    model_config = ConfigDict(extra="ignore")
+    name: Annotated[str, Field(min_length=1, max_length=40)]
+    query: str
+
+
+Minutes = Annotated[int, Field(ge=PHASE_MIN, le=PHASE_MAX)]
+
+
+class Config(BaseModel):
+    # validate_default: the defaults go through the same checks (a new install
+    # gets the app presets filled in, the default filter becomes a Filter).
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    config_version: int = 0  # set to CONFIG_VERSION by migrate_config
+    use_todoist: bool = _default("use_todoist")
+    todoist_token: str = _default("todoist_token")
+    filters: list[Filter] = _default("filters")
+    active_filter: str = _default("active_filter")
+    use_busybar: bool = _default("use_busybar")
+    busybar_ip: str = _default("busybar_ip")
+    busybar_pin: str = _default("busybar_pin")
+    usb_fallback: bool = _default("usb_fallback")
+    work_minutes: Minutes = _default("work_minutes")
+    rest_minutes: Minutes = _default("rest_minutes")
+    cycles: Annotated[int, Field(ge=CYCLES_MIN, le=CYCLES_MAX)] = _default("cycles")
+    autostart: bool = _default("autostart")
+    poll_seconds: Annotated[int, Field(ge=POLL_MIN, le=POLL_MAX)] = _default("poll_seconds")
+    hotkey: str = _default("hotkey")
+    focus_label: Annotated[str, Field(max_length=MAX_LABEL)] = _default("focus_label")
+    remove_label_on_end: bool = _default("remove_label_on_end")
+    log_comments: bool = _default("log_comments")
+    notifications: bool = _default("notifications")
+    launch_at_login: bool = _default("launch_at_login")
+    open_on_finish: bool = _default("open_on_finish")
+    auto_update: bool = _default("auto_update")
+    block_apps: bool = _default("block_apps")
+    blocked_apps: list[dict] = _default("blocked_apps")
+    block_sites: bool = _default("block_sites")
+    site_mode: Literal["block", "allow"] = _default("site_mode")
+    blocked_sites: list[str] = _default("blocked_sites")
+    allowed_sites: list[str] = _default("allowed_sites")
+    site_limits_on: bool = _default("site_limits_on")
+    site_limits: list[dict] = _default("site_limits")  # kept as dicts: clean_site_limit is the schema
+    sync_limits: bool = _default("sync_limits")
+    sync_owner: str = _default("sync_owner")
+    sync_session: bool = _default("sync_session")
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _filters(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            kept = []
+            for item in value:
+                try:
+                    kept.append(Filter.model_validate(item).model_dump())
+                except ValidationError:
+                    log.warning("config: dropped the unusable filter %r", item)
+            value = kept
+        if isinstance(value, list) and not value:
+            raise PydanticCustomError("app", "{message}", {"message": "Keep at least one filter."})
+        return value
+
+    @field_validator("busybar_ip")
+    @classmethod
+    def _bar_address(cls, value: str) -> str:
+        return _app_error(clean_bar_address, value)
+
+    @field_validator("hotkey")
+    @classmethod
+    def _hotkey(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            _app_error(parse_hotkey, value)
+        return value
+
+    @field_validator("blocked_apps", mode="before")
+    @classmethod
+    def _apps(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = normalize_blocked_apps(value)  # also turns the oldest format (bare names) into entries
+        return _app_error(clean_blocked_apps, value)
+
+    @field_validator("blocked_sites", "allowed_sites", mode="before")
+    @classmethod
+    def _sites(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = _sanitize_sites(value)[:MAX_BLOCKED_SITES]
+        return _app_error(clean_blocked_sites, value, "allowed" if info.field_name == "allowed_sites" else "blocked")
+
+    @field_validator("site_limits", mode="before")
+    @classmethod
+    def _limits(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = _sanitize_site_limits(value)
+        return _app_error(clean_site_limits, value)
+
+    @field_validator("sync_owner")
+    @classmethod
+    def _owner(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9]{0,32}", value):
+            raise PydanticCustomError("app", "{message}", {"message": FIELD_ERRORS["sync_owner"]})
+        return value
+
+    @classmethod
+    def check(cls, data) -> dict:
+        """`data` as a valid settings dict; AppError with Settings' message if it isn't."""
+        try:
+            return cls.model_validate(data).model_dump()
+        except ValidationError as err:
+            raise AppError(validation_message(err))
+
+    @classmethod
+    def load(cls, raw: dict) -> dict:
+        """config.json's settings, valid: a key that isn't falls back to its default (and is logged)."""
+        data = dict(raw)
+        for _ in range(len(cls.model_fields) + 1):
+            try:
+                return cls.model_validate(data, context={"load": True}).model_dump()
+            except ValidationError as err:
+                bad = {e["loc"][0] for e in err.errors() if e["loc"]}
+                if not bad:
+                    raise
+                for key in bad:
+                    log.warning("config: %s was invalid (%r); using the default", key, data.get(key))
+                    data.pop(key, None)
+        return cls.model_validate({}, context={"load": True}).model_dump()
+
+
+# What Settings says when a key is wrong, for checks that aren't clean_*
+# functions (those bring their own message). In the order save_settings
+# used to check them: with several problems, the first one is shown.
+FIELD_ERRORS = {
+    "sync_owner": "Pick the browser profile that shares the limits.",
+    "site_mode": "Pick whether to block the listed websites or allow only them.",
+    "work_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
+    "rest_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
+    "cycles": f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.",
+    "poll_seconds": f"Check the bar every {POLL_MIN} to {POLL_MAX} seconds.",
+    "focus_label": f"Keep the label to {MAX_LABEL} characters or fewer.",
+}
+LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits")
+ERROR_ORDER = ["blocked_apps", "blocked_sites", "allowed_sites", "site_limits", *FIELD_ERRORS]
+
+
+def validation_message(err: ValidationError) -> str:
+    def rank(e):
+        key = e["loc"][0] if e["loc"] else ""
+        return ERROR_ORDER.index(key) if key in ERROR_ORDER else len(ERROR_ORDER)
+
+    first = min(err.errors(), key=rank)
+    key = str(first["loc"][0]) if first["loc"] else ""
+    if first["type"] == "app":
+        return first["msg"]
+    return FIELD_ERRORS.get(key) or f"{key.replace('_', ' ') or 'A setting'} isn't valid."
+
+
+def migrate_pre_versioning(cfg: dict) -> None:
+    """Version 0 -> 1: the clean-ups of every version before config_version."""
+    cfg.pop("theme", None)  # there was a dark theme before 1.5.0
+    if "use_busybar" not in cfg:
+        cfg["use_busybar"] = True  # set up before the bar was optional, so set up for one
+    migrate_filters(cfg)  # the single todoist_filter of before 1.0
+    if isinstance(cfg.get("blocked_apps"), list):
+        cfg["blocked_apps"] = normalize_blocked_apps(cfg["blocked_apps"])  # bare program names at first
+    for rule in cfg.get("site_limits") if isinstance(cfg.get("site_limits"), list) else []:
+        if isinstance(rule, dict) and "patterns" not in rule and "pattern" in rule:
+            rule["patterns"] = [rule.pop("pattern")]  # one site per rule at first
+
+
+# version -> the function that brings a file of the version before up to it.
+MIGRATIONS = {
+    1: migrate_pre_versioning,
+}
+CONFIG_VERSION = max(MIGRATIONS)
+
+
+def migrate_config(cfg: dict) -> bool:
+    """Bring a saved config up to CONFIG_VERSION, in place; True if anything ran."""
+    try:
+        version = int(cfg.get("config_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    ran = False
+    for target in sorted(MIGRATIONS):
+        if version < target:
+            log.info("config: migrating to version %d", target)
+            MIGRATIONS[target](cfg)
+            ran = True
+    cfg["config_version"] = max(version, CONFIG_VERSION)  # a newer copy's files keep their number
+    return ran
 
 
 def period_label(every: int, unit: str) -> str:
