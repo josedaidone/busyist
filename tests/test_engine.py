@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 from busylib import exceptions, types
 
-import busyist
+from buzyist import bar as bar_mod
 from buzyist import constants, paths, storage
 
 WIFI = "10.0.0.9"
@@ -39,7 +39,7 @@ class FakeDevice:
 
     def __init__(self):
         self.snap = types.BusySnapshot(
-            snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=busyist.LOCAL_SETTINGS),
+            snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=bar_mod.LOCAL_SETTINGS),
             snapshot_timestamp_ms=0,
         )
         self.down: set[str] = set()
@@ -48,7 +48,7 @@ class FakeDevice:
         self.clients: list[FakeBusyBar] = []
 
     def __call__(self, addr, token=None, **kwargs) -> FakeBusyBar:
-        """What busyist calls as ``BusyBar(addr, token=..., ...)``."""
+        """What buzyist.bar calls as ``BusyBar(addr, token=..., ...)``."""
         client = FakeBusyBar(self, addr, token)
         self.clients.append(client)
         return client
@@ -80,14 +80,14 @@ class FakeBusyBar:
 
     def busy_profile(self, slot: str) -> SimpleNamespace:
         self._check("busy_profile")
-        return SimpleNamespace(id="card-busy", busy_bar_settings=busyist.LOCAL_SETTINGS)
+        return SimpleNamespace(id="card-busy", busy_bar_settings=bar_mod.LOCAL_SETTINGS)
 
 
 @pytest.fixture
 def device(monkeypatch) -> FakeDevice:
-    """A fake BUSY Bar behind ``busyist.BusyBar`` (every route reaches it)."""
+    """A fake BUSY Bar behind ``buzyist.bar.BusyBar`` (every route reaches it)."""
     bar = FakeDevice()
-    monkeypatch.setattr(busyist, "BusyBar", bar)
+    monkeypatch.setattr(bar_mod, "BusyBar", bar)
     return bar
 
 
@@ -374,7 +374,7 @@ def test_a_snapshot_older_than_the_session_is_ignored(engine, deferred_threads):
     stamp = app.session["stamp"]
     # The clock reports something written before our start (a stale reading).
     app.bar.local._snap = types.BusySnapshot(
-        snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=busyist.LOCAL_SETTINGS),
+        snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=bar_mod.LOCAL_SETTINGS),
         snapshot_timestamp_ms=stamp - 1,
     )
     app.step(minutes=1)
@@ -532,7 +532,7 @@ def test_focus_fails_open_after_three_failed_bar_polls(engine, deferred_threads,
 
 def test_focus_follows_a_timer_started_on_the_bar_itself(engine, deferred_threads, device):
     app = engine({**BAR_CONFIG, "use_todoist": False})
-    busyist.Bar(app.cfg).start(25 * MIN, 5 * MIN, 2, True)  # someone pressed start on the bar
+    bar_mod.Bar(app.cfg).start(25 * MIN, 5 * MIN, 2, True)  # someone pressed start on the bar
     app.step()
     assert app.session is None
     focus = app.focus()

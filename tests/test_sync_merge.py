@@ -23,8 +23,8 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 import busyist
-from busyist import LOCAL_SETTINGS
 from buzyist import paths, storage
+from buzyist.bar import LOCAL_SETTINGS
 from buzyist.constants import MAX_SITE_LIMITS, TOMBSTONE_DAYS
 from conftest import patch_everywhere
 

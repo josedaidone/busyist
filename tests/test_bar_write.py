@@ -6,8 +6,8 @@ import pytest
 from busylib import types
 from busylib.features import timer_state
 
-from busyist import LOCAL_SETTINGS, Bar, LocalClock, phase_ms
 from buzyist import constants, paths
+from buzyist.bar import LOCAL_SETTINGS, Bar, LocalClock, phase_ms
 
 WORK, REST = 25 * 60_000, 5 * 60_000
 
