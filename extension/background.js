@@ -26,6 +26,10 @@ const FOCUS_URL = BASE + "/focus?v=" + VERSION;
 const USAGE_URL = BASE + "/usage";
 const GRANT_URL = BASE + "/grant";
 const SYNC_URL = BASE + "/sync";
+// Web pages can make plain GETs to 127.0.0.1 too (an <img>, say), but can't add
+// a header of their own without a preflight, which buZyist refuses. Only
+// requests with this header may register this profile or get `sync`.
+const HEADERS = { "X-Buzyist": "1" };
 const BLOCKED = chrome.runtime.getURL("blocked.html");
 // Higher wins. Limits beat the allow rules, so a limited site stays blocked in
 // allow mode; focus blocks in "block" mode beat limits, so the focus page shows.
@@ -232,7 +236,7 @@ async function currentIds(focus, now, url) {
 async function post(url, body) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: Object.assign({ "Content-Type": "application/json" }, HEADERS),
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -261,7 +265,7 @@ async function fetchState(force) {
         if (pending[id] && !Object.keys(pending[id]).length) delete pending[id];
       }
     } else {
-      const res = await fetch(focusUrl(), { cache: "no-store" }); // an older buZyist
+      const res = await fetch(focusUrl(), { cache: "no-store", headers: HEADERS }); // an older buZyist
       data = res.ok ? await res.json() : null;
     }
   } catch (e) {

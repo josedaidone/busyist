@@ -35,6 +35,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import http.client
+import http.server
 import json
 import os
 import socket
@@ -746,14 +747,22 @@ class FocusClient:
         return self.request("POST", path, body if body is not None else {}, **kwargs)
 
 
+class _QuickShutdownServer(http.server.ThreadingHTTPServer):
+    """serve_forever polls for shutdown every 20 ms instead of 0.5 s, so teardown is quick."""
+
+    def serve_forever(self, poll_interval=0.02):
+        super().serve_forever(poll_interval)
+
+
 @pytest.fixture
-def focus_server(app) -> FocusClient:
+def focus_server(app, monkeypatch) -> FocusClient:
     """
     ``app.site_server`` replaced by a ``FocusServer(app, port=0)`` and
     started (``focus_server.port`` is the bound port), stopped afterwards.
     Note the handler threads use real time; ``clock`` only affects what the
     app computes in them.
     """
+    monkeypatch.setattr(http.server, "ThreadingHTTPServer", _QuickShutdownServer)
     server = busyist.FocusServer(app, port=0)
     app.site_server = server
     server.start()

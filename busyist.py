@@ -1160,7 +1160,7 @@ class App:
         """The extension in the browser is older than the one that ships with this buZyist."""
         return self.extension_connected() and (version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
 
-    def note_extension(self, version, instance="", account=None) -> None:
+    def note_extension(self, version, instance="", account=None, trusted=False) -> None:
         """
         The extension just called, saying which version it is. Chrome doesn't
         reload an unpacked extension when its files change, so after an update
@@ -1168,13 +1168,16 @@ class App:
 
         Extensions from 1.5.0 also say which browser profile they run in
         (`instance`, a random id per profile) and its Google account, so
-        Settings can offer the profiles that could share the limits.
+        Settings can offer the profiles that could share the limits. Only a
+        `trusted` request (one with the X-Buzyist header, see FocusServer)
+        registers a profile; any request still counts as the extension
+        calling, so extensions from before the header get the notice too.
         """
         self.extension_last = now_ms()
         self.extension_version = str(version or "")[:20]
         instance = str(instance or "")
-        if re.fullmatch(r"[a-z0-9]{6,32}", instance):
-            self.note_instance(instance, account)
+        if trusted and re.fullmatch(r"[a-z0-9]{6,32}", instance):
+            self.note_instance(instance, account, trusted=True)
         if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
             self._ext_warned = EXTENSION_VERSION
             self.notify(
@@ -1213,7 +1216,7 @@ class App:
         owner = self.cfg.get("sync_owner")
         return bool(self.sync_on() and owner and instance == owner)
 
-    def note_instance(self, instance: str, account) -> None:
+    def note_instance(self, instance: str, account, trusted: bool = False) -> None:
         now = now_ms()
         with self.sync_lock:
             seen = self.shared["instances"]
@@ -1228,7 +1231,7 @@ class App:
                 for iid in [i for i, e in seen.items() if e.get("seen", 0) < old]:
                     del seen[iid]
                 self._save_shared()
-        if self.sync_on() and not self.cfg.get("sync_owner"):
+        if trusted and self.sync_on() and not self.cfg.get("sync_owner"):
             self.cfg["sync_owner"] = instance
             write_json(CONFIG_PATH, self.cfg)
             log.info("sharing through browser profile %s (%s)", instance, account or "no account")
@@ -3866,7 +3869,18 @@ class FocusServer:
     allow our pinned `chrome-extension://<EXTENSION_ID>`. Our own extension has
     a host permission for this URL, so Chrome may send its request with no
     `Origin` header at all; those are allowed, and any request that *does*
-    carry a different (web) Origin is refused with 403.
+    carry a different (web) Origin is refused with 403. So is any request whose
+    `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` (or that has none):
+    with DNS rebinding a page on `evil.example:<port>` can make same-origin
+    requests, which carry no Origin, but its Host still says evil.example.
+
+    A web page can still make a plain GET with no Origin (an <img>, say). It
+    can't read the answer, but the request has effects, so only requests
+    carrying `X-Buzyist: 1` (extension 1.7.0+; a page can't add a header
+    without a preflight, which is refused) may register a browser profile,
+    take or use the sync owner, or get `sync`. Others still get the blocking
+    payload and still record the extension's version and last call, so older
+    extensions keep blocking and still get the "Reload extension" notice.
 
     It serves GET /focus, returning App.site_focus(), and two POST routes that
     answer with the same thing: /usage (time the extension measured on
@@ -3894,6 +3908,21 @@ class FocusServer:
             def log_message(self, *_):  # don't spam the log with one line per poll
                 pass
 
+            def _host_ok(self) -> bool:
+                """403 unless Host names this server by loopback address (DNS rebinding)."""
+                port = self.server.server_address[1]
+                host = (self.headers.get("Host") or "").strip().lower()
+                if host in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                    return True
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+
+            def _trusted(self) -> bool:
+                """Our extension (1.7.0+) sent it; a web page can't without a preflight."""
+                return self.headers.get("X-Buzyist") == "1"
+
             def _cors(self, code: int) -> bool:
                 """Send status + CORS headers, or 403 if a web page is asking."""
                 origin = self.headers.get("Origin")
@@ -3911,14 +3940,16 @@ class FocusServer:
                 return True
 
             def do_OPTIONS(self):
-                if not self._cors(204):
+                if not self._host_ok() or not self._cors(204):
                     return
                 self.send_header("Access-Control-Allow-Methods", "GET, POST")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Buzyist")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
             def do_GET(self):
+                if not self._host_ok():
+                    return
                 if self.path.split("?")[0] != "/focus":
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
@@ -3927,9 +3958,10 @@ class FocusServer:
                 if not self._cors(200):
                     return
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                instance = (query.get("i") or [""])[0]
+                trusted = self._trusted()
+                instance = (query.get("i") or [""])[0] if trusted else ""
                 account = (query.get("a") or [""])[0] if "i" in query else None
-                app.note_extension((query.get("v") or [""])[0], instance, account)
+                app.note_extension((query.get("v") or [""])[0], instance, account, trusted=trusted)
                 body = json.dumps(app.site_focus(instance)).encode("utf-8")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
@@ -3950,18 +3982,20 @@ class FocusServer:
                     data = json.loads(self.rfile.read(size) or b"{}")
                 except (ValueError, OSError):
                     data = None
-                if not self._cors(200):
+                if not self._host_ok() or not self._cors(200):
                     return
                 if not isinstance(data, dict):
                     data = {}
-                instance = str(data.get("instance") or "")
+                trusted = self._trusted()
+                instance = str(data.get("instance") or "") if trusted else ""
                 account = data.get("account") if isinstance(data.get("account"), str) else None
-                app.note_extension(data.get("version"), instance, account)
+                app.note_extension(data.get("version"), instance, account, trusted=trusted)
                 try:
                     if route == "/usage":
                         app.record_usage(data.get("usage"))
                     elif route == "/sync":
-                        app.apply_sync(data, instance)
+                        if trusted:
+                            app.apply_sync(data, instance)
                     else:
                         app.grant_pass(data.get("id"))
                 except AppError:
@@ -3975,8 +4009,13 @@ class FocusServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+        class Server(http.server.ThreadingHTTPServer):
+            # The default backlog of 5 refuses connections when several
+            # profiles, popups and block pages call at the same moment.
+            request_queue_size = 64
+
         try:
-            self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+            self.httpd = Server(("127.0.0.1", self.port), Handler)
         except OSError as err:
             log.warning("focus server couldn't bind 127.0.0.1:%d: %s", self.port, err)
             return
