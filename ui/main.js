@@ -175,6 +175,17 @@ function renderCurrent() {
       open.onclick = () => api.open_url(s.task.url);
       meta.append(open);
     }
+  } else if (t && state.remote) {
+    // Started on another PC, which shared its task through Chrome sync.
+    const r = state.remote;
+    $("curEyebrow").textContent = `Started on ${r.by}` + (r.started_at ? ` · since ${r.started_at}` : "");
+    $("curTask").textContent = r.task.content;
+    if (r.task.project) meta.append(el("span", "", r.task.project));
+    if (r.task.url) {
+      const open = el("button", "link", "Open in Todoist");
+      open.onclick = () => api.open_url(r.task.url);
+      meta.append(open);
+    }
   } else if (t) {
     $("curEyebrow").textContent = state.bar.local ? "No task linked" : "Started on the bar, no task linked";
     $("curTask").textContent = "Timer running";
@@ -1214,10 +1225,11 @@ function renderSync(info) {
   const good = !!(owner && owner.email && synced);
   status.classList.toggle("ok", good);
   status.classList.toggle("bad", !good);
-  $("syncFields").classList.toggle("muted", !$("s_sync_limits").checked);
+  syncMuted();
 }
+const syncMuted = () => $("syncFields").classList.toggle("muted", !$("s_sync_limits").checked && !$("s_sync_session").checked);
 $("s_sync_owner").onchange = () => { syncOwner = $("s_sync_owner").value; };
-$("s_sync_limits").onchange = () => $("syncFields").classList.toggle("muted", !$("s_sync_limits").checked);
+$("s_sync_limits").onchange = $("s_sync_session").onchange = syncMuted;
 
 function openLimitEditor(index) {
   const rule = index === undefined

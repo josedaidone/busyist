@@ -57,7 +57,7 @@ from PIL import Image, ImageDraw, ImageFont
 # sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
 APP_NAME = "buZyist"
-__version__ = "1.6.2"
+__version__ = "1.7.0"
 REPO_URL = "https://github.com/josedaidone/buzyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
@@ -171,6 +171,10 @@ DEFAULTS = {
     # Off by default: it sends the rules and the time to Google's servers.
     "sync_limits": False,
     "sync_owner": "",
+    # Share the running task the same way, so a PC on the same bar shows what
+    # another PC started instead of "Started on the bar". Off by default: it
+    # sends the task name to Google's servers.
+    "sync_session": False,
 }
 
 MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
@@ -724,6 +728,12 @@ class App:
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
         self.usage.set_remote(self.shared["remote"])
+        # Sessions other PCs are running, from Chrome sync (apply_sync):
+        # {device: {...}, see clean_remote_sessions}. Replaced whole, never
+        # edited, so reading it needs no lock. _remote_match is the one the
+        # bar's timer was last matched to (remote_session).
+        self.remote_sessions: dict[str, dict] = {}
+        self._remote_match: tuple[str, int] | None = None
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -898,7 +908,67 @@ class App:
         session = self.session
         if session and session.get("rounds") and snap.snapshot_timestamp_ms >= session["stamp"]:
             return min(count, int(session["rounds"]))
+        remote = self.remote_session()
+        if remote and remote.get("rounds"):
+            return min(count, int(remote["rounds"]))
         return count
+
+    def remote_session(self) -> dict | None:
+        """
+        The session another PC started on this bar, as it shared it through
+        Chrome sync (sync_session), or None. Call with self.lock held.
+
+        The bar keeps the stamp of the last snapshot written, so the timer is
+        that PC's when the bar's stamp is the one it started with (`stamp`)
+        or the latest it saw (`snap`, after a pause or skip). Once matched it
+        stays matched while that PC still shares the session, the stamp only
+        grows and the phase lengths agree, so a pause made here doesn't lose
+        the name until the other PC catches up.
+        """
+        snap = self.snap
+        if (self.session or snap is None or self.bar.is_local or not self.cfg.get("sync_session")
+                or not self.remote_sessions):
+            self._remote_match = None
+            return None
+        state = timer_state(snap)
+        if state.mode != "interval" or state.is_finished:
+            self._remote_match = None
+            return None
+        ts = snap.snapshot_timestamp_ms
+        work_ms = snap.snapshot.interval_settings.interval_work_ms
+        sessions = self.remote_sessions
+        if self._remote_match:
+            dev, stamp = self._remote_match
+            s = sessions.get(dev)
+            if s and s["stamp"] == stamp and ts >= stamp and s["work_ms"] == work_ms:
+                return s
+        for dev, s in sessions.items():
+            if ts in (s["stamp"], s["snap"]) and s["work_ms"] == work_ms:
+                self._remote_match = (dev, s["stamp"])
+                return s
+        self._remote_match = None
+        return None
+
+    def _remote_view(self) -> dict | None:
+        """remote_session() for the UI; call with self.lock held."""
+        s = self.remote_session()
+        return s and {"task": s["task"], "started_at": s["started_at"], "by": s["name"] or "another PC"}
+
+    def shared_session(self) -> dict | None:
+        """This PC's running session, as other PCs on the same bar get it (see remote_session)."""
+        with self.lock:
+            session, snap = self.session, self.snap
+            if not session or session.get("local"):
+                return None  # a clock on this PC: no other PC can see it
+            seen = snap.snapshot_timestamp_ms if snap is not None else 0
+            return {
+                "stamp": session["stamp"],
+                "snap": max(seen, session["stamp"]),
+                "task": {k: session["task"].get(k) or "" for k in ("content", "project", "url")},
+                "started_at": session.get("started_at", ""),
+                "work_ms": session["work_ms"],
+                "rounds": session.get("rounds") or 0,
+            }
 
     def today_stats(self) -> dict:
         today = date.today().isoformat()
@@ -942,6 +1012,8 @@ class App:
                 "session": self.session and {
                     k: self.session[k] for k in ("task", "started_at", "done", "label_added")
                 },
+                # Started on another PC (only when this one runs nothing).
+                "remote": self._remote_view(),
                 "ended": self.ended,
                 "bar": {"ok": self.bar_ok, "via": self.bar.via, "error": self.bar_error, "local": self.bar.is_local},
                 "today": self.today_stats(),
@@ -986,11 +1058,13 @@ class App:
             if (state.mode != "interval" or state.is_finished
                     or state.phase != "work" or state.is_paused):
                 return off
+            remote = None if session else self.remote_session()
             return {
                 "active": True,
                 # No session here: the timer was started on the bar itself
-                # (or from another PC), but this PC still blocks.
-                "task": session["task"]["content"] if session else "",
+                # (or from another PC, which may have shared its task), but
+                # this PC still blocks.
+                "task": session["task"]["content"] if session else (remote["task"]["content"] if remote else ""),
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
             }
 
@@ -1080,9 +1154,13 @@ class App:
     # Time never conflicts: each PC writes only its own and adds up everybody
     # else's (SiteUsage.remote).
 
+    def sync_on(self) -> bool:
+        """Something goes through Chrome sync: the limits, the running task, or both."""
+        return bool(self.cfg.get("sync_limits") or self.cfg.get("sync_session"))
+
     def is_sync_owner(self, instance) -> bool:
         owner = self.cfg.get("sync_owner")
-        return bool(self.cfg.get("sync_limits") and owner and instance == owner)
+        return bool(self.sync_on() and owner and instance == owner)
 
     def note_instance(self, instance: str, account) -> None:
         now = now_ms()
@@ -1099,10 +1177,10 @@ class App:
                 for iid in [i for i, e in seen.items() if e.get("seen", 0) < old]:
                     del seen[iid]
                 self._save_shared()
-        if self.cfg.get("sync_limits") and not self.cfg.get("sync_owner"):
+        if self.sync_on() and not self.cfg.get("sync_owner"):
             self.cfg["sync_owner"] = instance
             write_json(CONFIG_PATH, self.cfg)
-            log.info("sharing limits through browser profile %s (%s)", instance, account or "no account")
+            log.info("sharing through browser profile %s (%s)", instance, account or "no account")
 
     def _save_shared(self) -> None:
         """Write sync.json; call with sync_lock held."""
@@ -1122,13 +1200,24 @@ class App:
         tombstones and the switch) and this PC's time per rule
         (SiteUsage.export). `rev_seen` is the shared copy last merged here,
         `joined` whether this PC has met it yet, `seen` which other PCs'
-        time it has (their `t`).
+        time it has (their `t`). Those are only there with sync_limits on.
+
+        With sync_session on (`share_session`), `session` is this PC's
+        running session (shared_session, None when there is none) and
+        `sessions_seen` which other PCs' sessions we have (their `t`).
         """
         rules = self.cfg.get("site_limits") or []
+        share_session = bool(self.cfg.get("sync_session"))
+        session = self.shared_session() if share_session else None  # app.lock before sync_lock
         with self.sync_lock:
             sh = self.shared
-            return {
-                "device": sh["device"], "name": DEVICE_NAME,
+            out = {"device": sh["device"], "name": DEVICE_NAME, "share_session": share_session}
+            if share_session:
+                out["session"] = session
+                out["sessions_seen"] = {dev: s["t"] for dev, s in self.remote_sessions.items()}
+            if not self.cfg.get("sync_limits"):
+                return out
+            return dict(out, **{
                 "joined": sh["joined"] == self.cfg.get("sync_owner"),
                 "rev_seen": sh["rev_seen"],
                 "doc": {
@@ -1138,7 +1227,7 @@ class App:
                 },
                 "usage": self.usage.export([r["id"] for r in rules]),
                 "seen": {dev: d["t"] for dev, d in sh["remote"].items()},
-            }
+            })
 
     def note_limits_edit(self, old: list[dict], new: list[dict], on_changed: bool) -> None:
         """Settings saved the limits: stamp what changed, tombstone what's gone."""
@@ -1219,12 +1308,19 @@ class App:
         """
         The sync owner's extension read Chrome sync: `limits` is the shared
         copy of the rules (a doc as in sync_payload plus its `rev`, or None
-        when there is none yet), `usage` every other PC's time. Either may
-        be missing (unchanged).
+        when there is none yet), `usage` every other PC's time, `sessions`
+        the sessions other PCs run (see clean_remote_sessions). Any may be
+        missing (unchanged).
         """
         if not self.is_sync_owner(instance):
             return
         owner = self.cfg["sync_owner"]
+        if "sessions" in data and self.cfg.get("sync_session"):
+            with self.sync_lock:
+                self.remote_sessions = clean_remote_sessions(data["sessions"], self.shared["device"])
+                self.shared["last_sync"] = now_ms()
+        if not self.cfg.get("sync_limits"):
+            return  # only the task is shared: leave the limits alone
         new_rules = new_on = None
         with self.sync_lock:
             sh = self.shared
@@ -1744,6 +1840,8 @@ class App:
         old_limits = self.cfg.get("site_limits") or []
         on_changed = "site_limits_on" in clean and clean["site_limits_on"] != self.cfg.get("site_limits_on")
         sync_off = self.cfg.get("sync_limits") and not merged.get("sync_limits")
+        if not merged.get("sync_session"):
+            self.remote_sessions = {}
         self.cfg.update(clean)
         write_json(CONFIG_PATH, self.cfg)
         if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
@@ -1868,7 +1966,8 @@ class App:
             return
         with self.lock:
             view = self.timer_view()
-            task = self.session["task"]["content"] if self.session else None
+            remote = None if self.session else self.remote_session()
+            task = (self.session or remote or {}).get("task", {}).get("content")
         key = view and (view["phase"], view["paused"], view["minutes"], round(view["fraction"] * 40))
         if key != self._tray_key:
             self._tray_key = key
@@ -1906,6 +2005,9 @@ class App:
             with self.lock:
                 if self.session:
                     return "▶  " + self.session["task"]["content"][:60]
+                remote = self.remote_session()
+                if remote:
+                    return "▶  " + remote["task"]["content"][:60]
             return "No task in focus"
 
         def nothing(icon, item):
@@ -3273,6 +3375,45 @@ def clean_remote_usage(raw, own_device: str) -> dict:
             except (AttributeError, TypeError, ValueError):
                 continue
         out[dev] = {"name": str(data.get("name") or "")[:60], "t": t, "rules": rules}
+    return out
+
+
+def clean_remote_sessions(raw, own_device: str) -> dict:
+    """
+    The sessions other PCs run, as the extension read them from Chrome sync,
+    checked: {device: {"name", "t", "stamp", "snap", "task": {"content",
+    "project", "url"}, "started_at", "work_ms", "rounds"}}. One not
+    rewritten in a day is dropped (that PC went away mid-session).
+    """
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    cutoff = now_ms() - 86400_000
+    for dev, s in list(raw.items())[:20]:
+        if dev == own_device or not re.fullmatch(r"[a-z0-9]{6,32}", str(dev)) or not isinstance(s, dict):
+            continue
+        task = s.get("task") if isinstance(s.get("task"), dict) else {}
+        try:
+            entry = {
+                "name": str(s.get("n") or "")[:60],
+                "t": int(s.get("t") or 0),
+                "stamp": int(s["stamp"]),
+                "snap": int(s.get("snap") or s["stamp"]),
+                "task": {
+                    "content": str(task.get("content") or "")[:200] or "Focus session",
+                    "project": str(task.get("project") or "")[:100],
+                    "url": str(task.get("url") or "")[:300],
+                },
+                "started_at": str(s.get("started_at") or "")[:5],
+                "work_ms": int(s.get("work_ms") or 0),
+                "rounds": int(s.get("rounds") or 0),
+            }
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not entry["task"]["url"].startswith("https://"):
+            entry["task"]["url"] = ""  # opened with open_url: only links to Todoist's site
+        if entry["t"] >= cutoff:
+            out[str(dev)] = entry
     return out
 
 

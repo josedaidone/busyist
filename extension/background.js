@@ -16,7 +16,8 @@
 //    last answer is cached and enforced, and the time measured meanwhile is
 //    kept and sent when buZyist is back.
 //
-// 3. Sharing limits across PCs: see "sharing across PCs" below.
+// 3. Sharing limits, and the running task, across PCs: see "sharing across
+//    PCs" below.
 
 const BASE = "http://127.0.0.1:47616";
 const VERSION = chrome.runtime.getManifest().version;
@@ -242,7 +243,7 @@ async function fetchState(force) {
   } catch (e) {
     data = null;
   }
-  if (data && force) data = await shareSync(data);
+  if (data && (force || sessionChanged(data))) data = await shareSync(data);
   if (data) {
     lastGood = data;
     // Remember a pass that buZyist now knows about, and drop the local copy.
@@ -269,18 +270,23 @@ async function fetchState(force) {
 //                          more {rev, rules} chunks when they pass 8 KB
 //   u.<pc>.<rule id>       one PC's time on one rule: {n: PC name, t: when
 //                          written, b, m, d} (see SiteUsage.export)
+//   s.<pc>                 the session a PC is running, with "Share the
+//                          running task" on: {n, t, stamp, snap, task,
+//                          started_at, work_ms, rounds}, removed when it
+//                          ends (see App.shared_session)
 // buZyist does the merging (App._merge_limits: rule by rule, newest edit
 // wins, removals leave tombstones), so this side only carries the shared
 // copy to buZyist when its `rev` is new, and writes buZyist's copy back
 // when it differs. Time never conflicts: each PC writes only its own keys
 // and buZyist adds up the others'. All this happens on the forced exchanges
 // (every 30 s, and when Chrome sync brings a change); time is written at
-// most once a minute.
+// most once a minute. A session is written as soon as it changes.
 
 const CHUNK_BYTES = 7000;
 const USAGE_WRITE_MS = 60000;
 const STALE_MS = 40 * 86400000; // a PC not heard from in this long is forgotten
 const TORN_MS = 120000; // chunks from different writes for this long: write ours over them
+const SESSION_STALE_MS = 86400000; // a session not rewritten in a day: its PC went away
 let lastUsageWrite = 0;
 let tornSince = 0;
 
@@ -363,8 +369,41 @@ async function writeUsage(s, all, now) {
   if (Object.keys(items).length || drop.length) lastUsageWrite = now;
 }
 
+// The sessions other PCs run: {pc: {n, t, stamp, snap, task, ...}}.
+function readSessions(all, device, now) {
+  const out = {};
+  for (const [key, v] of Object.entries(all)) {
+    const m = /^s\.([a-z0-9]+)$/.exec(key);
+    if (m && m[1] !== device && v && now - (v.t || 0) < SESSION_STALE_MS) out[m[1]] = v;
+  }
+  return out;
+}
+
+// This PC's session, when it changed; gone when it ended or sharing is off.
+// Also clears other PCs' sessions left behind (a PC switched off mid-session).
+async function writeSession(s, all, now) {
+  const key = "s." + s.device;
+  const mine = s.share_session ? s.session || null : null;
+  const old = all[key];
+  if (mine && !(old && old.n === s.name && canon(Object.assign({}, old, { n: 0, t: 0 }))
+      === canon(Object.assign({}, mine, { n: 0, t: 0 })))) {
+    await chrome.storage.sync.set({ [key]: Object.assign({}, mine, { n: s.name, t: now }) });
+  }
+  const drop = Object.entries(all).filter(([k, v]) => /^s\./.test(k)
+    && (k === key ? !mine : !v || now - (v.t || 0) > SESSION_STALE_MS)).map(([k]) => k);
+  if (drop.length) await chrome.storage.sync.remove(drop);
+}
+
+// What this PC's session was when last written (null: none), to write a
+// new one straight away instead of on the next 30 s exchange.
+let sessionShared;
+const sessionKey = (s) => canon(s && s.share_session ? s.session || null : null);
+const sessionChanged = (data) => !!(data.sync && data.sync.device) && sessionKey(data.sync) !== sessionShared;
+
 // Hand buZyist what other PCs shared, then share ours. Returns the newest
 // answer from buZyist (it changes when rules came from another PC).
+// `doc` is there when the limits are shared, `share_session` says whether
+// the running task is.
 async function shareSync(data) {
   if (!data.sync || !data.sync.device) return data;
   let all;
@@ -375,7 +414,8 @@ async function shareSync(data) {
   }
   const now = Date.now();
   let s = data.sync;
-  let remote = readLimits(all);
+  const limitsOn = !!s.doc;
+  let remote = limitsOn ? readLimits(all) : null;
   if (remote === undefined) {
     // Two PCs wrote at once and Chrome kept chunks of both. Wait for the
     // rest to arrive; if it never does, our merged copy replaces them.
@@ -384,12 +424,20 @@ async function shareSync(data) {
   } else {
     tornSince = 0;
   }
-  const others = readUsage(all, s.device, now);
   const body = {};
-  if (remote ? remote.rev !== s.rev_seen : remote === null && !s.joined) body.limits = remote;
-  const seen = s.seen || {};
-  if (Object.keys(others).length !== Object.keys(seen).length
-      || Object.entries(others).some(([pc, u]) => seen[pc] !== u.t)) body.usage = others;
+  if (limitsOn) {
+    const others = readUsage(all, s.device, now);
+    if (remote ? remote.rev !== s.rev_seen : remote === null && !s.joined) body.limits = remote;
+    const seen = s.seen || {};
+    if (Object.keys(others).length !== Object.keys(seen).length
+        || Object.entries(others).some(([pc, u]) => seen[pc] !== u.t)) body.usage = others;
+  }
+  if (s.share_session) {
+    const sessions = readSessions(all, s.device, now);
+    const seen = s.sessions_seen || {};
+    if (Object.keys(sessions).length !== Object.keys(seen).length
+        || Object.entries(sessions).some(([pc, v]) => seen[pc] !== v.t)) body.sessions = sessions;
+  }
   if (Object.keys(body).length) {
     const res = await post(SYNC_URL, Object.assign(body, who())).catch(() => null);
     if (!res || !res.sync) return data;
@@ -397,10 +445,14 @@ async function shareSync(data) {
     s = res.sync;
   }
   try {
-    if (s.joined && remote !== undefined && (!remote || canon(docOf(remote)) !== canon(docOf(s.doc)))) {
-      await writeLimits(s, all);
+    await writeSession(s, all, now);
+    sessionShared = sessionKey(s);
+    if (s.doc) {
+      if (s.joined && remote !== undefined && (!remote || canon(docOf(remote)) !== canon(docOf(s.doc)))) {
+        await writeLimits(s, all);
+      }
+      await writeUsage(s, all, now);
     }
-    await writeUsage(s, all, now);
   } catch (e) {
     console.warn("buZyist: couldn't write to Chrome sync", e);
   }
