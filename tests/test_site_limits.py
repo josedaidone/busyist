@@ -195,13 +195,6 @@ def test_six_copies_of_one_budget_are_one():
     assert len(out["budgets"]) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=TypeError,
-    reason="BUG: clean_site_limit iterates `budgets`/`windows` without checking they are lists; "
-    "a number there raises TypeError instead of AppError, which _sanitize_site_limits doesn't catch "
-    "(a hand-edited config.json then stops App() from starting).",
-)
 @pytest.mark.parametrize("field", ["budgets", "windows"])
 def test_budgets_or_windows_that_are_not_a_list_raise_app_error(field):
     raw = rule([budget()])

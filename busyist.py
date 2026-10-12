@@ -3870,8 +3870,11 @@ def clean_site_limit(raw) -> dict:
     rid = str(raw.get("id") or "")
     if not re.fullmatch(r"[a-f0-9]{6,16}", rid):
         rid = uuid.uuid4().hex[:8]
+    raw_budgets, raw_windows = raw.get("budgets") or [], raw.get("windows") or []
+    if not isinstance(raw_budgets, list) or not isinstance(raw_windows, list):
+        raise AppError(f"{pattern}: the time limits or blocked hours didn't come through; try again.")
     budgets, windows = [], []
-    for b in raw.get("budgets") or []:
+    for b in raw_budgets:
         try:
             minutes, every, unit = int(b["minutes"]), int(b["every"]), str(b["unit"])
         except (KeyError, TypeError, ValueError):
@@ -3894,7 +3897,7 @@ def clean_site_limit(raw) -> dict:
         item = {"minutes": minutes, "every": every, "unit": unit, "days": days}
         if item not in budgets:
             budgets.append(item)
-    for w in raw.get("windows") or []:
+    for w in raw_windows:
         try:
             days = sorted({int(d) for d in w["days"]})
             start, end = _hhmm(w["from"]), _hhmm(w["to"])
