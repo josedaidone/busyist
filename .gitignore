@@ -3,6 +3,8 @@ config.json
 session.json
 history.json
 busybar_todoist.json
+*.bak
+*.corrupt-*
 *.log
 .webview/
 old/

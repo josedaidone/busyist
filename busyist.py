@@ -80,6 +80,7 @@ DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
 # and reinstalls; from source it is the repo's extension/ so edits are live.
 EXTENSION_DIR = DATA_DIR / "chrome-extension" if FROZEN else EXTENSION_SRC
 CONFIG_PATH = DATA_DIR / "config.json"
+CONFIG_BACKUP = DATA_DIR / "config.json.bak"  # the config as it was up to an hour before, see save_config
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
@@ -248,17 +249,90 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def read_json(path: Path, default):
+def read_json(path: Path, default, backup: Path | None = None):
+    """
+    A JSON file, or `default` when it isn't there. A file that exists but
+    can't be parsed is not dropped in silence: it's logged and, in the data
+    folder, renamed to <name>.corrupt-<when> so the next write can't destroy
+    what may still be recovered; then `backup` (if given) is tried.
+    """
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return default
+    except ValueError:  # bad JSON or not UTF-8 (UnicodeDecodeError is a ValueError)
+        log.error("%s is not valid JSON", path.name, exc_info=True)
+        quarantine(path)
+        if backup is not None and backup.exists():
+            log.warning("reading %s instead", backup.name)
+            return read_json(backup, default)
+        return default
+    except OSError:
+        log.warning("couldn't read %s", path.name, exc_info=True)
         return default
 
 
+def quarantine(path: Path) -> Path | None:
+    """Move a broken data file aside as <name>.corrupt-YYYYmmdd-HHMMSS (data folder only)."""
+    if not path.resolve().is_relative_to(DATA_DIR.resolve()):
+        return None  # a file we ship, not one we wrote: leave it
+    target = path.with_name(f"{path.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
+    try:
+        os.replace(path, target)
+    except OSError:
+        log.warning("couldn't move %s aside", path.name, exc_info=True)
+        return None
+    log.error("kept the unreadable %s as %s", path.name, target.name)
+    return target
+
+
+_write_locks: dict[Path, threading.Lock] = {}
+_write_locks_lock = threading.Lock()
+BACKUP_EVERY_S = 3600  # config.json.bak is refreshed at most this often
+REPLACE_TRIES = 5  # antivirus, the indexer or OneDrive can hold a file for a few ms
+
+
+def _write_lock(path: Path) -> threading.Lock:
+    key = Path(os.path.abspath(path))
+    with _write_locks_lock:
+        return _write_locks.setdefault(key, threading.Lock())
+
+
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    """
+    Replace `path` with `data` in one step: written to a temp file of its
+    own next to it, flushed to disk, then renamed over the target (retried
+    while Windows says the target is in use). Writes to the same path are
+    serialized; a failure leaves the old file and no temp file behind.
+    """
+    with _write_lock(path):
+        # A name of its own (not tempfile.mkstemp, which on Windows retries
+        # practically forever when the folder refuses the write).
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:12]}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            for attempt in range(1, REPLACE_TRIES + 1):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == REPLACE_TRIES:
+                        raise
+                    time.sleep(0.05 * attempt)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(tmp)
+
+
 def write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    # Serialized first, so a value that can't be written leaves nothing behind.
+    # Callers pass data no other thread is changing (see App.save_config).
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    write_bytes_atomic(path, text.encode("utf-8"))
 
 
 # ----------------------------------------------------------------- Todoist ---
@@ -755,7 +829,7 @@ def tray_image(view: dict | None) -> Image.Image:
 class App:
     def __init__(self):
         self.cfg = dict(DEFAULTS)
-        saved = read_json(CONFIG_PATH, {})
+        saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
         self.cfg.update(saved)
         self.cfg.pop("theme", None)  # there was a dark theme before 1.5.0
         self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
@@ -778,7 +852,7 @@ class App:
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
-            write_json(CONFIG_PATH, self.cfg)
+            self.save_config()
         self.todoist = Todoist(self.cfg)
         self.bar = Bar(self.cfg)
         self.lock = threading.RLock()  # guards everything below
@@ -825,6 +899,24 @@ class App:
         self._ext_warned = ""  # the version we last told the user to reload for
         self.site_server = FocusServer(self)
 
+    def save_config(self) -> None:
+        """
+        Write config.json from a copy of the settings (another thread may be
+        changing them), first keeping the file it replaces as config.json.bak
+        when the backup is over an hour old.
+        """
+        data = dict(self.cfg)
+        try:
+            age = time.time() - CONFIG_BACKUP.stat().st_mtime
+        except OSError:
+            age = None
+        if (age is None or not 0 <= age <= BACKUP_EVERY_S) and CONFIG_PATH.exists():
+            try:
+                write_bytes_atomic(CONFIG_BACKUP, CONFIG_PATH.read_bytes())
+            except OSError:
+                log.warning("couldn't back up config.json", exc_info=True)
+        write_json(CONFIG_PATH, data)
+
     # -------------------------------------------------------------- filters
 
     def _migrate_filters(self) -> None:
@@ -836,7 +928,7 @@ class App:
         self.cfg["filters"] = [first]
         self.cfg["active_filter"] = first["name"]
         if CONFIG_PATH.exists():
-            write_json(CONFIG_PATH, self.cfg)
+            self.save_config()
 
     @property
     def todoist_on(self) -> bool:
@@ -853,7 +945,7 @@ class App:
             if not any(f["name"] == name for f in self.cfg["filters"]):
                 raise AppError(f"There is no filter called {name!r}.")
             self.cfg["active_filter"] = name
-            write_json(CONFIG_PATH, self.cfg)
+            self.save_config()
         if not self.cfg.get("use_todoist"):
             raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
@@ -894,7 +986,7 @@ class App:
         else:
             filters[index] = entry
         self.cfg["active_filter"] = name
-        write_json(CONFIG_PATH, self.cfg)
+        self.save_config()
         return self.task_list(tasks=tasks)
 
     def delete_filter(self, name: str) -> dict:
@@ -904,7 +996,7 @@ class App:
         self.cfg["filters"] = [f for f in filters if f["name"] != name]
         if self.cfg["active_filter"] == name:
             self.cfg["active_filter"] = self.cfg["filters"][0]["name"]
-        write_json(CONFIG_PATH, self.cfg)
+        self.save_config()
         return self.task_list()
 
     def move_filter(self, name: str, delta: int) -> dict:
@@ -914,7 +1006,7 @@ class App:
             raise AppError(f"There is no filter called {name!r}.")
         j = max(0, min(len(filters) - 1, i + delta))
         filters.insert(j, filters.pop(i))
-        write_json(CONFIG_PATH, self.cfg)
+        self.save_config()
         return {"filters": filters, "active": self.active_filter()["name"]}
 
     # ------------------------------------------------------------ timer view
@@ -1230,7 +1322,7 @@ class App:
                 self._save_shared()
         if self.sync_on() and not self.cfg.get("sync_owner"):
             self.cfg["sync_owner"] = instance
-            write_json(CONFIG_PATH, self.cfg)
+            self.save_config()
             log.info("sharing through browser profile %s (%s)", instance, account or "no account")
 
     def _save_shared(self) -> None:
@@ -1404,7 +1496,7 @@ class App:
             log.info("limits merged from Chrome sync: %d rules", len(new_rules))
             self.cfg["site_limits"] = new_rules
             self.cfg["site_limits_on"] = new_on
-            write_json(CONFIG_PATH, self.cfg)
+            self.save_config()
 
     def sync_info(self) -> dict:
         """For Settings: the browser profiles seen, the other PCs and when we last synced."""
@@ -1930,7 +2022,7 @@ class App:
         if not merged.get("sync_session"):
             self.remote_sessions = {}
         self.cfg.update(clean)
-        write_json(CONFIG_PATH, self.cfg)
+        self.save_config()
         if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
             self.note_limits_edit(old_limits, self.cfg["site_limits"], on_changed)
         if sync_off:
