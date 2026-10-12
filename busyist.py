@@ -1884,8 +1884,17 @@ class App:
         except (TypeError, ValueError):
             their_on_at = 0
         if first:
-            on = on or bool(remote.get("on"))
-            sh["on_at"] = max(sh["on_at"], their_on_at)
+            # On if either is on. The stamp must go with the value chosen, or
+            # two PCs could hold the same on_at with different values and
+            # neither would ever give in: when ours wins over a shared "off",
+            # stamp it just past theirs so the other PCs take it.
+            their = bool(remote.get("on"))
+            if on and not their:
+                sh["on_at"] = max(sh["on_at"], their_on_at) + 1
+            elif their and not on:
+                on, sh["on_at"] = True, their_on_at
+            else:
+                sh["on_at"] = max(sh["on_at"], their_on_at)
         elif their_on_at > sh["on_at"]:
             on, sh["on_at"] = bool(remote.get("on")), their_on_at
         sh["deleted"] = deleted

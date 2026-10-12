@@ -438,17 +438,8 @@ def test_first_meeting_is_on_if_either_is(make_pc, cloud, first):
     assert on.on and off.on
 
 
-SWITCH_TIE_BUG = (
-    "BUG: at a first meeting _merge_limits sets on = mine or theirs but on_at = max(both), so a PC whose "
-    "newest switch was 'off' can hand its on_at to the PC that is now 'on' (or keep it while switched on). "
-    "Both then hold the same on_at with different values; their_on_at > on_at is false on both sides, so "
-    "neither gives in and each rewrites Chrome sync on every exchange, forever. Minimal: A on, B on, A off "
-    "(all before meeting), then A syncs, then B."
-)
-
-
-@pytest.mark.xfail(strict=True, reason=SWITCH_TIE_BUG)
 def test_first_meeting_with_switches_flipped_on_both_pcs_settles(make_pc, cloud):
+    """A on, B on, A off, all before meeting: the stamp goes with the value chosen, so they settle."""
     a, b = make_pc("A"), make_pc("B")
     a.switch(True)
     b.switch(True)
@@ -806,7 +797,6 @@ def test_rules_converge_and_removed_rules_stay_removed(make_pc, clock, count, op
     run_and_check(make_pc, clock, count, ops)
 
 
-@pytest.mark.xfail(strict=True, reason=SWITCH_TIE_BUG)
 @pytest.mark.timeout(900)
 @PROPERTY
 @given(count=st.integers(2, 3), ops=st.lists(any_op, max_size=30))
