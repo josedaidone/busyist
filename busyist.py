@@ -20,6 +20,7 @@ all be changed from the window. Packaged builds are made with build.ps1.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import ctypes
 import ctypes.wintypes
@@ -333,6 +334,96 @@ def write_json(path: Path, data) -> None:
     # Callers pass data no other thread is changing (see App.save_config).
     text = json.dumps(data, indent=2, ensure_ascii=False)
     write_bytes_atomic(path, text.encode("utf-8"))
+
+
+# ----------------------------------------------------------------- secrets ---
+#
+# The Todoist token and the bar's PIN are kept in config.json encrypted with
+# DPAPI for the current Windows user ("dpapi:v1:<base64>"), so a copy of the
+# file is useless to anyone else or on another PC. They are plain text only
+# in memory (App.cfg), and never sent to the window (Api.get_settings). This
+# doesn't protect them from a program running as the same user.
+
+SECRET_KEYS = ("todoist_token", "busybar_pin")
+DPAPI_PREFIX = "dpapi:v1:"
+DPAPI_ENTROPY = b"buZyist/v1"
+CRYPTPROTECT_UI_FORBIDDEN = 0x1
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(data: bytes, encrypt: bool) -> bytes:
+    """CryptProtectData / CryptUnprotectData for the current user."""
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    fn = crypt32.CryptProtectData if encrypt else crypt32.CryptUnprotectData
+    fn.restype = ctypes.wintypes.BOOL
+    src_buf = ctypes.create_string_buffer(data, len(data))
+    ent_buf = ctypes.create_string_buffer(DPAPI_ENTROPY, len(DPAPI_ENTROPY))
+    src = _DataBlob(len(data), ctypes.cast(src_buf, ctypes.POINTER(ctypes.c_char)))
+    ent = _DataBlob(len(DPAPI_ENTROPY), ctypes.cast(ent_buf, ctypes.POINTER(ctypes.c_char)))
+    out = _DataBlob()
+    if not fn(ctypes.byref(src), None, ctypes.byref(ent), None, None, CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+
+
+def protect(text: str) -> str:
+    """Encrypt for this Windows user: 'dpapi:v1:<base64>'."""
+    return DPAPI_PREFIX + base64.b64encode(_dpapi(text.encode("utf-8"), True)).decode("ascii")
+
+
+def unprotect(blob: str) -> str:
+    """The text `protect` made; OSError/ValueError when this user can't read it."""
+    if not blob.startswith(DPAPI_PREFIX):
+        raise ValueError("not a DPAPI value")
+    raw = base64.b64decode(blob[len(DPAPI_PREFIX) :], validate=True)
+    return _dpapi(raw, False).decode("utf-8")
+
+
+def protect_secrets(cfg) -> dict:
+    """A copy of the settings as they go to disk: the secrets encrypted."""
+    out = dict(cfg)
+    for key in SECRET_KEYS:
+        value = str(out.get(key) or "")
+        if value:
+            try:
+                out[key] = protect(value)
+            except OSError:
+                raise AppError("Windows couldn't encrypt the saved token; try again.")
+        else:
+            out[key] = ""
+    return out
+
+
+def unprotect_secrets(cfg: dict) -> tuple[list[str], bool]:
+    """
+    Decrypt the secrets in `cfg` in place. Returns the keys that couldn't be
+    read (a config from another user or PC: they become "") and whether any
+    was still plain text (a config from before encryption, to save again).
+    """
+    lost, plain = [], False
+    for key in SECRET_KEYS:
+        value = cfg.get(key)
+        if not isinstance(value, str):
+            cfg[key] = ""
+        elif value.startswith(DPAPI_PREFIX):
+            try:
+                cfg[key] = unprotect(value)
+            except (OSError, ValueError):
+                log.warning("config: the saved %s can't be read by this Windows user; it has to be entered again", key)
+                cfg[key] = ""
+                lost.append(key)
+        elif value:
+            plain = True
+    return lost, plain
 
 
 # ----------------------------------------------------------------- Todoist ---
@@ -831,6 +922,8 @@ class App:
         self.cfg = dict(DEFAULTS)
         saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
         self.cfg.update(saved)
+        # Secrets the config holds but this user can't decrypt (shown in Settings).
+        self.secret_lost, plain_secrets = unprotect_secrets(self.cfg)
         self.cfg.pop("theme", None)  # there was a dark theme before 1.5.0
         self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
         # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
@@ -852,7 +945,9 @@ class App:
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
-            self.save_config()
+            plain_secrets = True
+        if plain_secrets:
+            self.save_config()  # also encrypts a token saved in plain text by an older version
         self.todoist = Todoist(self.cfg)
         self.bar = Bar(self.cfg)
         self.lock = threading.RLock()  # guards everything below
@@ -902,10 +997,10 @@ class App:
     def save_config(self) -> None:
         """
         Write config.json from a copy of the settings (another thread may be
-        changing them), first keeping the file it replaces as config.json.bak
+        changing them), with the secrets encrypted, first keeping the file it replaces as config.json.bak
         when the backup is over an hour old.
         """
-        data = dict(self.cfg)
+        data = protect_secrets(self.cfg)
         try:
             age = time.time() - CONFIG_BACKUP.stat().st_mtime
         except OSError:
@@ -1971,7 +2066,14 @@ class App:
     # ----------------------------------------------------------- settings
 
     def save_settings(self, changes: dict) -> None:
-        clean = {}
+        changes, clean = dict(changes), {}
+        for key in SECRET_KEYS:
+            # The window never gets the secrets, so an empty field means "keep
+            # the saved one"; clear_<key> is its Remove button.
+            if key in changes and not str(changes[key] or "").strip():
+                del changes[key]
+            if changes.pop("clear_" + key, False) and key not in changes:
+                clean[key] = ""
         for key, value in changes.items():
             if key not in DEFAULTS or isinstance(DEFAULTS[key], list):
                 continue
@@ -2023,6 +2125,7 @@ class App:
             self.remote_sessions = {}
         self.cfg.update(clean)
         self.save_config()
+        self.secret_lost = [k for k in self.secret_lost if k not in clean]
         if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
             self.note_limits_edit(old_limits, self.cfg["site_limits"], on_changed)
         if sync_off:
@@ -2369,6 +2472,10 @@ class Api:
         connected = self._app.extension_connected()
         return dict(
             {k: cfg[k] for k in DEFAULTS},
+            # The secrets stay in Python: the page only learns whether there are any.
+            **{k: "" for k in SECRET_KEYS},
+            **{f"has_{k}": bool(cfg.get(k)) for k in SECRET_KEYS},
+            **{f"{k}_lost": k in self._app.secret_lost for k in SECRET_KEYS},
             version=__version__,
             data_dir=str(DATA_DIR),
             can_auto_update=self._app.can_auto_update,
