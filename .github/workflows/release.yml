@@ -2,13 +2,27 @@ name: Build and release
 
 # Push a tag like v1.0.1 to build and publish a release.
 # "Run workflow" on the Actions tab builds without publishing.
+#
+# What this publishes is what the in-app updater installs silently, so:
+# - every action is pinned by commit SHA (Dependabot keeps them current);
+# - no job gets a token by default (permissions: {} below), each one asks for
+#   what it needs;
+# - the job that runs repo code (build.ps1, pip, Inno Setup) only reads; the
+#   job that can write (publish) runs no repo code, it only uploads the files
+#   the build job produced.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write  # to create the release
+permissions: {}
+
+env:
+  # Inno Setup is installed from the official release and checked against this
+  # hash (the digest GitHub lists for the asset). Change both together.
+  INNO_VERSION: "6.7.3"
+  INNO_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe
+  INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 
 jobs:
   # Lint and tests first (ci.yml): a tag with a failing test never publishes.
@@ -20,42 +34,80 @@ jobs:
   build:
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
       - name: Check the tag matches the app version
         if: startsWith(github.ref, 'refs/tags/v')
-        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
           $version = (Select-String -Path busyist.py -Pattern '__version__ = "([\d.]+)"').Matches[0].Groups[1].Value
-          if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} but busyist.py says $version" }
+          if ("v$version" -ne $env:TAG) { throw "Tag $env:TAG but busyist.py says $version" }
 
-      - name: Install Inno Setup
-        shell: pwsh
+      - name: Install Inno Setup ${{ env.INNO_VERSION }}
         run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup-$env:INNO_VERSION.exe"
+          $ProgressPreference = "SilentlyContinue"
+          Invoke-WebRequest $env:INNO_URL -OutFile $setup -UseBasicParsing
+          $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:INNO_SHA256) { throw "Inno Setup installer hash $hash, expected $env:INNO_SHA256" }
+          $dir = Join-Path $env:RUNNER_TEMP "InnoSetup"
+          $p = Start-Process $setup -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/DIR=`"$dir`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Inno Setup install failed ($($p.ExitCode))" }
+          if (-not (Test-Path "$dir\ISCC.exe")) { throw "ISCC.exe not found in $dir" }
+          # First on PATH, so build.ps1 uses this one over any copy on the runner.
+          $dir | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Build
-        shell: pwsh
         env:
           BUILD_PYTHON: python
         run: ./build.ps1
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: buzyist-build
+          if-no-files-found: error
           path: |
             dist/*.exe
             dist/*.zip
             dist/SHA256SUMS.txt
 
+  # Only uploads what the build job produced: no checkout, no repo code.
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # to create the release
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: buzyist-build
+          path: dist
+
+      - name: Check the files against SHA256SUMS.txt
+        working-directory: dist
+        run: |
+          ls -l
+          sha256sum --check --strict SHA256SUMS.txt
+          ls Buzyist-Setup-*.exe Busyist-Setup-*.exe Buzyist-*-portable.zip
+
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: |
             dist/*.exe

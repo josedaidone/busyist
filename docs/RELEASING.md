@@ -30,7 +30,8 @@ tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
 
 4. Watch the run on the [Actions tab](https://github.com/josedaidone/buzyist/actions)
    ("Build and release", about 5–10 minutes). It runs the CI checks (lint and tests, `ci.yml`),
-   checks the version, installs Inno Setup, runs `build.ps1` and publishes the release. A failing
+   checks the version, installs Inno Setup, runs `build.ps1` (job `build`, read-only token) and
+   publishes the release (job `publish`, the only one allowed to write). A failing
    test stops it before anything is built.
 
 5. When it's green, the [latest release](https://github.com/josedaidone/buzyist/releases/latest)
