@@ -3866,7 +3866,10 @@ class FocusServer:
     allow our pinned `chrome-extension://<EXTENSION_ID>`. Our own extension has
     a host permission for this URL, so Chrome may send its request with no
     `Origin` header at all; those are allowed, and any request that *does*
-    carry a different (web) Origin is refused with 403.
+    carry a different (web) Origin is refused with 403. So is any request whose
+    `Host` isn't `127.0.0.1:<port>` or `localhost:<port>` (or that has none):
+    with DNS rebinding a page on `evil.example:<port>` can make same-origin
+    requests, which carry no Origin, but its Host still says evil.example.
 
     It serves GET /focus, returning App.site_focus(), and two POST routes that
     answer with the same thing: /usage (time the extension measured on
@@ -3894,6 +3897,17 @@ class FocusServer:
             def log_message(self, *_):  # don't spam the log with one line per poll
                 pass
 
+            def _host_ok(self) -> bool:
+                """403 unless Host names this server by loopback address (DNS rebinding)."""
+                port = self.server.server_address[1]
+                host = (self.headers.get("Host") or "").strip().lower()
+                if host in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                    return True
+                self.send_response(403)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return False
+
             def _cors(self, code: int) -> bool:
                 """Send status + CORS headers, or 403 if a web page is asking."""
                 origin = self.headers.get("Origin")
@@ -3911,7 +3925,7 @@ class FocusServer:
                 return True
 
             def do_OPTIONS(self):
-                if not self._cors(204):
+                if not self._host_ok() or not self._cors(204):
                     return
                 self.send_header("Access-Control-Allow-Methods", "GET, POST")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
@@ -3919,6 +3933,8 @@ class FocusServer:
                 self.end_headers()
 
             def do_GET(self):
+                if not self._host_ok():
+                    return
                 if self.path.split("?")[0] != "/focus":
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
@@ -3950,7 +3966,7 @@ class FocusServer:
                     data = json.loads(self.rfile.read(size) or b"{}")
                 except (ValueError, OSError):
                     data = None
-                if not self._cors(200):
+                if not self._host_ok() or not self._cors(200):
                     return
                 if not isinstance(data, dict):
                     data = {}
