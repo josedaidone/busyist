@@ -1,14 +1,16 @@
 """The harness itself: the module imports, the app builds in isolation, the fixtures compose."""
 
+import contextlib
 import os
 import re
 import time
+import winreg  # the real module; busyist.winreg is the guard's proxy in tests
 from pathlib import Path
 
 import pytest
 
 import busyist
-from conftest import REAL_DATA_DIR, FakeTodoist
+from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
 
 def test_version_matches_release_format():
@@ -35,6 +37,76 @@ def test_guard_refuses_writes_to_the_real_data_folder(appdata_guard):
     with appdata_guard.expect_refusal(), pytest.raises(PermissionError):
         busyist.write_json(REAL_DATA_DIR / "config.json", {})
     assert not probe.exists()
+
+
+# The registry probes below use handle 0 or a key that doesn't exist, so even
+# with the guard broken they fail with OSError instead of changing anything.
+
+
+@pytest.mark.windows_only
+def test_guard_refuses_registry_writes_through_busyist(no_registry_writes):
+    reg = busyist.winreg
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        reg.SetValueEx(0, "pytest-guard-probe", 0, reg.REG_SZ, "x")
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        reg.DeleteValue(0, "pytest-guard-probe")
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        reg.OpenKey(reg.HKEY_CURRENT_USER, "Software\buZyist-pytest-guard-probe", 0, reg.KEY_SET_VALUE)
+    with pytest.raises(FileNotFoundError):  # reading goes through
+        reg.OpenKey(reg.HKEY_CURRENT_USER, "Software\buZyist-pytest-guard-probe")
+
+
+@pytest.mark.windows_only
+def test_guard_refuses_registry_writes_through_any_winreg(no_registry_writes):
+    # The real module, not busyist's proxy: the audit hook catches it.
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        winreg.SetValueEx(0, "pytest-guard-probe", 0, winreg.REG_SZ, "x")
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        winreg.CreateKey(0, "pytest-guard-probe")
+    with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
+        winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Software\buZyist-pytest-guard-probe", 0, winreg.KEY_SET_VALUE)
+
+
+class FakeWinreg:
+    """The bits of winreg the sign-in entry uses, over a dict: {(root, path): {name: value}}."""
+
+    HKEY_CURRENT_USER = 1
+    KEY_READ, KEY_SET_VALUE, REG_SZ = 0x20019, 0x0002, 1
+
+    def __init__(self):
+        self.keys: dict[tuple, dict] = {(self.HKEY_CURRENT_USER, busyist.RUN_KEY): {}}
+
+    @contextlib.contextmanager
+    def OpenKey(self, root, path, reserved=0, access=KEY_READ):
+        if (root, path) not in self.keys:
+            raise FileNotFoundError(path)
+        yield self.keys[(root, path)]
+
+    def QueryValueEx(self, key, name):
+        if name not in key:
+            raise FileNotFoundError(name)
+        return key[name], self.REG_SZ
+
+    def SetValueEx(self, key, name, reserved, kind, value):
+        key[name] = value
+
+    def DeleteValue(self, key, name):
+        if name not in key:
+            raise FileNotFoundError(name)
+        del key[name]
+
+
+def test_launch_at_login_writes_and_removes_the_run_value(monkeypatch):
+    reg = FakeWinreg()
+    monkeypatch.setattr(busyist, "winreg", reg)
+    run = reg.keys[(reg.HKEY_CURRENT_USER, busyist.RUN_KEY)]
+    assert busyist.launch_at_login() is None
+    busyist.set_launch_at_login(True)
+    assert run == {busyist.APP: busyist.launch_command()}
+    assert busyist.launch_at_login() == busyist.launch_command()
+    busyist.set_launch_at_login(False)
+    assert run == {}
+    busyist.set_launch_at_login(False)  # already gone: no error
 
 
 def test_network_is_off():

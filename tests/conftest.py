@@ -13,6 +13,12 @@ Everything here keeps a test away from the real machine:
   the test that tried it, so a constant the fixture missed can't damage the
   user's data. It checks paths, not timestamps, so a copy of buZyist running
   on the same PC while the tests run doesn't trip it.
+- ``no_registry_writes`` (autouse): any registry write fails the test
+  (``busyist.winreg`` is a proxy whose write functions, and OpenKey asked for
+  write access, raise ``RegistryWriteRefused``; an audit hook refuses the
+  same through any other winreg), so nothing can rewrite the user's sign-in
+  entry. ``@pytest.mark.registry_writes`` lifts it on purpose; registry code
+  is better tested by monkeypatching ``busyist.winreg`` with a fake.
 
 Opt-in fixtures:
 
@@ -143,16 +149,150 @@ GUARD = AppDataGuard()
 sys.addaudithook(GUARD.hook)  # audit hooks can't be removed; it lives as long as the test run
 
 
-def pytest_sessionfinish(session, exitstatus):
-    if GUARD.violations:
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
-        print("\nWrites to the real data folder were refused:\n  " + "\n  ".join(GUARD.violations), file=sys.stderr)
-
-
 @pytest.fixture
 def appdata_guard() -> AppDataGuard:
     """The guard itself, for tests that check it (see expect_refusal)."""
     return GUARD
+
+
+# --------------------------------------------------------- registry guard ---
+
+# winreg audit events that change the registry. "winreg.OpenKey" and
+# "winreg.CreateKey" carry the access asked for; opening for reading is fine.
+_REG_WRITE_EVENTS = {
+    "winreg.SetValue",  # SetValue and SetValueEx
+    "winreg.DeleteValue",
+    "winreg.DeleteKey",  # DeleteKey and DeleteKeyEx
+    "winreg.CreateKey",  # CreateKey and CreateKeyEx
+    "winreg.SaveKey",
+    "winreg.LoadKey",
+    "winreg.DisableReflectionKey",
+    "winreg.EnableReflectionKey",
+}
+# KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_CREATE_LINK | DELETE | WRITE_DAC | WRITE_OWNER
+_REG_WRITE_ACCESS = 0x0002 | 0x0004 | 0x0020 | 0x10000 | 0x40000 | 0x80000
+# The functions refused on busyist.winreg (and, through the audit hook, on any winreg).
+_REG_WRITE_FUNCTIONS = (
+    "SetValue",
+    "SetValueEx",
+    "DeleteValue",
+    "DeleteKey",
+    "DeleteKeyEx",
+    "CreateKey",
+    "CreateKeyEx",
+    "SaveKey",
+    "LoadKey",
+    "DisableReflectionKey",
+    "EnableReflectionKey",
+)
+
+
+class RegistryWriteRefused(AssertionError):
+    """
+    A test tried to change the Windows registry. Not an OSError, so code that
+    handles registry errors (apply_launch_at_login) can't swallow it.
+    """
+
+
+class RegistryGuard:
+    """
+    Refuses every registry write while a test runs, unless the test is marked
+    ``@pytest.mark.registry_writes``. Two layers: ``busyist.winreg`` is
+    replaced by a proxy whose write functions (and OpenKey/OpenKeyEx asked for
+    write access) raise, and an audit hook refuses the same through any other
+    reference to winreg. Refusals are recorded too, so one caught by the code
+    under test still fails the test.
+    """
+
+    def __init__(self):
+        self.violations: list[str] = []
+        self.allowed = 0
+        self._expecting = 0
+
+    def refuse(self, what: str):
+        if not self._expecting:
+            self.violations.append(what)
+        raise RegistryWriteRefused(f"tests must not write to the Windows registry: {what}")
+
+    def hook(self, event: str, args: tuple) -> None:
+        if self.allowed or not event.startswith("winreg."):
+            return
+        access = args[2] if len(args) > 2 and isinstance(args[2], int) else None
+        if event in _REG_WRITE_EVENTS:
+            if event == "winreg.CreateKey" and access is not None and not access & _REG_WRITE_ACCESS:
+                return
+            self.refuse(f"{event}{args!r}")
+        elif event == "winreg.OpenKey" and access is not None and access & _REG_WRITE_ACCESS:
+            self.refuse(f"{event}{args!r}")
+
+    def proxy(self, winreg):
+        """busyist.winreg as tests see it: reads go through, writes raise."""
+
+        def refused(name):
+            def call(*args, **kwargs):
+                self.refuse(f"winreg.{name}{args!r}")
+
+            return call
+
+        def open_key(name):
+            real = getattr(winreg, name)
+
+            def call(key, sub_key, reserved=0, access=winreg.KEY_READ):
+                if int(access) & _REG_WRITE_ACCESS:
+                    self.refuse(f"winreg.{name}({key!r}, {sub_key!r}, access={access:#x})")
+                return real(key, sub_key, reserved, access)
+
+            return call
+
+        overrides = {name: refused(name) for name in _REG_WRITE_FUNCTIONS if hasattr(winreg, name)}
+        overrides.update(OpenKey=open_key("OpenKey"), OpenKeyEx=open_key("OpenKeyEx"))
+        return ModuleProxy(winreg, **overrides)
+
+    @contextlib.contextmanager
+    def expect_refusal(self):
+        """For the guard's own test: a refused write inside is not a violation."""
+        self._expecting += 1
+        try:
+            yield
+        finally:
+            self._expecting -= 1
+
+
+REGISTRY = RegistryGuard()
+sys.addaudithook(REGISTRY.hook)
+
+
+@pytest.fixture(autouse=True)
+def no_registry_writes(request, monkeypatch):
+    """
+    Every test runs behind REGISTRY (see RegistryGuard). A test that must
+    write the real registry says so with ``@pytest.mark.registry_writes``;
+    one that exercises registry code should rather monkeypatch
+    ``busyist.winreg`` with a fake (which replaces the guarded proxy).
+    """
+    if request.node.get_closest_marker("registry_writes"):
+        REGISTRY.allowed += 1
+        try:
+            yield REGISTRY
+        finally:
+            REGISTRY.allowed -= 1
+        return
+    winreg = getattr(busyist, "winreg", None)
+    if winreg is not None:
+        monkeypatch.setattr(busyist, "winreg", REGISTRY.proxy(winreg))
+    before = len(REGISTRY.violations)
+    yield REGISTRY
+    if len(REGISTRY.violations) > before:
+        pytest.fail("refused registry writes: " + "; ".join(REGISTRY.violations[before:]))
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if GUARD.violations or REGISTRY.violations:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    if REGISTRY.violations:
+        print("\nRegistry writes were refused:\n  " + "\n  ".join(REGISTRY.violations), file=sys.stderr)
+    if GUARD.violations:
+        print("\nWrites to the real data folder were refused:\n  " + "\n  ".join(GUARD.violations), file=sys.stderr)
 
 
 # ---------------------------------------------------------------- markers ---

@@ -32,4 +32,5 @@ pythonpath = ["."]         # busyist.py lives at the repo root
 addopts = "-ra --strict-markers --timeout=30"
 markers = [
   "windows_only: calls Win32 APIs (ctypes.windll, winreg, ...); skipped on other platforms",
+  "registry_writes: lifts the conftest guard that refuses Windows registry writes (on purpose only)",
 ]
