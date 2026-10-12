@@ -26,7 +26,6 @@ import ctypes.wintypes
 import json
 import logging
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -44,6 +43,7 @@ from busylib import types
 from busylib.features import timer_state
 
 from buzyist import paths
+from buzyist.app_sites import SitesMixin
 from buzyist.app_sync import SyncMixin
 from buzyist.bar import Bar
 from buzyist.blocker import AppBlocker
@@ -57,7 +57,6 @@ from buzyist.constants import (
     MAX_FILTERS,
     MINI_H,
     MINI_W,
-    PASS_SECONDS,
     PAUSE_REMIND_S,
     REPO_URL,
     SOLO_H,
@@ -70,10 +69,6 @@ from buzyist.extension import EXTENSION_VERSION, find_browser, open_browser_page
 from buzyist.focus_server import FocusServer
 from buzyist.hotkey import GlobalHotkey
 from buzyist.secrets_dpapi import SECRET_KEYS, unprotect_secrets
-from buzyist.site_rules import (
-    is_plain_domain,
-    site_limit_status,
-)
 from buzyist.storage import read_json, write_json
 from buzyist.sync import load_shared
 from buzyist.todoist import Todoist
@@ -85,7 +80,6 @@ from buzyist.updater import (
     download_setup,
     latest_release,
     stream_sha256,
-    version_tuple,
 )
 from buzyist.usage import SiteUsage
 from buzyist.win32.clipboard import set_clipboard
@@ -111,7 +105,7 @@ log = logging.getLogger(APP)
 # --------------------------------------------------------------------- app ---
 
 
-class App(SyncMixin, TrayMixin):
+class App(SitesMixin, SyncMixin, TrayMixin):
     def __init__(self):
         saved = read_json(paths.CONFIG_PATH, {}, backup=paths.CONFIG_BACKUP)
         if not isinstance(saved, dict):
@@ -407,104 +401,6 @@ class App(SyncMixin, TrayMixin):
                 "task": session["task"]["content"] if session else (remote["task"]["content"] if remote else ""),
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
             }
-
-    def site_focus(self, instance: str = "") -> dict:
-        """
-        What the Chrome extension (issue #2) reads from /focus: the same work-
-        phase rule as the app blocker, but only when site blocking is on. When
-        it's off, or no work phase is running, `active` is False and no sites
-        are sent, so the extension removes its rules.
-
-        `mode` and `patterns` are what the extension uses (patterns may hold
-        wildcards and paths). `sites` is kept for extensions from before
-        those: only the plain domains of a blocklist, which they understand.
-
-        The browser profile that shares the limits with other PCs (`instance`
-        is the sync owner) also gets `sync`, see sync_payload.
-        """
-        cfg = self.cfg.view()
-        on = bool(cfg.get("block_sites"))
-        limits_on = bool(cfg.get("site_limits_on"))
-        mode = cfg.get("site_mode", "block")
-        focus = self.focus()
-        active = on and focus["active"]
-        patterns = list(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
-        out = {
-            "active": active,
-            "task": focus["task"] if active else "",
-            "ends_at_ms": focus["ends_at_ms"] if active else 0,
-            "mode": mode,
-            "patterns": patterns,
-            "sites": [p for p in patterns if is_plain_domain(p)] if mode == "block" else [],
-            "limits_on": limits_on,
-            "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
-            "pass_minutes": PASS_SECONDS // 60,
-        }
-        if self.is_sync_owner(instance):
-            out["sync"] = self.sync_payload()
-        return out
-
-    def extension_connected(self) -> bool:
-        return bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000
-
-    def extension_outdated(self) -> bool:
-        """The extension in the browser is older than the one that ships with this buZyist."""
-        return self.extension_connected() and (version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
-
-    def note_extension(self, version, instance="", account=None, trusted=False) -> None:
-        """
-        The extension just called, saying which version it is. Chrome doesn't
-        reload an unpacked extension when its files change, so after an update
-        the old one keeps running until the user reloads it: say so, once.
-
-        Extensions from 1.5.0 also say which browser profile they run in
-        (`instance`, a random id per profile) and its Google account, so
-        Settings can offer the profiles that could share the limits. Only a
-        `trusted` request (one with the X-Buzyist header, see FocusServer)
-        registers a profile; any request still counts as the extension
-        calling, so extensions from before the header get the notice too.
-        """
-        self.extension_last = now_ms()
-        self.extension_version = str(version or "")[:20]
-        instance = str(instance or "")
-        if trusted and re.fullmatch(r"[a-z0-9]{6,32}", instance):
-            self.note_instance(instance, account, trusted=True)
-        if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
-            self._ext_warned = EXTENSION_VERSION
-            self.notify(
-                "Reload the buZyist extension",
-                "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.",
-            )
-
-    def site_limits_status(self, enabled_only: bool = False) -> list[dict]:
-        """Where every site-limit rule stands right now (see site_limit_status)."""
-        now = datetime.now()
-        rules = self.cfg.get("site_limits") or []
-        return [site_limit_status(r, self.usage, now) for r in rules if r.get("enabled", True) or not enabled_only]
-
-    def record_usage(self, usage) -> None:
-        """Add the time the extension measured: {rule id: {epoch minute: seconds}}."""
-        if not isinstance(usage, dict):
-            return
-        known = {r["id"] for r in self.cfg.get("site_limits") or []}
-        minute_now = now_ms() // 60000
-        for rid, per_minute in usage.items():
-            if rid not in known or not isinstance(per_minute, dict):
-                continue
-            for minute, seconds in list(per_minute.items())[:5000]:
-                try:
-                    minute, seconds = int(minute), float(seconds)
-                except (TypeError, ValueError):
-                    continue
-                if minute_now - 3 * 1440 <= minute <= minute_now + 1 and seconds > 0:
-                    self.usage.add(rid, minute, seconds)
-        self.usage.flush()
-
-    def grant_pass(self, rid) -> None:
-        """The block page's "allow 2 more minutes": lift one rule for a short while."""
-        if rid not in {r["id"] for r in self.cfg.get("site_limits") or []}:
-            raise AppError("That limit no longer exists.")
-        self.usage.grant(rid, now_ms() + PASS_SECONDS * 1000)
 
     def notify_focus(self) -> None:
         """Recompute focus and, if it flipped, run the hooks off App.lock."""
