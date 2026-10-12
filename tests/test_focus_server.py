@@ -12,7 +12,7 @@ import time
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage
+from buzyist import constants, paths, site_rules, storage
 
 RULE = {
     "id": "abc123",
@@ -29,7 +29,7 @@ TRUSTED = {"X-Buzyist": "1"}  # what extension 1.7.0+ adds to every request (#01
 @pytest.fixture
 def limits(app):
     """The app with one enabled site-limit rule (RULE) and limits on."""
-    app.cfg["site_limits"] = [busyist.clean_site_limit(RULE)]
+    app.cfg["site_limits"] = [site_rules.clean_site_limit(RULE)]
     app.cfg["site_limits_on"] = True
     return app
 

@@ -6,9 +6,10 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-import busyist
-from busyist import SiteUsage, budget_bounds, clean_site_limit, clean_site_limits, site_limit_status, window_spans
+from busyist import SiteUsage
+from buzyist import site_rules
 from buzyist.constants import MAX_LIMIT_SITES, MAX_SITE_LIMITS, SITE_ANCHOR, AppError
+from buzyist.site_rules import budget_bounds, clean_site_limit, clean_site_limits, site_limit_status, window_spans
 
 ALL_DAYS = list(range(7))
 MONDAY = datetime(2026, 1, 5, 9, 37)  # what the tests call "now" unless they say otherwise
@@ -222,9 +223,9 @@ def test_one_bad_rule_fails_the_whole_list():
 
 
 def test_sanitize_drops_bad_rules_quietly():
-    out = busyist._sanitize_site_limits([rule([budget()]), rule(), "junk"] + [rule([budget()])] * MAX_SITE_LIMITS)
+    out = site_rules._sanitize_site_limits([rule([budget()]), rule(), "junk"] + [rule([budget()])] * MAX_SITE_LIMITS)
     assert len(out) == MAX_SITE_LIMITS
-    assert busyist._sanitize_site_limits(None) == []
+    assert site_rules._sanitize_site_limits(None) == []
 
 
 # ------------------------------------------------------------ budget_bounds

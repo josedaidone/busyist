@@ -7,7 +7,7 @@ import threading
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, site_rules
 from conftest import app_source
 
 
@@ -116,4 +116,4 @@ def test_save_settings_and_apply_sync_racing(make_app, monkeypatch):
     assert set(app.shared["rule_at"]) <= ids  # every stamp belongs to a rule that's there
     saved = on_disk()
     assert saved["site_limits"] == app.cfg["site_limits"]
-    assert busyist.clean_site_limits(saved["site_limits"]) == saved["site_limits"]
+    assert site_rules.clean_site_limits(saved["site_limits"]) == saved["site_limits"]
