@@ -1,8 +1,10 @@
 """The harness itself: the module imports, the app builds in isolation, the fixtures compose."""
 
 import contextlib
+import ctypes
 import os
 import re
+import socket
 import time
 import winreg  # the real module; the app modules' winreg is the guard's proxy in tests
 from pathlib import Path
@@ -10,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage
+from buzyist import constants, paths, storage, usage
 from buzyist.win32 import registry
 from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
@@ -113,7 +115,7 @@ def test_launch_at_login_writes_and_removes_the_run_value(monkeypatch):
 
 def test_network_is_off():
     with pytest.raises(OSError, match="network disabled"):
-        busyist.socket.create_connection(("api.todoist.com", 443), timeout=1)
+        socket.create_connection(("api.todoist.com", 443), timeout=1)
 
 
 def test_app_builds_fast_with_an_empty_data_dir(make_app):
@@ -138,13 +140,13 @@ def test_app_fixture_defaults(app):
 def test_clock_drives_now_and_busylib(clock):
     start = clock.ms
     assert constants.now_ms() == start
-    assert busyist.datetime.now() == clock.now()
+    assert usage.datetime.now() == clock.now()
     clock.advance(minutes=90)
     assert constants.now_ms() == start + 90 * 60_000
-    assert busyist.date.today() == clock.now().date()
-    mono = busyist.time.monotonic()
-    busyist.time.sleep(5)
-    assert busyist.time.monotonic() == mono + 5
+    assert usage.date.today() == clock.now().date()
+    mono = usage.time.monotonic()
+    usage.time.sleep(5)
+    assert usage.time.monotonic() == mono + 5
     assert clock.sleeps == [5]
 
 
@@ -187,7 +189,7 @@ def test_focus_server_answers_on_a_free_port(focus_server):
 
 @pytest.mark.windows_only
 def test_windows_only_marker_runs_here():
-    assert busyist.ctypes.windll.kernel32.GetCurrentProcessId() == os.getpid()
+    assert ctypes.windll.kernel32.GetCurrentProcessId() == os.getpid()
 
 
 def test_make_app_seeds_files_and_a_restart_resumes(make_app):

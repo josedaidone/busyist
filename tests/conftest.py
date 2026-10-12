@@ -66,6 +66,7 @@ import pytest
 
 import busyist
 from buzyist import constants, paths, storage
+from buzyist import focus_server as focus_server_mod
 
 # ---------------------------------------------------------------- modules ---
 
@@ -898,7 +899,7 @@ def deferred_threads(monkeypatch) -> DeferredThreads:
 class FocusClient:
     """The app's FocusServer, started on a free port, plus a tiny HTTP client for it."""
 
-    def __init__(self, server: busyist.FocusServer):
+    def __init__(self, server: focus_server_mod.FocusServer):
         self.server = server
 
     @property
@@ -962,7 +963,7 @@ def focus_server(app, monkeypatch) -> FocusClient:
     app computes in them.
     """
     monkeypatch.setattr(http.server, "ThreadingHTTPServer", _QuickShutdownServer)
-    server = busyist.FocusServer(app, port=0)
+    server = focus_server_mod.FocusServer(app, port=0)
     app.site_server = server
     server.start()
     assert server.httpd is not None, "FocusServer couldn't bind a free port"

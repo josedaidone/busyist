@@ -1,12 +1,12 @@
 """ConfigStore: copy-on-write settings shared by threads (#018)."""
 
 import json
+import os
 import re
 import threading
 
 import pytest
 
-import busyist
 from buzyist import config, constants, paths, site_rules
 from conftest import app_source
 
@@ -84,7 +84,7 @@ LIMIT_C = {"id": "cccccc01", "patterns": ["c.com"], "budgets": [{"minutes": 7, "
 
 
 def test_save_settings_and_apply_sync_racing(make_app, monkeypatch):
-    monkeypatch.setattr(busyist.os, "fsync", lambda fd: None)  # 2000 fsyncs would take a while
+    monkeypatch.setattr(os, "fsync", lambda fd: None)  # 2000 fsyncs would take a while
     app = make_app({"sync_limits": True, "sync_owner": "owner1", "site_limits_on": True})
     monkeypatch.setattr(app, "_save_shared", lambda: None)  # sync.json: not what this is about, and slow
     errors = []

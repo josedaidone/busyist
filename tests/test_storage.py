@@ -23,7 +23,7 @@ def test_write_json_round_trip(data_dir):
 
 
 def test_concurrent_writers_leave_a_valid_file(data_dir, monkeypatch):
-    monkeypatch.setattr(busyist.os, "fsync", lambda fd: None)  # 1600 real fsyncs take ~10 s
+    monkeypatch.setattr(os, "fsync", lambda fd: None)  # 1600 real fsyncs take ~10 s
     path = data_dir / "config.json"
     errors = []
 
@@ -60,7 +60,7 @@ def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch):
             raise PermissionError("in use")
         return real_replace(src, dst)
 
-    monkeypatch.setattr(busyist.os, "replace", flaky)
+    monkeypatch.setattr(os, "replace", flaky)
     storage.write_json(path, {"new": True})
     assert len(calls) == 3
     assert storage.read_json(path, None) == {"new": True}
@@ -76,7 +76,7 @@ def test_replace_that_keeps_failing_raises_and_cleans_up(data_dir, monkeypatch):
     def stuck(src, dst):
         raise PermissionError("in use")
 
-    monkeypatch.setattr(busyist.os, "replace", stuck)
+    monkeypatch.setattr(os, "replace", stuck)
     with pytest.raises(PermissionError):
         storage.write_json(path, {"new": True})
     assert storage.read_json(path, None) == {"old": True}

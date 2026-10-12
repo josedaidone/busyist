@@ -3,6 +3,7 @@
 import io
 import json
 import urllib.error
+import urllib.request
 
 import pytest
 
@@ -120,7 +121,7 @@ def test_todoist_errors_dont_include_the_token(monkeypatch, caplog):
     def refuse(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, io.BytesIO(b'{"error": "bad"}'))
 
-    monkeypatch.setattr(busyist.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
     with pytest.raises(constants.AppError) as err:
         client.tasks("today")
     assert TOKEN not in str(err.value)
