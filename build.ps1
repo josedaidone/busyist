@@ -28,8 +28,10 @@ if (-not (Test-Path $py)) {
     if ($env:BUILD_PYTHON) { Run $env:BUILD_PYTHON @("-m", "venv", ".venv-build") }
     else { Run "py" @("-3.11", "-m", "venv", ".venv-build") }
 }
-Run $py @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
-Run $py @("-m", "pip", "install", "--quiet", "-r", "requirements.txt", "-r", "requirements-build.txt")
+# Both files are hash-locked (pip-tools, see CLAUDE.md): pip refuses any package
+# whose version or hash isn't in them. pip itself is not upgraded, since that
+# would be an install outside the lock.
+Run $py @("-m", "pip", "install", "--quiet", "--require-hashes", "-r", "requirements.txt", "-r", "requirements-build.txt")
 
 # 2. The app folder.
 Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue

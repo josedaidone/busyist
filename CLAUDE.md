@@ -67,4 +67,11 @@ The look follows the "Tomate" identity in `buzyist-handoff/` (gitignored, local 
 
 - Runtime data lives in `%APPDATA%\Busyist` (`config.json`, `session.json`, `history.json`, `timer.json`, `usage.json`, `sync.json`, log, `webview/`), never next to the program. `DEFAULTS` in `busyist.py` is the full config schema; `adopt_old_files()` migrates files from the script directory when running from source.
 - Resources are found via `RES_DIR` (`sys._MEIPASS` when frozen). New files the app needs at runtime (assets under `ui/` are already covered) must be added to `datas` in `packaging/busyist.spec`; new hidden imports go there too (pywebview/pystray/busylib are loaded dynamically).
-- Dependencies are pinned in `requirements.txt` (runtime) and `requirements-build.txt` (PyInstaller); `build.ps1` uses a separate `.venv-build`. The repo's `old/`, `.webview/`, `.venv*` are local and gitignored.
+- Dependencies are hash-locked with pip-tools. Edit the sources, `requirements.in` (runtime; also declares what the code or the spec uses directly: `httpx2`, `pydantic`, `pythonnet` for `clr`), `requirements-build.in` (PyInstaller) and `requirements-dev.in` (ruff, pytest, pip-tools, pip-audit; it includes the runtime set), never the `.txt` files, then recompile them **on Windows with Python 3.11** (pywebview/pythonnet/pywin32 have platform markers; the build and dev files take `-c requirements.txt`, so compile `requirements.txt` first):
+  ```powershell
+  .\.venv\Scripts\python.exe -m pip install --require-hashes -r requirements-dev.txt   # brings pip-tools
+  .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --strip-extras --allow-unsafe requirements.in
+  .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --strip-extras --allow-unsafe requirements-build.in
+  .\.venv\Scripts\python.exe -m piptools compile --generate-hashes --strip-extras --allow-unsafe requirements-dev.in
+  ```
+  Add `--upgrade-package <name>` to move one package, `--upgrade` for all. `build.ps1` installs with `--require-hashes` into a separate `.venv-build`; CI installs `requirements-dev.txt` the same way and runs `pip-audit` on the three lock files. The repo's `old/`, `.webview/`, `.venv*` are local and gitignored.
