@@ -110,6 +110,7 @@ from buzyist.usage import SiteUsage
 from buzyist.win32.clipboard import set_clipboard
 from buzyist.win32.input import send_keys
 from buzyist.win32.processes import list_processes, process_session, relaunch_app, relaunch_target, terminate_process
+from buzyist.win32.registry import set_launch_at_login, webview2_installed
 from buzyist.win32.windows import (
     close_windows,
     hide_window,
@@ -127,8 +128,6 @@ __version__ = "1.7.0"
 
 log = logging.getLogger(APP)
 
-
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 DEFAULTS = {
     "use_todoist": True,  # off: sessions run without tasks, no API token needed
@@ -2605,32 +2604,6 @@ def show_in_explorer(path: Path) -> None:
         os.startfile(path)
 
 
-def launch_command() -> str:
-    if paths.FROZEN:
-        return f'"{sys.executable}"'
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    return f'"{pythonw if pythonw.exists() else sys.executable}" "{paths.SCRIPT}"'
-
-
-def launch_at_login() -> str | None:
-    """The command Windows runs at sign-in for this app, if any."""
-    try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
-            return winreg.QueryValueEx(key, APP)[0]
-    except OSError:
-        return None
-
-
-def set_launch_at_login(on: bool) -> None:
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
-        if on:
-            if launch_at_login() != launch_command():
-                winreg.SetValueEx(key, APP, 0, winreg.REG_SZ, launch_command())
-        else:
-            with contextlib.suppress(FileNotFoundError):
-                winreg.DeleteValue(key, APP)
-
-
 # ------------------------------------------------------------- hotkey ---
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
@@ -3566,26 +3539,6 @@ def adopt_old_files() -> None:
         if old.exists() and not new.exists():
             shutil.copy2(old, new)
             log.info("copied %s to %s", name, paths.DATA_DIR)
-
-
-WEBVIEW2_CLIENT = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
-
-
-def webview2_installed() -> bool:
-    """Whether the Edge WebView2 runtime the window is drawn with is present."""
-    for root, path in (
-        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + WEBVIEW2_CLIENT),
-        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + WEBVIEW2_CLIENT),
-        (winreg.HKEY_CURRENT_USER, "Software\\" + WEBVIEW2_CLIENT),
-    ):
-        try:
-            with winreg.OpenKey(root, path) as key:
-                version = winreg.QueryValueEx(key, "pv")[0]
-                if version and version != "0.0.0.0":  # noqa: S104 - a registry value meaning "not installed", not a bind address
-                    return True
-        except OSError:
-            continue
-    return False
 
 
 def message_box(text: str, flags: int = 0x40) -> int:

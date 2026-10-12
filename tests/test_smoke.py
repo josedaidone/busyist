@@ -4,13 +4,14 @@ import contextlib
 import os
 import re
 import time
-import winreg  # the real module; busyist.winreg is the guard's proxy in tests
+import winreg  # the real module; the app modules' winreg is the guard's proxy in tests
 from pathlib import Path
 
 import pytest
 
 import busyist
 from buzyist import constants, paths, storage
+from buzyist.win32 import registry
 from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
 
@@ -46,7 +47,7 @@ def test_guard_refuses_writes_to_the_real_data_folder(appdata_guard):
 
 @pytest.mark.windows_only
 def test_guard_refuses_registry_writes_through_busyist(no_registry_writes):
-    reg = busyist.winreg
+    reg = registry.winreg
     with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
         reg.SetValueEx(0, "pytest-guard-probe", 0, reg.REG_SZ, "x")
     with no_registry_writes.expect_refusal(), pytest.raises(RegistryWriteRefused):
@@ -75,7 +76,7 @@ class FakeWinreg:
     KEY_READ, KEY_SET_VALUE, REG_SZ = 0x20019, 0x0002, 1
 
     def __init__(self):
-        self.keys: dict[tuple, dict] = {(self.HKEY_CURRENT_USER, busyist.RUN_KEY): {}}
+        self.keys: dict[tuple, dict] = {(self.HKEY_CURRENT_USER, registry.RUN_KEY): {}}
 
     @contextlib.contextmanager
     def OpenKey(self, root, path, reserved=0, access=KEY_READ):
@@ -99,15 +100,15 @@ class FakeWinreg:
 
 def test_launch_at_login_writes_and_removes_the_run_value(monkeypatch):
     reg = FakeWinreg()
-    monkeypatch.setattr(busyist, "winreg", reg)
-    run = reg.keys[(reg.HKEY_CURRENT_USER, busyist.RUN_KEY)]
-    assert busyist.launch_at_login() is None
-    busyist.set_launch_at_login(True)
-    assert run == {constants.APP: busyist.launch_command()}
-    assert busyist.launch_at_login() == busyist.launch_command()
-    busyist.set_launch_at_login(False)
+    monkeypatch.setattr(registry, "winreg", reg)
+    run = reg.keys[(reg.HKEY_CURRENT_USER, registry.RUN_KEY)]
+    assert registry.launch_at_login() is None
+    registry.set_launch_at_login(True)
+    assert run == {constants.APP: registry.launch_command()}
+    assert registry.launch_at_login() == registry.launch_command()
+    registry.set_launch_at_login(False)
     assert run == {}
-    busyist.set_launch_at_login(False)  # already gone: no error
+    registry.set_launch_at_login(False)  # already gone: no error
 
 
 def test_network_is_off():
