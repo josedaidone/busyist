@@ -27,6 +27,7 @@ function render() {
   $("mPauseIcon").setAttribute("href", t && t.paused ? "#i-play" : "#i-pause");
   $("mPause").title = t && t.paused ? "Resume" : "Pause";
   $("mPause").style.display = $("mStop").style.display = t ? "" : "none";
+  if (phase !== "paused") $("mini").classList.remove("alert");
 }
 
 async function poll() {
@@ -51,7 +52,19 @@ $("mOpen").onclick = () => api.show_main();
 $("mHide").onclick = () => api.hide_mini();
 $("mini").addEventListener("dblclick", () => api.show_main());
 
-window.Mini = { refresh: poll };
+// A long pause: flash the whole mini timer for a few seconds (Python beeps).
+let alertTimer = 0;
+function alertPause() {
+  const m = $("mini");
+  m.classList.remove("alert");
+  void m.offsetWidth; // restart the animation
+  m.classList.add("alert");
+  clearTimeout(alertTimer);
+  alertTimer = setTimeout(() => m.classList.remove("alert"), 3600);
+  poll();
+}
+
+window.Mini = { refresh: poll, alert: alertPause };
 
 function boot() {
   api = window.pywebview.api;

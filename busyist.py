@@ -38,6 +38,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+import winsound
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
@@ -56,7 +57,7 @@ from PIL import Image, ImageDraw, ImageFont
 # sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
 APP_NAME = "buZyist"
-__version__ = "1.6.0"
+__version__ = "1.6.1"
 REPO_URL = "https://github.com/josedaidone/buzyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
@@ -121,6 +122,7 @@ DEVICE_NAME = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "PC")[:
 SITE_MODES = ("block", "allow")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MINI_W, MINI_H = 340, 108
+PAUSE_REMIND_S = 5 * 60  # a pause this long (and each multiple) flashes the mini timer and beeps
 SOLO_W, SOLO_H = 580, 740  # main window size without the task list
 
 DEFAULTS = {
@@ -745,6 +747,8 @@ class App:
         self.main: webview.Window | None = None
         self.mini: webview.Window | None = None
         self.mini_shown = False
+        self._paused_since: float | None = None  # monotonic time the pause was first seen
+        self._pause_reminded = 0  # reminders given during this pause
         self.tray: pystray.Icon | None = None
         self.instance_socket: socket.socket | None = None
         self.update: dict | None = None  # a newer release, once one is found
@@ -1319,6 +1323,7 @@ class App:
             try:
                 self.follow_session()
                 self.notify_focus()
+                self.pause_reminder()
                 self.update_tray()
             except Exception:
                 log.exception("engine")
@@ -1326,6 +1331,36 @@ class App:
             poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
             self.wake.wait(poll)
             self.wake.clear()
+
+    def pause_reminder(self) -> None:
+        """Every PAUSE_REMIND_S of a pause, flash the mini timer and beep 3 times."""
+        view = self.timer_view() if self.bar_ok else None
+        if not view or not view["paused"]:
+            self._paused_since = None
+            return
+        now = time.monotonic()
+        if self._paused_since is None:
+            self._paused_since, self._pause_reminded = now, 0
+            return
+        due = int((now - self._paused_since) // PAUSE_REMIND_S)
+        if due <= self._pause_reminded:
+            return
+        self._pause_reminded = due
+        log.info("paused for %d min: reminding", due * PAUSE_REMIND_S // 60)
+        if self.mini and not self.mini_shown:
+            self.show_mini()
+        if self.mini:
+            self._js(self.mini, "Mini.alert && Mini.alert()")
+
+        def beep():
+            for _ in range(3):
+                try:
+                    winsound.Beep(880, 180)
+                except Exception:
+                    winsound.MessageBeep()
+                time.sleep(0.15)
+
+        threading.Thread(target=beep, daemon=True).start()
 
     def follow_session(self) -> None:
         notify = None
