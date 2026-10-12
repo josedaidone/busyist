@@ -17,6 +17,7 @@ Settings, the running session and history live in %APPDATA%\\Busyist (the name f
 before buZyist, kept so the loaded browser extension stays put) and can
 all be changed from the window. Packaged builds are made with build.ps1.
 """
+
 from __future__ import annotations
 
 import ctypes
@@ -102,8 +103,16 @@ FOCUS_PORT = 47616
 EXTENSION_ID = "ebnjnikifknbkdlkbbfggibfekkohbne"
 EXTENSION_ORIGIN = "chrome-extension://" + EXTENSION_ID
 DEFAULT_BLOCKED_SITES = [
-    "instagram.com", "youtube.com", "youtu.be", "twitter.com", "x.com",
-    "facebook.com", "web.whatsapp.com", "reddit.com", "linkedin.com", "tiktok.com",
+    "instagram.com",
+    "youtube.com",
+    "youtu.be",
+    "twitter.com",
+    "x.com",
+    "facebook.com",
+    "web.whatsapp.com",
+    "reddit.com",
+    "linkedin.com",
+    "tiktok.com",
 ]
 MAX_BLOCKED_SITES = 50
 # Site limits: per-website time budgets and blocked hours, enforced by the
@@ -206,13 +215,26 @@ DEFAULT_FILTER = {"name": "Today", "query": "today | overdue"}
 MAX_FILTERS = 20
 
 TODOIST_COLORS = {
-    "berry_red": "#b8256f", "red": "#db4035", "orange": "#ff9933",
-    "yellow": "#fad000", "olive_green": "#afb83b", "lime_green": "#7ecc49",
-    "green": "#299438", "mint_green": "#6accbc", "teal": "#158fad",
-    "sky_blue": "#14aaf5", "light_blue": "#96c3eb", "blue": "#4073ff",
-    "grape": "#884dff", "violet": "#af38eb", "lavender": "#eb96eb",
-    "magenta": "#e05194", "salmon": "#ff8d85", "charcoal": "#808080",
-    "grey": "#b8b8b8", "taupe": "#ccac93",
+    "berry_red": "#b8256f",
+    "red": "#db4035",
+    "orange": "#ff9933",
+    "yellow": "#fad000",
+    "olive_green": "#afb83b",
+    "lime_green": "#7ecc49",
+    "green": "#299438",
+    "mint_green": "#6accbc",
+    "teal": "#158fad",
+    "sky_blue": "#14aaf5",
+    "light_blue": "#96c3eb",
+    "blue": "#4073ff",
+    "grape": "#884dff",
+    "violet": "#af38eb",
+    "lavender": "#eb96eb",
+    "magenta": "#e05194",
+    "salmon": "#ff8d85",
+    "charcoal": "#808080",
+    "grey": "#b8b8b8",
+    "taupe": "#ccac93",
 }
 
 
@@ -295,21 +317,23 @@ class Todoist:
                 continue
             day, clock = due_parts(item.get("due"))
             project = projects.get(item.get("project_id"), {})
-            tasks.append({
-                "id": item["id"],
-                "content": plain_text(item.get("content", "")),
-                "description": plain_text(item.get("description", ""))[:200],
-                "priority": item.get("priority", 1),  # 4 is P1
-                "labels": item.get("labels", []),
-                "project": project.get("name", ""),
-                "color": TODOIST_COLORS.get(project.get("color"), "#808080"),
-                "inbox": bool(project.get("inbox_project")),
-                "day": day,
-                "time": clock,
-                "overdue": bool(day and day < today),
-                "order": item.get("day_order", 0),
-                "url": f"https://app.todoist.com/app/task/{item['id']}",
-            })
+            tasks.append(
+                {
+                    "id": item["id"],
+                    "content": plain_text(item.get("content", "")),
+                    "description": plain_text(item.get("description", ""))[:200],
+                    "priority": item.get("priority", 1),  # 4 is P1
+                    "labels": item.get("labels", []),
+                    "project": project.get("name", ""),
+                    "color": TODOIST_COLORS.get(project.get("color"), "#808080"),
+                    "inbox": bool(project.get("inbox_project")),
+                    "day": day,
+                    "time": clock,
+                    "overdue": bool(day and day < today),
+                    "order": item.get("day_order", 0),
+                    "url": f"https://app.todoist.com/app/task/{item['id']}",
+                }
+            )
         tasks.sort(key=lambda t: (-t["priority"], not t["overdue"], t["time"] or "99", t["order"]))
         return tasks
 
@@ -512,9 +536,14 @@ class Bar:
     def stop(self) -> None:
         def go(bar: BusyBar) -> None:
             live = bar.busy_snapshot()
-            self._write(bar, live, types.BusySnapshotNotStarted(
-                type="NOT_STARTED", busy_bar_settings=live.snapshot.busy_bar_settings,
-            ))
+            self._write(
+                bar,
+                live,
+                types.BusySnapshotNotStarted(
+                    type="NOT_STARTED",
+                    busy_bar_settings=live.snapshot.busy_bar_settings,
+                ),
+            )
 
         self.run(go)
 
@@ -549,17 +578,28 @@ class Bar:
             following = (timer_state(live).interval or 0) + 1
             # Index cycles*2-1 is where a session ends; it is never run.
             if following >= settings.interval_work_cycles_count * 2 - 1:
-                self._write(bar, live, types.BusySnapshotNotStarted(
-                    type="NOT_STARTED", busy_bar_settings=variant.busy_bar_settings,
-                ))
+                self._write(
+                    bar,
+                    live,
+                    types.BusySnapshotNotStarted(
+                        type="NOT_STARTED",
+                        busy_bar_settings=variant.busy_bar_settings,
+                    ),
+                )
                 return
             length = phase_ms(following, settings)
-            self._write(bar, live, variant.model_copy(update={
-                "current_interval": following,
-                "current_interval_time_total_ms": length,
-                "current_interval_time_left_ms": length,
-                "is_paused": False,
-            }))
+            self._write(
+                bar,
+                live,
+                variant.model_copy(
+                    update={
+                        "current_interval": following,
+                        "current_interval_time_total_ms": length,
+                        "current_interval_time_left_ms": length,
+                        "is_paused": False,
+                    }
+                ),
+            )
 
         self.run(go)
 
@@ -630,8 +670,9 @@ def download_setup(release: dict) -> Path:
             sums = response.read().decode("ascii", "replace")
     except OSError as err:
         raise AppError(f"Couldn't download the release checksums ({err}).")
-    expected = next((parts[0].lower() for parts in map(str.split, sums.splitlines())
-                     if parts[1:] == [setup["name"]]), None)
+    expected = next(
+        (parts[0].lower() for parts in map(str.split, sums.splitlines()) if parts[1:] == [setup["name"]]), None
+    )
     if not expected:
         raise AppError("The release's checksums don't list its installer.")
     UPDATES_DIR.mkdir(parents=True, exist_ok=True)
@@ -926,8 +967,13 @@ class App:
         the name until the other PC catches up.
         """
         snap = self.snap
-        if (self.session or snap is None or self.bar.is_local or not self.cfg.get("sync_session")
-                or not self.remote_sessions):
+        if (
+            self.session
+            or snap is None
+            or self.bar.is_local
+            or not self.cfg.get("sync_session")
+            or not self.remote_sessions
+        ):
             self._remote_match = None
             return None
         state = timer_state(snap)
@@ -997,11 +1043,18 @@ class App:
         cfg = self.cfg
         apps = sum(1 for a in cfg.get("blocked_apps") or [] if a.get("on")) if cfg.get("block_apps") else 0
         mode = cfg.get("site_mode", "block")
-        sites = len(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if cfg.get("block_sites") else 0
-        limits = (sum(1 for r in cfg.get("site_limits") or [] if r.get("enabled"))
-                  if cfg.get("site_limits_on") else 0)
-        return {"apps": apps, "sites": sites, "site_mode": mode, "limits": limits,
-                "sites_on": bool(cfg.get("block_sites")), "active": self._focus_active}
+        sites = (
+            len(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if cfg.get("block_sites") else 0
+        )
+        limits = sum(1 for r in cfg.get("site_limits") or [] if r.get("enabled")) if cfg.get("site_limits_on") else 0
+        return {
+            "apps": apps,
+            "sites": sites,
+            "site_mode": mode,
+            "limits": limits,
+            "sites_on": bool(cfg.get("block_sites")),
+            "active": self._focus_active,
+        }
 
     def state(self) -> dict:
         with self.lock:
@@ -1009,9 +1062,7 @@ class App:
             return {
                 "now": now_ms(),
                 "timer": view,
-                "session": self.session and {
-                    k: self.session[k] for k in ("task", "started_at", "done", "label_added")
-                },
+                "session": self.session and {k: self.session[k] for k in ("task", "started_at", "done", "label_added")},
                 # Started on another PC (only when this one runs nothing).
                 "remote": self._remote_view(),
                 "ended": self.ended,
@@ -1055,8 +1106,7 @@ class App:
             if session and snap.snapshot_timestamp_ms < session["stamp"]:
                 return off  # a reading from before our own start
             state = timer_state(snap)
-            if (state.mode != "interval" or state.is_finished
-                    or state.phase != "work" or state.is_paused):
+            if state.mode != "interval" or state.is_finished or state.phase != "work" or state.is_paused:
                 return off
             remote = None if session else self.remote_session()
             return {
@@ -1108,8 +1158,7 @@ class App:
 
     def extension_outdated(self) -> bool:
         """The extension in the browser is older than the one that ships with this buZyist."""
-        return self.extension_connected() and (
-            version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
+        return self.extension_connected() and (version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
 
     def note_extension(self, version, instance="", account=None) -> None:
         """
@@ -1128,8 +1177,10 @@ class App:
             self.note_instance(instance, account)
         if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
             self._ext_warned = EXTENSION_VERSION
-            self.notify("Reload the buZyist extension",
-                        "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.")
+            self.notify(
+                "Reload the buZyist extension",
+                "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.",
+            )
 
     # ---------------------------------------------- sharing across PCs
     #
@@ -1185,9 +1236,15 @@ class App:
     def _save_shared(self) -> None:
         """Write sync.json; call with sync_lock held."""
         sh = self.shared
-        data = dict(sh, remote={dev: dict(d, rules={rid: dict(u, m={str(k): v for k, v in u["m"].items()})
-                                                     for rid, u in d["rules"].items()})
-                               for dev, d in sh["remote"].items()})
+        data = dict(
+            sh,
+            remote={
+                dev: dict(
+                    d, rules={rid: dict(u, m={str(k): v for k, v in u["m"].items()}) for rid, u in d["rules"].items()}
+                )
+                for dev, d in sh["remote"].items()
+            },
+        )
         try:
             write_json(SYNC_PATH, data)
         except OSError:
@@ -1217,17 +1274,21 @@ class App:
                 out["sessions_seen"] = {dev: s["t"] for dev, s in self.remote_sessions.items()}
             if not self.cfg.get("sync_limits"):
                 return out
-            return dict(out, **{
-                "joined": sh["joined"] == self.cfg.get("sync_owner"),
-                "rev_seen": sh["rev_seen"],
-                "doc": {
-                    "rules": [dict(r, at=sh["rule_at"].get(r["id"], 0)) for r in rules],
-                    "deleted": dict(sh["deleted"]),
-                    "on": bool(self.cfg.get("site_limits_on")), "on_at": sh["on_at"],
+            return dict(
+                out,
+                **{
+                    "joined": sh["joined"] == self.cfg.get("sync_owner"),
+                    "rev_seen": sh["rev_seen"],
+                    "doc": {
+                        "rules": [dict(r, at=sh["rule_at"].get(r["id"], 0)) for r in rules],
+                        "deleted": dict(sh["deleted"]),
+                        "on": bool(self.cfg.get("site_limits_on")),
+                        "on_at": sh["on_at"],
+                    },
+                    "usage": self.usage.export([r["id"] for r in rules]),
+                    "seen": {dev: d["t"] for dev, d in sh["remote"].items()},
                 },
-                "usage": self.usage.export([r["id"] for r in rules]),
-                "seen": {dev: d["t"] for dev, d in sh["remote"].items()},
-            })
+            )
 
     def note_limits_edit(self, old: list[dict], new: list[dict], on_changed: bool) -> None:
         """Settings saved the limits: stamp what changed, tombstone what's gone."""
@@ -1337,8 +1398,9 @@ class App:
                 self.usage.set_remote(sh["remote"])
             sh["last_sync"] = now_ms()
             self._save_shared()
-        if new_rules is not None and (new_rules != self.cfg.get("site_limits")
-                                      or new_on != bool(self.cfg.get("site_limits_on"))):
+        if new_rules is not None and (
+            new_rules != self.cfg.get("site_limits") or new_on != bool(self.cfg.get("site_limits_on"))
+        ):
             log.info("limits merged from Chrome sync: %d rules", len(new_rules))
             self.cfg["site_limits"] = new_rules
             self.cfg["site_limits_on"] = new_on
@@ -1351,12 +1413,22 @@ class App:
             sh = self.shared
             return {
                 "owner": self.cfg.get("sync_owner", ""),
-                "instances": sorted(({"id": iid, "email": e.get("email", ""), "seen_ms": e.get("seen", 0),
-                                      "connected": now - e.get("seen", 0) < 120_000}
-                                     for iid, e in sh["instances"].items()),
-                                    key=lambda e: -e["seen_ms"]),
-                "devices": sorted(({"name": d["name"] or "Another PC", "t": d["t"]}
-                                   for d in sh["remote"].values()), key=lambda d: -d["t"]),
+                "instances": sorted(
+                    (
+                        {
+                            "id": iid,
+                            "email": e.get("email", ""),
+                            "seen_ms": e.get("seen", 0),
+                            "connected": now - e.get("seen", 0) < 120_000,
+                        }
+                        for iid, e in sh["instances"].items()
+                    ),
+                    key=lambda e: -e["seen_ms"],
+                ),
+                "devices": sorted(
+                    ({"name": d["name"] or "Another PC", "t": d["t"]} for d in sh["remote"].values()),
+                    key=lambda d: -d["t"],
+                ),
                 "last_sync_ms": sh["last_sync"],
                 "device_name": DEVICE_NAME,
             }
@@ -1365,8 +1437,7 @@ class App:
         """Where every site-limit rule stands right now (see site_limit_status)."""
         now = datetime.now()
         rules = self.cfg.get("site_limits") or []
-        return [site_limit_status(r, self.usage, now) for r in rules
-                if r.get("enabled", True) or not enabled_only]
+        return [site_limit_status(r, self.usage, now) for r in rules if r.get("enabled", True) or not enabled_only]
 
     def record_usage(self, usage) -> None:
         """Add the time the extension measured: {rule id: {epoch minute: seconds}}."""
@@ -1553,15 +1624,17 @@ class App:
             except AppError as err:
                 problems.append(f"Couldn't remove the label: {err}")
         with self.lock:
-            self.history.append({
-                "date": date.today().isoformat(),
-                "task_id": task["id"],
-                "content": task["content"],
-                "pomodoros": done,
-                "minutes": minutes,
-                "reason": reason,
-                "ended_at": datetime.now().isoformat(timespec="seconds"),
-            })
+            self.history.append(
+                {
+                    "date": date.today().isoformat(),
+                    "task_id": task["id"],
+                    "content": task["content"],
+                    "pomodoros": done,
+                    "minutes": minutes,
+                    "reason": reason,
+                    "ended_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
             self.history = self.history[-500:]
             write_json(HISTORY_PATH, self.history)
             if reason == "replaced" or silent:
@@ -1692,7 +1765,14 @@ class App:
     def start_task(self, task_id: str | None = None, name: str = "") -> dict:
         """Start a session on a task, or (task_id None) one with no task, optionally named."""
         if task_id is None:
-            task = {"id": "", "content": (name or "").strip()[:80] or "Focus session", "project": "", "color": "", "priority": 1, "url": ""}
+            task = {
+                "id": "",
+                "content": (name or "").strip()[:80] or "Focus session",
+                "project": "",
+                "color": "",
+                "priority": 1,
+                "url": "",
+            }
         else:
             with self.lock:
                 task = self.tasks.get(task_id)
@@ -1746,13 +1826,15 @@ class App:
             task = self.tasks.pop(task_id, None) or (self.ended and self.ended["task"]) or {}
             if self.ended and self.ended["task"]["id"] == task_id:
                 self.ended = None
-            self.history.append({
-                "date": date.today().isoformat(),
-                "task_id": task_id,
-                "content": task.get("content", ""),
-                "completed": True,
-                "ended_at": datetime.now().isoformat(timespec="seconds"),
-            })
+            self.history.append(
+                {
+                    "date": date.today().isoformat(),
+                    "task_id": task_id,
+                    "content": task.get("content", ""),
+                    "completed": True,
+                    "ended_at": datetime.now().isoformat(timespec="seconds"),
+                }
+            )
             self.history = self.history[-500:]
             write_json(HISTORY_PATH, self.history)
 
@@ -1827,8 +1909,9 @@ class App:
         if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
             raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
         old_hotkey = self.cfg["hotkey"]
-        bar_changed = any(self.cfg.get(k) != merged.get(k)
-                          for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"))
+        bar_changed = any(
+            self.cfg.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
+        )
         if merged["use_busybar"] != self.cfg["use_busybar"] and self.session:
             raise AppError("Stop the running session before switching between the bar and this PC.")
         if merged["hotkey"] != old_hotkey:
@@ -1996,6 +2079,7 @@ class App:
                     self.control(action)
                 except AppError as err:
                     self.notify(APP_NAME, str(err))
+
             return handler
 
         def toggle_mini(icon, item):
@@ -2028,6 +2112,7 @@ class App:
                     self.install_update()
                 except AppError as err:
                     self.notify(APP_NAME, str(err))
+
             threading.Thread(target=go, daemon=True).start()
 
         menu = pystray.Menu(
@@ -2054,18 +2139,33 @@ class App:
         bg = "#fff7f3"  # Nata, the window colour, so it doesn't flash white while loading
         visible = (self.cfg.get("use_todoist") and not self.cfg.get("todoist_token")) or "--show" in sys.argv
         self.main = webview.create_window(
-            APP_NAME, str(UI / "main.html"), js_api=api,
+            APP_NAME,
+            str(UI / "main.html"),
+            js_api=api,
             width=1040 if self.cfg.get("use_todoist") else SOLO_W,
             height=720 if self.cfg.get("use_todoist") else SOLO_H,
-            min_size=(560, 540), hidden=not visible, background_color=bg,
+            min_size=(560, 540),
+            hidden=not visible,
+            background_color=bg,
         )
         self.main.events.closing += self.on_closing
         self.main.events.minimized += self.on_minimized
         x, y = mini_position(MINI_W, MINI_H)
         self.mini = webview.create_window(
-            "buZyist timer", str(UI / "mini.html"), js_api=api, width=MINI_W, height=MINI_H,
-            x=x, y=y, frameless=True, easy_drag=False, on_top=True, resizable=False,
-            hidden=True, focus=False, background_color=bg,
+            "buZyist timer",
+            str(UI / "mini.html"),
+            js_api=api,
+            width=MINI_W,
+            height=MINI_H,
+            x=x,
+            y=y,
+            frameless=True,
+            easy_drag=False,
+            on_top=True,
+            resizable=False,
+            hidden=True,
+            focus=False,
+            background_color=bg,
         )
 
         try:
@@ -2099,9 +2199,13 @@ class App:
             if self.session:
                 self.show_mini()
 
-        webview.start(ready, gui="edgechromium", private_mode=False,
-                      storage_path=str(WEBVIEW_DIR),
-                      icon=str(ICON_PATH) if ICON_PATH.exists() else None)
+        webview.start(
+            ready,
+            gui="edgechromium",
+            private_mode=False,
+            storage_path=str(WEBVIEW_DIR),
+            icon=str(ICON_PATH) if ICON_PATH.exists() else None,
+        )
 
 
 class Api:
@@ -2152,31 +2256,43 @@ class Api:
         return {"ok": True}
 
     def set_pomodoro(self, work, rest, cycles, autostart):
-        return self._do(self._app.save_settings, {
-            "work_minutes": work, "rest_minutes": rest, "cycles": cycles, "autostart": autostart,
-        })
+        return self._do(
+            self._app.save_settings,
+            {
+                "work_minutes": work,
+                "rest_minutes": rest,
+                "cycles": cycles,
+                "autostart": autostart,
+            },
+        )
 
     def get_settings(self):
         cfg = self._app.cfg
         # extension_connected: the Chrome extension called in the last ~2 min.
         connected = self._app.extension_connected()
-        return dict({k: cfg[k] for k in DEFAULTS}, version=__version__, data_dir=str(DATA_DIR),
-                    can_auto_update=self._app.can_auto_update,
-                    extension_id=EXTENSION_ID, extension_connected=connected,
-                    extension_outdated=self._app.extension_outdated(),
-                    extension_version=self._app.extension_version,
-                    extension_latest=EXTENSION_VERSION,
-                    extension_dir=str(EXTENSION_DIR),
-                    extension_browser=(find_browser() or (None,))[0],
-                    sync_info=self._app.sync_info())
+        return dict(
+            {k: cfg[k] for k in DEFAULTS},
+            version=__version__,
+            data_dir=str(DATA_DIR),
+            can_auto_update=self._app.can_auto_update,
+            extension_id=EXTENSION_ID,
+            extension_connected=connected,
+            extension_outdated=self._app.extension_outdated(),
+            extension_version=self._app.extension_version,
+            extension_latest=EXTENSION_VERSION,
+            extension_dir=str(EXTENSION_DIR),
+            extension_browser=(find_browser() or (None,))[0],
+            sync_info=self._app.sync_info(),
+        )
 
     def sync_info(self):
         return self._do(self._app.sync_info)
 
     def site_usage(self):
         """Every site-limit rule with its usage, for the Websites tab."""
-        return self._do(lambda: {"on": bool(self._app.cfg.get("site_limits_on")),
-                                 "rules": self._app.site_limits_status()})
+        return self._do(
+            lambda: {"on": bool(self._app.cfg.get("site_limits_on")), "rules": self._app.site_limits_status()}
+        )
 
     def check_update(self):
         return self._do(self._app.check_for_update)
@@ -2199,6 +2315,7 @@ class Api:
         clipboard (to paste in Chrome's folder picker), select the folder in
         Explorer (to drag onto the page) and open the browser's extensions page.
         """
+
         def go():
             sync_extension()
             if not EXTENSION_DIR.exists():
@@ -2206,13 +2323,16 @@ class Api:
             copied = set_clipboard(str(EXTENSION_DIR))
             browser = find_browser()
             if browser:
-                threading.Thread(target=open_browser_page, args=(browser[1], browser[2]),
-                                 daemon=True).start()
+                threading.Thread(target=open_browser_page, args=(browser[1], browser[2]), daemon=True).start()
             else:
                 show_in_explorer(EXTENSION_DIR)
-            return {"browser": browser[0] if browser else None,
-                    "page": browser[2] if browser else "chrome://extensions",
-                    "copied": copied, "path": str(EXTENSION_DIR)}
+            return {
+                "browser": browser[0] if browser else None,
+                "page": browser[2] if browser else "chrome://extensions",
+                "copied": copied,
+                "path": str(EXTENSION_DIR),
+            }
+
         return self._do(go)
 
     def open_repo(self):
@@ -2228,6 +2348,7 @@ class Api:
             self._app.bar.reset()
             version = self._app.bar.run(lambda bar: bar.version())
             return {"via": self._app.bar.via, "version": getattr(version, "version", "")}
+
         return self._do(go)
 
     def open_url(self, url):
@@ -2242,10 +2363,12 @@ class Api:
 
     def set_solo(self, solo):
         """Narrow window without the task list (Todoist off), or the full one."""
+
         def run():
             main = self._app.main
             if main:
                 main.resize(*((SOLO_W, SOLO_H) if solo else (1040, 720)))
+
         return self._do(run)
 
     def hide_mini(self):
@@ -2308,13 +2431,16 @@ def sync_extension() -> None:
 
 # Browsers that can load the extension, with their extensions page. Chrome
 # first; Edge (on every Windows PC) runs the same MV3 extension with the same id.
-BROWSERS = (("Chrome", "chrome.exe", "chrome://extensions/", r"Google\Chrome\Application"),
-            ("Edge", "msedge.exe", "edge://extensions/", r"Microsoft\Edge\Application"))
+BROWSERS = (
+    ("Chrome", "chrome.exe", "chrome://extensions/", r"Google\Chrome\Application"),
+    ("Edge", "msedge.exe", "edge://extensions/", r"Microsoft\Edge\Application"),
+)
 
 
 def find_browser() -> tuple[str, str, str] | None:
     """(name, exe path, extensions page) of the first installed browser above."""
     import winreg
+
     for name, exe, page, folder in BROWSERS:
         for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
             try:
@@ -2324,8 +2450,11 @@ def find_browser() -> tuple[str, str, str] | None:
                     return name, path, page
             except OSError:
                 pass
-        for base in (os.environ.get("LOCALAPPDATA"), os.environ.get("PROGRAMFILES"),
-                     os.environ.get("PROGRAMFILES(X86)")):
+        for base in (
+            os.environ.get("LOCALAPPDATA"),
+            os.environ.get("PROGRAMFILES"),
+            os.environ.get("PROGRAMFILES(X86)"),
+        ):
             if base and (Path(base) / folder / exe).is_file():
                 return name, str(Path(base) / folder / exe), page
     return None
@@ -2384,20 +2513,30 @@ def window_exe(hwnd) -> str:
 
 
 class _KEYBDINPUT(ctypes.Structure):
-    _fields_ = [("wVk", ctypes.wintypes.WORD), ("wScan", ctypes.wintypes.WORD),
-                ("dwFlags", ctypes.wintypes.DWORD), ("time", ctypes.wintypes.DWORD),
-                ("dwExtraInfo", ctypes.c_size_t)]
+    _fields_ = [
+        ("wVk", ctypes.wintypes.WORD),
+        ("wScan", ctypes.wintypes.WORD),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("time", ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
 
 
 class _MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
-    _fields_ = [("dx", ctypes.wintypes.LONG), ("dy", ctypes.wintypes.LONG),
-                ("mouseData", ctypes.wintypes.DWORD), ("dwFlags", ctypes.wintypes.DWORD),
-                ("time", ctypes.wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+    _fields_ = [
+        ("dx", ctypes.wintypes.LONG),
+        ("dy", ctypes.wintypes.LONG),
+        ("mouseData", ctypes.wintypes.DWORD),
+        ("dwFlags", ctypes.wintypes.DWORD),
+        ("time", ctypes.wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
 
 
 class _INPUT(ctypes.Structure):
     class _U(ctypes.Union):
         _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+
     _anonymous_ = ("u",)
     _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _U)]
 
@@ -2476,6 +2615,7 @@ def set_clipboard(text: str) -> bool:
 #    GIL; the GUI thread then needs the GIL to answer, and both wait forever.
 #    ctypes calls release the GIL.
 
+
 def _hwnd(window: webview.Window):
     try:
         return ctypes.wintypes.HWND(window.native.Handle.ToInt64())
@@ -2522,8 +2662,7 @@ def show_window(window: webview.Window) -> None:
     fg = user32.GetForegroundWindow()
     fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
     this_thread = kernel32.GetCurrentThreadId()
-    attached = bool(fg_thread and fg_thread != this_thread
-                    and user32.AttachThreadInput(this_thread, fg_thread, True))
+    attached = bool(fg_thread and fg_thread != this_thread and user32.AttachThreadInput(this_thread, fg_thread, True))
     try:
         user32.keybd_event(0x12, 0, 0, 0)  # a synthetic Alt press lifts the foreground lock
         user32.keybd_event(0x12, 0, 2, 0)
@@ -2549,7 +2688,8 @@ def wake_window(window: webview.Window) -> None:
     user32 = ctypes.windll.user32
     children = []
     proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(
-        lambda h, _l: children.append(h) or True)
+        lambda h, _l: children.append(h) or True
+    )
     user32.EnumChildWindows(hwnd, proc, 0)
     for target in children or [hwnd]:
         user32.PostMessageW(target, 0x0200, 0, 0x00010001)  # WM_MOUSEMOVE
@@ -2562,7 +2702,9 @@ def wake_window(window: webview.Window) -> None:
             flags = 0x0002 | 0x0004 | 0x0010  # NOMOVE | NOZORDER | NOACTIVATE
             user32.SetWindowPos(hwnd, None, 0, 0, w + 1, h, flags)
             user32.SetWindowPos(hwnd, None, 0, 0, w, h, flags)
-    user32.RedrawWindow(hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400)  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
+    user32.RedrawWindow(
+        hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
+    )  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
 
 
 def mini_position(width: int, height: int) -> tuple[int, int]:
@@ -2591,6 +2733,7 @@ def launch_at_login() -> str | None:
     """The command Windows runs at sign-in for this app, if any."""
     try:
         import winreg
+
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             return winreg.QueryValueEx(key, APP)[0]
     except OSError:
@@ -2599,6 +2742,7 @@ def launch_at_login() -> str | None:
 
 def set_launch_at_login(on: bool) -> None:
     import winreg
+
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if on:
             if launch_at_login() != launch_command():
@@ -2614,16 +2758,48 @@ def set_launch_at_login(on: bool) -> None:
 
 MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, MOD_NOREPEAT = 0x1, 0x2, 0x4, 0x8, 0x4000
 MODIFIERS = {
-    "ctrl": MOD_CONTROL, "control": MOD_CONTROL, "alt": MOD_ALT, "shift": MOD_SHIFT,
-    "win": MOD_WIN, "windows": MOD_WIN, "super": MOD_WIN,
+    "ctrl": MOD_CONTROL,
+    "control": MOD_CONTROL,
+    "alt": MOD_ALT,
+    "shift": MOD_SHIFT,
+    "win": MOD_WIN,
+    "windows": MOD_WIN,
+    "super": MOD_WIN,
 }
 NAMED_KEYS = {
-    "space": 0x20, "enter": 0x0D, "return": 0x0D, "tab": 0x09, "esc": 0x1B, "escape": 0x1B,
-    "backspace": 0x08, "delete": 0x2E, "del": 0x2E, "insert": 0x2D, "ins": 0x2D,
-    "home": 0x24, "end": 0x23, "pageup": 0x21, "page up": 0x21, "pagedown": 0x22, "page down": 0x22,
-    "left": 0x25, "up": 0x26, "right": 0x27, "down": 0x28, "pause": 0x13,
-    ";": 0xBA, "=": 0xBB, ",": 0xBC, "-": 0xBD, ".": 0xBE, "/": 0xBF, "`": 0xC0,
-    "[": 0xDB, "\\": 0xDC, "]": 0xDD, "'": 0xDE,
+    "space": 0x20,
+    "enter": 0x0D,
+    "return": 0x0D,
+    "tab": 0x09,
+    "esc": 0x1B,
+    "escape": 0x1B,
+    "backspace": 0x08,
+    "delete": 0x2E,
+    "del": 0x2E,
+    "insert": 0x2D,
+    "ins": 0x2D,
+    "home": 0x24,
+    "end": 0x23,
+    "pageup": 0x21,
+    "page up": 0x21,
+    "pagedown": 0x22,
+    "page down": 0x22,
+    "left": 0x25,
+    "up": 0x26,
+    "right": 0x27,
+    "down": 0x28,
+    "pause": 0x13,
+    ";": 0xBA,
+    "=": 0xBB,
+    ",": 0xBC,
+    "-": 0xBD,
+    ".": 0xBE,
+    "/": 0xBF,
+    "`": 0xC0,
+    "[": 0xDB,
+    "\\": 0xDC,
+    "]": 0xDD,
+    "'": 0xDE,
 }
 
 
@@ -2673,11 +2849,19 @@ class GlobalHotkey:
         self._ok = False
         self._thread_id = 0
         user32 = ctypes.windll.user32
-        user32.GetMessageW.argtypes = [ctypes.POINTER(ctypes.wintypes.MSG), ctypes.wintypes.HWND,
-                                       ctypes.wintypes.UINT, ctypes.wintypes.UINT]
+        user32.GetMessageW.argtypes = [
+            ctypes.POINTER(ctypes.wintypes.MSG),
+            ctypes.wintypes.HWND,
+            ctypes.wintypes.UINT,
+            ctypes.wintypes.UINT,
+        ]
         user32.PeekMessageW.argtypes = user32.GetMessageW.argtypes + [ctypes.wintypes.UINT]
-        user32.PostThreadMessageW.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.UINT,
-                                              ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+        user32.PostThreadMessageW.argtypes = [
+            ctypes.wintypes.DWORD,
+            ctypes.wintypes.UINT,
+            ctypes.wintypes.WPARAM,
+            ctypes.wintypes.LPARAM,
+        ]
         threading.Thread(target=self._loop, daemon=True, name="hotkey").start()
         self._ready.wait(5)
 
@@ -2751,11 +2935,18 @@ def _kernel32():
     k.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
     k.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
     k.ProcessIdToSessionId.argtypes = [ctypes.wintypes.DWORD, ctypes.POINTER(ctypes.wintypes.DWORD)]
-    k.QueryFullProcessImageNameW.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
-                                             ctypes.wintypes.LPWSTR, ctypes.POINTER(ctypes.wintypes.DWORD)]
+    k.QueryFullProcessImageNameW.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.LPWSTR,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
     if hasattr(k, "GetApplicationUserModelId"):  # Win8+; absent on older Windows
-        k.GetApplicationUserModelId.argtypes = [ctypes.wintypes.HANDLE, ctypes.POINTER(ctypes.wintypes.UINT),
-                                                ctypes.wintypes.LPWSTR]
+        k.GetApplicationUserModelId.argtypes = [
+            ctypes.wintypes.HANDLE,
+            ctypes.POINTER(ctypes.wintypes.UINT),
+            ctypes.wintypes.LPWSTR,
+        ]
     return k
 
 
@@ -2885,25 +3076,31 @@ def normalize_blocked_apps(raw) -> list[dict]:
             exe = str((item.get("exes") or [""])[0]).strip()
             if not exe:
                 continue
-            custom.append({
-                "id": "custom:" + app_key(exe),
-                "name": str(item.get("name") or exe_label(exe)),
-                "exes": [exe],
-                "on": bool(item.get("on", True)),
-                "action": item.get("action") if item.get("action") in APP_ACTIONS else "close",
-                "custom": True,
-            })
+            custom.append(
+                {
+                    "id": "custom:" + app_key(exe),
+                    "name": str(item.get("name") or exe_label(exe)),
+                    "exes": [exe],
+                    "on": bool(item.get("on", True)),
+                    "action": item.get("action") if item.get("action") in APP_ACTIONS else "close",
+                    "custom": True,
+                }
+            )
         elif item.get("id"):
             saved[str(item["id"])] = item
     out = []
     for pid, name, exes, action, on in APP_PRESETS:
         mine = saved.get(pid, {})
-        out.append({
-            "id": pid, "name": name, "exes": list(exes),
-            "on": bool(mine.get("on", on)),
-            "action": mine.get("action") if mine.get("action") in APP_ACTIONS else action,
-            "custom": False,
-        })
+        out.append(
+            {
+                "id": pid,
+                "name": name,
+                "exes": list(exes),
+                "on": bool(mine.get("on", on)),
+                "action": mine.get("action") if mine.get("action") in APP_ACTIONS else action,
+                "custom": False,
+            }
+        )
     taken = {app_key(e) for entry in out for e in entry["exes"]}
     for entry in custom:
         key = app_key(entry["exes"][0])
@@ -2949,8 +3146,7 @@ def clean_site_pattern(raw) -> str:
         host = host[4:]
     if not host and slash:  # "/path" alone: any host
         host = "*"
-    if (not host or not re.fullmatch(r"[a-z0-9.*-]+", host)
-            or ("." not in host and "*" not in host) or " " in path):
+    if not host or not re.fullmatch(r"[a-z0-9.*-]+", host) or ("." not in host and "*" not in host) or " " in path:
         raise AppError(f"{shown!r} isn't a website like youtube.com or *.google.com.")
     path = "/" + path if slash else ""
     if path in ("/", "/*"):  # the whole site, same as the bare host
@@ -3077,8 +3273,13 @@ def clean_site_limit(raw) -> dict:
         raise AppError(f"{pattern}: add a time limit or blocked hours.")
     if len(budgets) > 5 or len(windows) > 5:
         raise AppError(f"{pattern}: keep it to 5 time limits and 5 blocked-hours entries.")
-    return {"id": rid, "patterns": patterns, "enabled": bool(raw.get("enabled", True)),
-            "budgets": budgets, "windows": windows}
+    return {
+        "id": rid,
+        "patterns": patterns,
+        "enabled": bool(raw.get("enabled", True)),
+        "budgets": budgets,
+        "windows": windows,
+    }
 
 
 def clean_site_limits(values) -> list[dict]:
@@ -3176,12 +3377,16 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
                 end = min(end, datetime.combine(day, dtime.min))
                 break
         used = usage.used(rule["id"], _ms(start), at)
-        budgets.append({
-            "label": f"{b['minutes']} min per {period_label(b['every'], b['unit'])}",
-            "used_s": round(used), "budget_s": b["minutes"] * 60,
-            "remaining_s": round(b["minutes"] * 60 - used, 1), "end_ms": _ms(end),
-            "active": now.weekday() in days,
-        })
+        budgets.append(
+            {
+                "label": f"{b['minutes']} min per {period_label(b['every'], b['unit'])}",
+                "used_s": round(used),
+                "budget_s": b["minutes"] * 60,
+                "remaining_s": round(b["minutes"] * 60 - used, 1),
+                "end_ms": _ms(end),
+                "active": now.weekday() in days,
+            }
+        )
     spans = [[_ms(s), _ms(e)] for s, e in window_spans(rule["windows"], now)]
     open_until = next((e for s, e in spans if s <= at < e), 0)
     applying = [b for b in budgets if b["active"]]
@@ -3193,9 +3398,12 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
     pass_until = usage.pass_until(rule["id"])
     reason = "window" if open_until else ("budget" if spent else "")
     return {
-        "id": rule["id"], "patterns": rule["patterns"], "pattern": ", ".join(rule["patterns"]),
+        "id": rule["id"],
+        "patterns": rule["patterns"],
+        "pattern": ", ".join(rule["patterns"]),
         "enabled": rule.get("enabled", True),
-        "blocked": bool(reason) and pass_until <= at, "reason": reason,
+        "blocked": bool(reason) and pass_until <= at,
+        "reason": reason,
         "until_ms": max(open_until, key["end_ms"] if spent else 0),
         "pass_until_ms": pass_until,
         "remaining_s": key["remaining_s"] if key else None,
@@ -3203,7 +3411,8 @@ def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
         "used_s": key["used_s"] if key else None,
         "limit_end_ms": key["end_ms"] if key else 0,
         "limit_label": key["label"] if key else "",
-        "budgets": budgets, "windows_ms": spans,
+        "budgets": budgets,
+        "windows_ms": spans,
     }
 
 
@@ -3329,8 +3538,11 @@ class SiteUsage:
             if not self.dirty or (not force and time.time() - self._saved < 30):
                 return
             self._roll_up()
-            data = {"minutes": {r: {str(m): round(s, 1) for m, s in per.items()} for r, per in self.minutes.items()},
-                    "days": self.days, "passes": self.passes}
+            data = {
+                "minutes": {r: {str(m): round(s, 1) for m, s in per.items()} for r, per in self.minutes.items()},
+                "days": self.days,
+                "passes": self.passes,
+            }
             self.dirty = False
             self._saved = time.time()
         try:
@@ -3360,7 +3572,7 @@ def clean_remote_usage(raw, own_device: str) -> dict:
             continue
         rules = {}
         raw_rules = data.get("rules")
-        for rid, u in list(raw_rules.items() if isinstance(raw_rules, dict) else [])[:MAX_SITE_LIMITS * 2]:
+        for rid, u in list(raw_rules.items() if isinstance(raw_rules, dict) else [])[: MAX_SITE_LIMITS * 2]:
             if not re.fullmatch(r"[a-f0-9]{6,16}", str(rid)) or not isinstance(u, dict):
                 continue
             try:
@@ -3369,8 +3581,7 @@ def clean_remote_usage(raw, own_device: str) -> dict:
                 rules[rid] = {
                     "b": int(u.get("b") or 0),
                     "m": {k: v for k, v in minutes.items() if 0 <= k < 2880 and 0 < v <= 3600},
-                    "d": {k: v for k, v in days.items()
-                          if re.fullmatch(r"\d{4}-\d{2}-\d{2}", k) and 0 < v <= 86400},
+                    "d": {k: v for k, v in days.items() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", k) and 0 < v <= 86400},
                 }
             except (AttributeError, TypeError, ValueError):
                 continue
@@ -3426,14 +3637,16 @@ def load_shared() -> dict:
     if not re.fullmatch(r"[a-z0-9]{6,32}", device):
         device = uuid.uuid4().hex[:12]
     instances = data.get("instances") if isinstance(data.get("instances"), dict) else {}
+
     def stamps(raw) -> dict[str, int]:
         out = {}
-        for k, v in (raw.items() if isinstance(raw, dict) else []):
+        for k, v in raw.items() if isinstance(raw, dict) else []:
             try:
                 out[str(k)] = int(v)
             except (TypeError, ValueError):
                 continue
         return out
+
     try:
         on_at, last = int(data.get("on_at") or 0), int(data.get("last_sync") or 0)
     except (TypeError, ValueError):
@@ -3482,8 +3695,12 @@ def _visit_windows(pids: set[int], close: bool) -> set[int]:
     user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
     user32.GetWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
     user32.GetWindow.restype = ctypes.wintypes.HWND
-    user32.PostMessageW.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT,
-                                    ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    user32.PostMessageW.argtypes = [
+        ctypes.wintypes.HWND,
+        ctypes.wintypes.UINT,
+        ctypes.wintypes.WPARAM,
+        ctypes.wintypes.LPARAM,
+    ]
     user32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, ctypes.wintypes.LPARAM]
     closed: set[int] = set()
 
@@ -3781,14 +3998,16 @@ def setup_logging() -> None:
     ]
     if sys.stderr:  # there is no console under pythonw or the packaged exe
         handlers.append(logging.StreamHandler())
-    logging.basicConfig(level=logging.INFO, handlers=handlers,
-                        format="%(asctime)s %(levelname)s %(threadName)s: %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, handlers=handlers, format="%(asctime)s %(levelname)s %(threadName)s: %(message)s"
+    )
     # The HTTP clients log every request at INFO: one line per bar poll.
     for noisy in ("httpx", "httpx2", "httpcore", "httpcore2", "busylib", "pywebview"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     sys.excepthook = lambda *exc: log.critical("uncaught", exc_info=exc)
     threading.excepthook = lambda a: log.critical(
-        "uncaught in %s", a.thread.name if a.thread else "?", exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
+        "uncaught in %s", a.thread.name if a.thread else "?", exc_info=(a.exc_type, a.exc_value, a.exc_traceback)
+    )
 
 
 def adopt_old_files() -> None:
@@ -3808,9 +4027,12 @@ WEBVIEW2_CLIENT = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9
 def webview2_installed() -> bool:
     """Whether the Edge WebView2 runtime the window is drawn with is present."""
     import winreg
-    for root, path in ((winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + WEBVIEW2_CLIENT),
-                       (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + WEBVIEW2_CLIENT),
-                       (winreg.HKEY_CURRENT_USER, "Software\\" + WEBVIEW2_CLIENT)):
+
+    for root, path in (
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + WEBVIEW2_CLIENT),
+        (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + WEBVIEW2_CLIENT),
+        (winreg.HKEY_CURRENT_USER, "Software\\" + WEBVIEW2_CLIENT),
+    ):
         try:
             with winreg.OpenKey(root, path) as key:
                 version = winreg.QueryValueEx(key, "pv")[0]
@@ -3864,8 +4086,10 @@ def main() -> None:
     if not webview2_installed():
         answer = message_box(
             "buZyist needs the Microsoft Edge WebView2 Runtime, which draws its window.\n\n"
-            "Open Microsoft's download page now? Install the \"Evergreen\" runtime, "
-            "then start buZyist again.", 0x04 | 0x30)  # MB_YESNO | MB_ICONWARNING
+            'Open Microsoft\'s download page now? Install the "Evergreen" runtime, '
+            "then start buZyist again.",
+            0x04 | 0x30,
+        )  # MB_YESNO | MB_ICONWARNING
         if answer == 6:  # IDYES
             webbrowser.open("https://developer.microsoft.com/microsoft-edge/webview2/#download-section")
         return
