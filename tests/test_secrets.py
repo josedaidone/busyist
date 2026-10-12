@@ -7,8 +7,8 @@ import urllib.request
 
 import pytest
 
-import busyist
 from buzyist import api as api_mod
+from buzyist import app as app_mod
 from buzyist import constants, paths, secrets_dpapi, todoist
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
@@ -44,7 +44,7 @@ def test_plain_token_is_encrypted_on_first_start(make_app):
     assert saved["todoist_token"].startswith("dpapi:v1:")
     assert saved["busybar_pin"].startswith("dpapi:v1:")
     # The next start reads it back.
-    again = busyist.App()
+    again = app_mod.App()
     assert again.cfg["todoist_token"] == TOKEN
     assert again.cfg["busybar_pin"] == "4321"
     assert again.todoist_on

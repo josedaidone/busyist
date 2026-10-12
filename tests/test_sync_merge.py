@@ -22,7 +22,6 @@ from busylib import types
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-import busyist
 from buzyist import paths, storage
 from buzyist.bar import LOCAL_SETTINGS
 from buzyist.constants import MAX_SITE_LIMITS, TOMBSTONE_DAYS
@@ -233,7 +232,7 @@ def settle(pcs: list[PC], cloud: Cloud, rounds: int = 12) -> int:
 @pytest.fixture
 def make_pc(tmp_path, make_app, clock, monkeypatch):
     """make_pc(name, **cfg) -> PC. Settings never touch the Windows startup entry."""
-    monkeypatch.setattr(busyist, "set_launch_at_login", lambda on: None)
+    patch_everywhere(monkeypatch, "set_launch_at_login", lambda on: None)
     # Thousands of quick replaces of the same files: Windows (indexer, antivirus)
     # sometimes refuses one with PermissionError. Retry, so that flake can't fail
     # a merge test; what is written is unchanged.

@@ -65,6 +65,7 @@ import busylib.features.timer as busylib_timer
 import pytest
 
 import busyist
+from buzyist import app as app_mod
 from buzyist import constants, paths, storage
 from buzyist import focus_server as focus_server_mod
 
@@ -779,9 +780,9 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
     to run what it hands to threads (``finish``, ``_label_task``, focus hooks).
     """
     patch_everywhere(monkeypatch, "Todoist", FakeTodoist)
-    built: list[busyist.App] = []
+    built: list[app_mod.App] = []
 
-    def make(cfg: dict | None = None, *, fresh=False, session=None, history=None, timer=None) -> busyist.App:
+    def make(cfg: dict | None = None, *, fresh=False, session=None, history=None, timer=None) -> app_mod.App:
         if not fresh:
             storage.write_json(paths.CONFIG_PATH, {**TEST_CONFIG, **(cfg or {})})
         elif cfg:
@@ -793,7 +794,7 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
         if timer is not None:
             dump = timer.model_dump(mode="json") if hasattr(timer, "model_dump") else timer
             storage.write_json(paths.TIMER_PATH, dump)
-        app = busyist.App()
+        app = app_mod.App()
         built.append(app)
         return app
 
@@ -807,7 +808,7 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
 
 
 @pytest.fixture
-def app(make_app) -> busyist.App:
+def app(make_app) -> app_mod.App:
     """``make_app()`` with the defaults: local clock, Todoist on (FakeTodoist), empty data folder."""
     return make_app()
 

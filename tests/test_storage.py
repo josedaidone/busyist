@@ -6,7 +6,7 @@ import threading
 
 import pytest
 
-import busyist
+from buzyist import app as app_mod
 from buzyist import config, paths, storage
 from conftest import app_source
 
@@ -136,7 +136,7 @@ def test_corrupt_config_starts_from_the_backup(make_app, data_dir, caplog):
         json.dumps({"use_busybar": False, "use_todoist": False, "work_minutes": 40}), encoding="utf-8"
     )
     paths.CONFIG_PATH.write_text('{"work_minutes": 4', encoding="utf-8")
-    app = busyist.App()
+    app = app_mod.App()
     try:
         assert app.cfg["work_minutes"] == 40
         assert any(p.name.startswith("config.json.corrupt-") for p in data_dir.iterdir())

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-import busyist
+from buzyist import app as app_mod
 from buzyist import blocker, config, constants, paths
 
 CONFIGS = Path(__file__).parent / "data" / "configs"
@@ -16,8 +16,8 @@ CONFIGS = Path(__file__).parent / "data" / "configs"
 def start(make_app):
     """Build App() from whatever config.json holds now (make_app would write its own)."""
 
-    def build() -> busyist.App:
-        return busyist.App()
+    def build() -> app_mod.App:
+        return app_mod.App()
 
     return build
 
