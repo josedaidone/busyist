@@ -20,6 +20,7 @@ all be changed from the window. Packaged builds are made with build.ps1.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.wintypes
 import hashlib
@@ -39,6 +40,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+import winreg
 import winsound
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
@@ -286,10 +288,8 @@ class Todoist:
             if err.code in (401, 403):
                 raise AppError("Todoist rejected the API token (check Settings).")
             detail = err.read().decode("utf-8", "replace")
-            try:
+            with contextlib.suppress(ValueError, AttributeError):
                 detail = json.loads(detail).get("error") or detail
-            except (ValueError, AttributeError):
-                pass
             raise AppError(f"Todoist answered {err.code}: {detail[:200]}")
         except OSError as err:
             raise AppError(f"Can't reach Todoist ({getattr(err, 'reason', err)}).")
@@ -341,7 +341,7 @@ class Todoist:
         labels = list((self.call("GET", f"/tasks/{task_id}") or {}).get("labels", []))
         if (label in labels) == present:
             return
-        labels = labels + [label] if present else [x for x in labels if x != label]
+        labels = [*labels, label] if present else [x for x in labels if x != label]
         self.call("POST", f"/tasks/{task_id}", body={"labels": labels})
 
     def comment(self, task_id: str, text: str) -> None:
@@ -447,7 +447,7 @@ class Bar:
                 try:
                     client.client.close()
                 except Exception:
-                    pass
+                    log.debug("closing a bar client failed", exc_info=True)
             self._clients.clear()
             self.via = None
 
@@ -1453,7 +1453,7 @@ class App:
                     minute, seconds = int(minute), float(seconds)
                 except (TypeError, ValueError):
                     continue
-                if minute_now - 3 * 1440 <= minute <= minute_now + 1 and 0 < seconds:
+                if minute_now - 3 * 1440 <= minute <= minute_now + 1 and seconds > 0:
                     self.usage.add(rid, minute, seconds)
         self.usage.flush()
 
@@ -1613,7 +1613,7 @@ class App:
             try:
                 self.todoist.comment(
                     task["id"],
-                    f"🍅 × {done} ({minutes} min focus){'' if session.get('local') else ' on BUSY Bar'}, "
+                    f"🍅 × {done} ({minutes} min focus){'' if session.get('local') else ' on BUSY Bar'}, "  # noqa: RUF001 - the multiplication sign is intended (Todoist comment)
                     f"ended {datetime.now():%Y-%m-%d %H:%M}",
                 )
             except AppError as err:
@@ -1959,7 +1959,7 @@ class App:
             return
         show_window(self.main)
         wake_window(self.main)
-        self._js(self.main, "App.onShown(%s)" % json.dumps(focus_search))
+        self._js(self.main, f"App.onShown({json.dumps(focus_search)})")
         # The page may still be throttled; nudge it again shortly after.
         for delay in (0.15, 0.5, 1.2):
             threading.Timer(delay, self._rewake).start()
@@ -2007,7 +2007,8 @@ class App:
         try:
             window.evaluate_js(script)
         except Exception:
-            pass  # page not loaded yet; it polls state on its own anyway
+            # The page may not be loaded yet; it polls state on its own anyway.
+            log.debug("evaluate_js failed", exc_info=True)
 
     def on_minimized(self) -> None:
         # Minimize to the tray, not the taskbar: hide it as it is, still
@@ -2042,7 +2043,7 @@ class App:
             try:
                 self.tray.notify(message[:250], title)
             except Exception:
-                pass
+                log.debug("tray notification failed", exc_info=True)
 
     def update_tray(self) -> None:
         if not self.tray:
@@ -2439,8 +2440,6 @@ BROWSERS = (
 
 def find_browser() -> tuple[str, str, str] | None:
     """(name, exe path, extensions page) of the first installed browser above."""
-    import winreg
-
     for name, exe, page, folder in BROWSERS:
         for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
             try:
@@ -2732,8 +2731,6 @@ def launch_command() -> str:
 def launch_at_login() -> str | None:
     """The command Windows runs at sign-in for this app, if any."""
     try:
-        import winreg
-
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
             return winreg.QueryValueEx(key, APP)[0]
     except OSError:
@@ -2741,17 +2738,13 @@ def launch_at_login() -> str | None:
 
 
 def set_launch_at_login(on: bool) -> None:
-    import winreg
-
     with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         if on:
             if launch_at_login() != launch_command():
                 winreg.SetValueEx(key, APP, 0, winreg.REG_SZ, launch_command())
         else:
-            try:
+            with contextlib.suppress(FileNotFoundError):
                 winreg.DeleteValue(key, APP)
-            except FileNotFoundError:
-                pass
 
 
 # ------------------------------------------------------------- hotkey ---
@@ -2855,7 +2848,7 @@ class GlobalHotkey:
             ctypes.wintypes.UINT,
             ctypes.wintypes.UINT,
         ]
-        user32.PeekMessageW.argtypes = user32.GetMessageW.argtypes + [ctypes.wintypes.UINT]
+        user32.PeekMessageW.argtypes = [*user32.GetMessageW.argtypes, ctypes.wintypes.UINT]
         user32.PostThreadMessageW.argtypes = [
             ctypes.wintypes.DWORD,
             ctypes.wintypes.UINT,
@@ -3357,7 +3350,7 @@ def _ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
-def site_limit_status(rule: dict, usage: "SiteUsage", now: datetime) -> dict:
+def site_limit_status(rule: dict, usage: SiteUsage, now: datetime) -> dict:
     """
     Where one rule stands at `now`. The extension needs enough to keep
     enforcing for a while without buZyist: `remaining_s` of the budget that
@@ -3455,7 +3448,7 @@ class SiteUsage:
     def used(self, rid: str, start_ms: int, end_ms: int) -> float:
         """Seconds on this rule from start_ms up to end_ms."""
         first, last = start_ms // 60000, end_ms // 60000
-        in_span = lambda day: start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms  # noqa: E731
+        in_span = lambda day: start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms  # noqa: E731 - a one-line predicate reads better than a nested def here
         with self.lock:
             total = sum(s for m, s in self.minutes.get(rid, {}).items() if first <= m <= last)
             total += sum(s for day, s in self.days.get(rid, {}).items() if in_span(day))
@@ -3707,9 +3700,13 @@ def _visit_windows(pids: set[int], close: bool) -> set[int]:
     def visit(hwnd, _):
         pid = ctypes.wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in pids and user32.IsWindowVisible(hwnd) and not user32.GetWindow(hwnd, GW_OWNER):
-            if not close or user32.PostMessageW(hwnd, WM_CLOSE, 0, 0):
-                closed.add(pid.value)
+        if (
+            pid.value in pids
+            and user32.IsWindowVisible(hwnd)
+            and not user32.GetWindow(hwnd, GW_OWNER)
+            and (not close or user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
+        ):
+            closed.add(pid.value)
         return True
 
     user32.EnumWindows(_ENUM_WINDOWS_PROC(visit), 0)
@@ -3779,7 +3776,7 @@ class AppBlocker:
 
     def reopen(self) -> None:
         """Bring back the apps that were open when the focus that just ended began."""
-        for key, target in list(self._closed.items()):
+        for target in list(self._closed.values()):
             if relaunch_app(target):
                 log.info("reopened %s after focus", target)
         self._closed.clear()
@@ -3985,7 +3982,7 @@ class FocusServer:
             try:
                 self.httpd.shutdown()
             except Exception:
-                pass
+                log.debug("focus server shutdown failed", exc_info=True)
 
 
 # -------------------------------------------------------------- startup ---
@@ -4026,8 +4023,6 @@ WEBVIEW2_CLIENT = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9
 
 def webview2_installed() -> bool:
     """Whether the Edge WebView2 runtime the window is drawn with is present."""
-    import winreg
-
     for root, path in (
         (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + WEBVIEW2_CLIENT),
         (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + WEBVIEW2_CLIENT),
@@ -4036,7 +4031,7 @@ def webview2_installed() -> bool:
         try:
             with winreg.OpenKey(root, path) as key:
                 version = winreg.QueryValueEx(key, "pv")[0]
-                if version and version != "0.0.0.0":
+                if version and version != "0.0.0.0":  # noqa: S104 - a registry value meaning "not installed", not a bind address
                     return True
         except OSError:
             continue
@@ -4070,10 +4065,8 @@ def claim_single_instance() -> socket.socket | None:
         # We are the foreground process (just launched), so hand the
         # running copy permission to take focus.
         ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-        try:
+        with contextlib.suppress(OSError):
             socket.create_connection(("127.0.0.1", INSTANCE_PORT), timeout=1).close()
-        except OSError:
-            pass
         return None
 
 
