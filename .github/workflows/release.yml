@@ -11,7 +11,14 @@ permissions:
   contents: write  # to create the release
 
 jobs:
+  # Lint and tests first (ci.yml): a tag with a failing test never publishes.
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   build:
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

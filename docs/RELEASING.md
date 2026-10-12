@@ -29,8 +29,9 @@ tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
    The build fails on purpose if the tag and `__version__` differ.
 
 4. Watch the run on the [Actions tab](https://github.com/josedaidone/buzyist/actions)
-   ("Build and release", about 5–10 minutes). It checks the version, installs Inno Setup, runs
-   `build.ps1` and publishes the release.
+   ("Build and release", about 5–10 minutes). It runs the CI checks (lint and tests, `ci.yml`),
+   checks the version, installs Inno Setup, runs `build.ps1` and publishes the release. A failing
+   test stops it before anything is built.
 
 5. When it's green, the [latest release](https://github.com/josedaidone/buzyist/releases/latest)
    has `Buzyist-Setup-x.y.z.exe`, the portable zip and `SHA256SUMS.txt`, with notes generated from
