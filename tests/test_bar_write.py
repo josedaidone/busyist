@@ -6,9 +6,8 @@ import pytest
 from busylib import types
 from busylib.features import timer_state
 
-import busyist
 from busyist import LOCAL_SETTINGS, Bar, LocalClock, phase_ms
-from buzyist import constants
+from buzyist import constants, paths
 
 WORK, REST = 25 * 60_000, 5 * 60_000
 
@@ -98,7 +97,7 @@ def test_no_timer_file_is_not_started(data_dir):
     "content", ["not json", "null", "[]", '{"snapshot": {"type": "WHAT"}}', '{"snapshot_timestamp_ms": 5}']
 )
 def test_an_invalid_timer_file_is_not_started(data_dir, content):
-    busyist.TIMER_PATH.write_text(content, encoding="utf-8")
+    paths.TIMER_PATH.write_text(content, encoding="utf-8")
     snap = LocalClock().busy_snapshot()
     assert snap.snapshot.type == "NOT_STARTED"
     assert snap.snapshot_timestamp_ms == 0
@@ -121,7 +120,7 @@ def test_snapshot_set_persists_and_reloads(data_dir, clock):
     )
     first.busy_snapshot_set(snap)
     assert first.busy_snapshot() == snap
-    assert json.loads(busyist.TIMER_PATH.read_text(encoding="utf-8"))["snapshot_timestamp_ms"] == clock.ms
+    assert json.loads(paths.TIMER_PATH.read_text(encoding="utf-8"))["snapshot_timestamp_ms"] == clock.ms
     assert LocalClock().busy_snapshot() == snap
 
 

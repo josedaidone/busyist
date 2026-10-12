@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 
 CONFIGS = Path(__file__).parent / "data" / "configs"
 
@@ -24,7 +24,7 @@ def start(make_app):
 
 def put(data) -> None:
     text = data if isinstance(data, str) else json.dumps(data)
-    busyist.CONFIG_PATH.write_text(text, encoding="utf-8")
+    paths.CONFIG_PATH.write_text(text, encoding="utf-8")
 
 
 def preset(cfg, pid):
@@ -45,7 +45,7 @@ def test_a_new_install_starts_current(start):
     assert app.cfg["config_version"] == busyist.CONFIG_VERSION
     assert app.cfg["filters"] == [constants.DEFAULT_FILTER]
     assert app.bar.is_local
-    assert not busyist.CONFIG_PATH.exists()  # nothing written until something changes
+    assert not paths.CONFIG_PATH.exists()  # nothing written until something changes
 
 
 # --------------------------------------------------------- old versions ---
@@ -108,13 +108,13 @@ EXPECTED = {
 @pytest.mark.windows_only
 @pytest.mark.parametrize("version", sorted(EXPECTED))
 def test_old_configs_migrate_without_losing_anything(start, version, caplog):
-    shutil.copyfile(CONFIGS / f"{version}.json", busyist.CONFIG_PATH)
+    shutil.copyfile(CONFIGS / f"{version}.json", paths.CONFIG_PATH)
     app = start()
     cfg = app.cfg
     for key, value in EXPECTED[version].items():
         assert cfg[key] == value, key
     assert cfg["config_version"] == busyist.CONFIG_VERSION
-    saved = json.loads(busyist.CONFIG_PATH.read_text(encoding="utf-8"))
+    saved = json.loads(paths.CONFIG_PATH.read_text(encoding="utf-8"))
     assert saved["config_version"] == busyist.CONFIG_VERSION
     assert "theme" not in saved and "todoist_filter" not in saved
     assert saved["todoist_token"].startswith("dpapi:v1:")
@@ -127,7 +127,7 @@ def test_old_configs_migrate_without_losing_anything(start, version, caplog):
 
 @pytest.mark.windows_only
 def test_old_app_lists_and_limits_carry_over(start):
-    shutil.copyfile(CONFIGS / "1.4.json", busyist.CONFIG_PATH)
+    shutil.copyfile(CONFIGS / "1.4.json", paths.CONFIG_PATH)
     cfg = start().cfg
     assert preset(cfg, "whatsapp")["on"]  # "WhatsApp.exe" switched the preset on
     custom = [a for a in cfg["blocked_apps"] if a["custom"]]
@@ -136,7 +136,7 @@ def test_old_app_lists_and_limits_carry_over(start):
     assert rule["id"] == "a1b2c3d4" and rule["patterns"] == ["instagram.com"]
     assert rule["budgets"] == [{"minutes": 15, "every": 1, "unit": "day", "days": list(range(7))}]
 
-    shutil.copyfile(CONFIGS / "1.5.json", busyist.CONFIG_PATH)
+    shutil.copyfile(CONFIGS / "1.5.json", paths.CONFIG_PATH)
     cfg = start().cfg
     assert not preset(cfg, "whatsapp")["on"]
     assert preset(cfg, "slack")["on"] and preset(cfg, "slack")["action"] == "hide"
@@ -238,11 +238,11 @@ def test_a_config_that_isnt_an_object_gives_the_defaults(start, caplog, content)
     ],
 )
 def test_settings_errors_keep_their_messages(app, changes, message):
-    before = busyist.CONFIG_PATH.read_bytes()
+    before = paths.CONFIG_PATH.read_bytes()
     with pytest.raises(constants.AppError) as err:
         app.save_settings(changes)
     assert str(err.value) == message
-    assert busyist.CONFIG_PATH.read_bytes() == before  # nothing saved
+    assert paths.CONFIG_PATH.read_bytes() == before  # nothing saved
 
 
 def test_settings_tidy_what_they_accept(app):

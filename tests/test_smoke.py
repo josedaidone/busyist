@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
 
@@ -22,12 +22,12 @@ def test_version_matches_release_format():
 
 
 def test_data_paths_point_into_tmp(data_dir, tmp_path):
-    assert data_dir == busyist.DATA_DIR
+    assert data_dir == paths.DATA_DIR
     assert data_dir.is_dir()
     assert not any(data_dir.iterdir())
     assert os.environ["APPDATA"] == str(data_dir.parent)
     for name in ("CONFIG_PATH", "SESSION_PATH", "HISTORY_PATH", "TIMER_PATH", "UPDATE_MARK", "SETUP_LOG"):
-        assert getattr(busyist, name).is_relative_to(tmp_path), name
+        assert getattr(paths, name).is_relative_to(tmp_path), name
     assert constants.DEVICE_NAME == "TEST-PC"
 
 
@@ -131,7 +131,7 @@ def test_app_fixture_defaults(app):
     assert app.bar.is_local
     assert app.todoist_on
     assert app.todoist.cfg is app.cfg
-    assert busyist.CONFIG_PATH.exists()
+    assert paths.CONFIG_PATH.exists()
 
 
 def test_clock_drives_now_and_busylib(clock):
@@ -161,7 +161,7 @@ def test_a_local_one_tomato_session_runs_to_the_end(make_app, clock, deferred_th
     app = make_app({"use_todoist": False, "cycles": 1, "work_minutes": 25})
     app.start_task(None, "Write tests")
     assert app.session and app.session["local"]
-    assert busyist.TIMER_PATH.exists()
+    assert paths.TIMER_PATH.exists()
     app.engine_step()
     assert app.session is not None
     clock.advance(minutes=25, seconds=1)
@@ -194,7 +194,7 @@ def test_make_app_seeds_files_and_a_restart_resumes(make_app):
     first.start_task(None, "Resume me")
     again = make_app(
         {"use_todoist": False},
-        session=busyist.read_json(busyist.SESSION_PATH, None),
+        session=busyist.read_json(paths.SESSION_PATH, None),
         timer=first.bar.local.busy_snapshot(),
         history=[{"date": "2026-01-05", "task_id": "", "content": "Earlier", "pomodoros": 1}],
     )

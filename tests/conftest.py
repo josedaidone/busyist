@@ -65,7 +65,7 @@ import busylib.features.timer as busylib_timer
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 
 # ---------------------------------------------------------------- modules ---
 
@@ -79,6 +79,13 @@ def app_modules() -> list:
         for name, module in sorted(sys.modules.items())
         if module is not None and (name in ("busyist", "buzyist") or name.startswith("buzyist."))
     ]
+
+
+def app_source() -> str:
+    """The text of busyist.py and every file of the buzyist package, for checks that read the code."""
+    root = Path(busyist.__file__).parent
+    files = [root / "busyist.py", *sorted((root / "buzyist").rglob("*.py"))]
+    return "\n".join(f.read_text(encoding="utf-8") for f in files)
 
 
 def patch_everywhere(monkeypatch, name: str, value, *, only=None) -> None:
@@ -96,12 +103,12 @@ def patch_everywhere(monkeypatch, name: str, value, *, only=None) -> None:
 # ------------------------------------------------------------------ guard ---
 
 # Captured at import, before any fixture patches the module.
-REAL_DATA_DIR: Path = busyist.DATA_DIR
+REAL_DATA_DIR: Path = paths.DATA_DIR
 _REAL_DATA_KEY = os.path.normcase(os.path.abspath(REAL_DATA_DIR))
 
 # Module-level Path constants that must be redirected. data_dir rebases every
 # Path under DATA_DIR it finds, and checks that at least these were among them,
-# so a rename in busyist.py can't silently drop one.
+# so a rename in buzyist/paths.py can't silently drop one.
 EXPECTED_DATA_PATHS = (
     "DATA_DIR",
     "CONFIG_PATH",
@@ -351,7 +358,7 @@ def _rebase(path: Path, old: Path, new: Path) -> Path | None:
 @pytest.fixture(autouse=True)
 def data_dir(tmp_path, monkeypatch) -> Path:
     """
-    Point every module path under %APPDATA%\\Busyist into tmp_path.
+    Point every path in buzyist.paths under %APPDATA%\\Busyist into tmp_path.
 
     Returns the new DATA_DIR (``tmp_path / "AppData" / "Busyist"``), which
     exists and is empty, as it is after the real app's first start. Also:
@@ -360,21 +367,32 @@ def data_dir(tmp_path, monkeypatch) -> Path:
     personal ones) -> an empty ``tmp_path / "source"``, ``DEVICE_NAME`` ->
     ``"TEST-PC"``. ``EXTENSION_DIR`` is rebased only when it is under DATA_DIR
     (packaged builds); from source it is the repo's read-only ``extension/``.
+    The app reads them as ``paths.NAME`` at call time; a module holding a
+    copy of one in its own globals fails the test, since the copy would
+    escape the redirect.
     """
     appdata = tmp_path / "AppData"
     new_dir = appdata / constants.APP
     new_dir.mkdir(parents=True)
     monkeypatch.setenv("APPDATA", str(appdata))
     rebased = []
-    for name, value in list(vars(busyist).items()):
+    for name, value in list(vars(paths).items()):
         if isinstance(value, Path) and (moved := _rebase(value, REAL_DATA_DIR, new_dir)) is not None:
-            monkeypatch.setattr(busyist, name, moved)
+            monkeypatch.setattr(paths, name, moved)
             rebased.append(name)
     missing = set(EXPECTED_DATA_PATHS) - set(rebased)
     assert not missing, f"conftest no longer redirects {sorted(missing)}: update EXPECTED_DATA_PATHS"
+    copies = [
+        f"{module.__name__}.{name}"
+        for module in app_modules()
+        if module is not paths
+        for name, value in vars(module).items()
+        if isinstance(value, Path) and _rebase(value, REAL_DATA_DIR, new_dir) is not None
+    ]
+    assert not copies, f"read these as paths.NAME instead of copying them: {copies}"
     source = tmp_path / "source"
     source.mkdir()
-    monkeypatch.setattr(busyist, "SOURCE_DIR", source)
+    monkeypatch.setattr(paths, "SOURCE_DIR", source)
     patch_everywhere(monkeypatch, "DEVICE_NAME", "TEST-PC")
     before = len(GUARD.violations)
     yield new_dir
@@ -764,16 +782,16 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
 
     def make(cfg: dict | None = None, *, fresh=False, session=None, history=None, timer=None) -> busyist.App:
         if not fresh:
-            busyist.write_json(busyist.CONFIG_PATH, {**TEST_CONFIG, **(cfg or {})})
+            busyist.write_json(paths.CONFIG_PATH, {**TEST_CONFIG, **(cfg or {})})
         elif cfg:
             raise TypeError("fresh=True means no config.json; set app.cfg after building instead")
         if session is not None:
-            busyist.write_json(busyist.SESSION_PATH, session)
+            busyist.write_json(paths.SESSION_PATH, session)
         if history is not None:
-            busyist.write_json(busyist.HISTORY_PATH, history)
+            busyist.write_json(paths.HISTORY_PATH, history)
         if timer is not None:
             dump = timer.model_dump(mode="json") if hasattr(timer, "model_dump") else timer
-            busyist.write_json(busyist.TIMER_PATH, dump)
+            busyist.write_json(paths.TIMER_PATH, dump)
         app = busyist.App()
         built.append(app)
         return app

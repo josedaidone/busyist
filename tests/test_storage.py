@@ -3,11 +3,12 @@
 import json
 import os
 import threading
-from pathlib import Path
 
 import pytest
 
 import busyist
+from buzyist import paths
+from conftest import app_source
 
 
 def leftovers(folder):
@@ -126,15 +127,15 @@ def test_files_outside_the_data_folder_are_not_moved(tmp_path):
 
 
 def test_no_raw_config_writes_remain():
-    source = Path(busyist.__file__).read_text(encoding="utf-8")
+    source = app_source()
     assert "write_json(CONFIG_PATH, self.cfg)" not in source
 
 
 def test_corrupt_config_starts_from_the_backup(make_app, data_dir, caplog):
-    busyist.CONFIG_BACKUP.write_text(
+    paths.CONFIG_BACKUP.write_text(
         json.dumps({"use_busybar": False, "use_todoist": False, "work_minutes": 40}), encoding="utf-8"
     )
-    busyist.CONFIG_PATH.write_text('{"work_minutes": 4', encoding="utf-8")
+    paths.CONFIG_PATH.write_text('{"work_minutes": 4', encoding="utf-8")
     app = busyist.App()
     try:
         assert app.cfg["work_minutes"] == 40
@@ -149,17 +150,17 @@ def test_save_config_keeps_an_hourly_backup(make_app, clock):
         return json.loads(path.read_text(encoding="utf-8"))
 
     app = make_app({"todoist_token": "", "config_version": busyist.CONFIG_VERSION})
-    assert not busyist.CONFIG_BACKUP.exists()  # nothing to migrate: nothing written yet
-    first = read(busyist.CONFIG_PATH)
+    assert not paths.CONFIG_BACKUP.exists()  # nothing to migrate: nothing written yet
+    first = read(paths.CONFIG_PATH)
     app.save_settings({"work_minutes": 30})
-    assert read(busyist.CONFIG_BACKUP) == first
+    assert read(paths.CONFIG_BACKUP) == first
     # Within the hour the backup stays as it was.
     clock.advance(minutes=10)
     app.save_settings({"work_minutes": 35})
-    assert read(busyist.CONFIG_BACKUP) == first
+    assert read(paths.CONFIG_BACKUP) == first
     # Later on it's refreshed with the file being replaced.
-    before = read(busyist.CONFIG_PATH)
+    before = read(paths.CONFIG_PATH)
     clock.advance(minutes=55)
     app.save_settings({"work_minutes": 45})
-    assert read(busyist.CONFIG_BACKUP) == before
-    assert read(busyist.CONFIG_PATH)["work_minutes"] == 45
+    assert read(paths.CONFIG_BACKUP) == before
+    assert read(paths.CONFIG_PATH)["work_minutes"] == 45

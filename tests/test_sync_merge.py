@@ -24,6 +24,7 @@ from hypothesis import strategies as st
 
 import busyist
 from busyist import LOCAL_SETTINGS
+from buzyist import paths
 from buzyist.constants import MAX_SITE_LIMITS, TOMBSTONE_DAYS
 
 DAY_MS = 86400_000
@@ -84,14 +85,14 @@ class PC:
     @contextlib.contextmanager
     def files(self):
         """busyist's file paths point into this PC's folder while inside."""
-        saved = {name: getattr(busyist, name) for name in PC_FILES}
+        saved = {name: getattr(paths, name) for name in PC_FILES}
         for name, file in PC_FILES.items():
-            setattr(busyist, name, self.dir / file)
+            setattr(paths, name, self.dir / file)
         try:
             yield
         finally:
             for name, value in saved.items():
-                setattr(busyist, name, value)
+                setattr(paths, name, value)
 
     # What the extension and Settings do.
     @property

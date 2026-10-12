@@ -10,7 +10,7 @@ import sys
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 
 VERSION = "9.9.9"
 SETUP_NAME = f"Buzyist-Setup-{VERSION}.exe"
@@ -58,7 +58,7 @@ def github(monkeypatch):
 
 def test_download_setup_returns_the_file_and_its_hash(github):
     path, sha = busyist.download_setup(release())
-    assert path == busyist.UPDATES_DIR / SETUP_NAME
+    assert path == paths.UPDATES_DIR / SETUP_NAME
     assert path.read_bytes() == SETUP_BYTES
     assert sha == hashlib.sha256(SETUP_BYTES).hexdigest()
     assert not path.with_suffix(".part").exists()
@@ -68,7 +68,7 @@ def test_download_setup_refuses_a_wrong_checksum(github):
     github.files[DOWNLOADS + "SHA256SUMS.txt"] = sums_for(b"something else")
     with pytest.raises(constants.AppError, match="doesn't match"):
         busyist.download_setup(release())
-    assert not any(busyist.UPDATES_DIR.iterdir())
+    assert not any(paths.UPDATES_DIR.iterdir())
 
 
 def test_download_setup_needs_the_installer_in_the_checksums(github):
@@ -138,16 +138,16 @@ def updatable(monkeypatch, make_app, deferred_threads):
 def test_install_update_runs_the_checked_setup(updatable, github, side_effects, deferred_threads):
     updatable.install_update()
     [(args, _kwargs)] = side_effects.processes
-    assert args[0] == str(busyist.UPDATES_DIR / SETUP_NAME)
+    assert args[0] == str(paths.UPDATES_DIR / SETUP_NAME)
     assert "/VERYSILENT" in args
-    assert busyist.read_json(busyist.UPDATE_MARK, None) == {"from": busyist.__version__, "to": VERSION}
+    assert busyist.read_json(paths.UPDATE_MARK, None) == {"from": busyist.__version__, "to": VERSION}
     # The lock is still held when Setup starts, and released by a timer.
     with pytest.raises(PermissionError):
-        open(busyist.UPDATES_DIR / SETUP_NAME, "r+b")  # noqa: SIM115
+        open(paths.UPDATES_DIR / SETUP_NAME, "r+b")  # noqa: SIM115
     assert sorted(t.interval for t in deferred_threads.timers) == [1.0, 2.0]  # quit, then release the lock
     release_lock = next(t for t in deferred_threads.timers if t.interval == 2.0)
     release_lock.run()
-    with open(busyist.UPDATES_DIR / SETUP_NAME, "r+b"):
+    with open(paths.UPDATES_DIR / SETUP_NAME, "r+b"):
         pass
 
 
@@ -166,8 +166,8 @@ def test_install_update_refuses_a_setup_swapped_after_the_check(
     with pytest.raises(constants.AppError, match="changed after it was checked"):
         updatable.install_update()
     assert side_effects.processes == []
-    assert not (busyist.UPDATES_DIR / SETUP_NAME).exists()
-    assert not busyist.UPDATE_MARK.exists()
+    assert not (paths.UPDATES_DIR / SETUP_NAME).exists()
+    assert not paths.UPDATE_MARK.exists()
     assert updatable.update_error == "The installer changed after it was checked; not installing it."
     assert updatable.updating is False
     assert deferred_threads.timers == []  # no quit
@@ -193,5 +193,5 @@ def test_install_update_gives_up_when_the_setup_cant_be_locked(
         for f in holders:
             f.close()
     assert side_effects.processes == []
-    assert not busyist.UPDATE_MARK.exists()
+    assert not paths.UPDATE_MARK.exists()
     assert "Couldn't lock" in updatable.update_error

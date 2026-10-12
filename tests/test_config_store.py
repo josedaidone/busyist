@@ -3,21 +3,21 @@
 import json
 import re
 import threading
-from pathlib import Path
 
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
+from conftest import app_source
 
 
 @pytest.fixture
 def store(data_dir):
-    return busyist.ConfigStore(busyist.CONFIG_PATH, {"a": 1, "items": [1, 2]}, backup=busyist.CONFIG_BACKUP)
+    return busyist.ConfigStore(paths.CONFIG_PATH, {"a": 1, "items": [1, 2]}, backup=paths.CONFIG_BACKUP)
 
 
 def on_disk():
-    return json.loads(busyist.CONFIG_PATH.read_text(encoding="utf-8"))
+    return json.loads(paths.CONFIG_PATH.read_text(encoding="utf-8"))
 
 
 def test_edit_replaces_the_dict_and_saves(store):
@@ -36,13 +36,13 @@ def test_an_exception_discards_the_edit(store):
         c["a"] = 99
         raise constants.AppError("no")
     assert store["a"] == 1
-    assert not busyist.CONFIG_PATH.exists()
+    assert not paths.CONFIG_PATH.exists()
 
 
 def test_an_edit_that_changes_nothing_writes_nothing(store):
     with store.edit() as c:
         c["a"] = 1
-    assert not busyist.CONFIG_PATH.exists()
+    assert not paths.CONFIG_PATH.exists()
 
 
 def test_snapshot_is_a_copy(store):
@@ -60,7 +60,7 @@ def test_mapping_helpers(store):
 
 
 def test_no_config_mutation_outside_an_edit():
-    source = Path(busyist.__file__).read_text(encoding="utf-8")
+    source = app_source()
     assert not re.search(r"self\.cfg\[[^\]]+\]\s*=[^=]", source)
     assert "self.cfg.update(" not in source
     assert not re.search(r"cfg\[[^\]]+\]\.(append|insert|pop|remove|extend)\(", source)

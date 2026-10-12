@@ -5,8 +5,8 @@ import re
 
 import pytest
 
-import busyist
 from busyist import SiteUsage, clean_remote_sessions, clean_remote_usage, load_shared
+from buzyist import paths
 from buzyist.constants import MAX_SITE_LIMITS, SYNC_STALE_DAYS
 
 ME = "mydevice01"
@@ -136,7 +136,7 @@ def test_the_name_is_cut_to_60(clock):
 
 def test_an_impossible_date_from_another_pc_does_not_break_used(clock):
     remote = clean_remote_usage({PC: device(clock.ms, {RID: {"b": 0, "m": {}, "d": {"2026-13-45": 60}}})}, ME)
-    usage = SiteUsage(busyist.USAGE_PATH)
+    usage = SiteUsage(paths.USAGE_PATH)
     usage.set_remote(remote)
     assert usage.used(RID, 0, clock.ms) in (0, 60)
 
@@ -254,7 +254,7 @@ def test_at_most_20_sessions(clock):
 
 
 def write_sync(data):
-    busyist.SYNC_PATH.write_text(json.dumps(data) if not isinstance(data, str) else data, encoding="utf-8")
+    paths.SYNC_PATH.write_text(json.dumps(data) if not isinstance(data, str) else data, encoding="utf-8")
 
 
 def assert_fresh(shared):
@@ -266,7 +266,7 @@ def assert_fresh(shared):
 
 
 def test_no_file_gives_a_new_device():
-    assert not busyist.SYNC_PATH.exists()
+    assert not paths.SYNC_PATH.exists()
     assert_fresh(load_shared())
 
 

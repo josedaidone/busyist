@@ -7,13 +7,13 @@ import urllib.error
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
 
 
 def on_disk() -> str:
-    return busyist.CONFIG_PATH.read_text(encoding="utf-8")
+    return paths.CONFIG_PATH.read_text(encoding="utf-8")
 
 
 @pytest.mark.windows_only
@@ -110,8 +110,8 @@ def test_bar_test_with_an_empty_pin_uses_the_saved_one(make_app):
 def test_backup_is_encrypted_too(make_app):
     app = make_app({"todoist_token": TOKEN})
     app.save_settings({"work_minutes": 30})
-    assert busyist.CONFIG_BACKUP.exists()
-    assert TOKEN not in busyist.CONFIG_BACKUP.read_text(encoding="utf-8")
+    assert paths.CONFIG_BACKUP.exists()
+    assert TOKEN not in paths.CONFIG_BACKUP.read_text(encoding="utf-8")
 
 
 def test_todoist_errors_dont_include_the_token(monkeypatch, caplog):

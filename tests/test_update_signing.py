@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 from tools import minisign as tool
 
 DATA = Path(__file__).parent / "data"
@@ -254,7 +254,7 @@ def test_changed_checksums_are_refused(github, signing_on, caplog):
         busyist.download_setup(release())
     assert str(caught.value) == busyist.UNSIGNED_UPDATE == "The update isn't signed by buZyist; not installing it."
     assert "bad signature" in caplog.text
-    assert not any(busyist.UPDATES_DIR.glob("*.exe"))
+    assert not any(paths.UPDATES_DIR.glob("*.exe"))
     assert DOWNLOADS + SETUP_NAME not in github["asked"]  # the Setup isn't even downloaded
 
 
@@ -277,7 +277,7 @@ def test_a_missing_signature_file_is_not_a_pass(github, signing_on):
     del github[DOWNLOADS + busyist.UPDATE_SIG_ASSET]
     with pytest.raises(constants.AppError):
         busyist.download_setup(release())
-    assert not any(busyist.UPDATES_DIR.glob("*.exe"))
+    assert not any(paths.UPDATES_DIR.glob("*.exe"))
 
 
 def test_without_keys_the_checksum_alone_is_trusted(github, monkeypatch, caplog):
@@ -347,8 +347,8 @@ def test_a_signed_update_installs_end_to_end(github, signing_on, make_app, side_
     app.update = release()
     app.install_update()
     [(args, _)] = side_effects.processes
-    assert args[0] == str(busyist.UPDATES_DIR / SETUP_NAME)
-    assert busyist.read_json(busyist.UPDATE_MARK, None)["to"] == VERSION
+    assert args[0] == str(paths.UPDATES_DIR / SETUP_NAME)
+    assert busyist.read_json(paths.UPDATE_MARK, None)["to"] == VERSION
     next(t for t in deferred_threads.timers if t.interval == 2.0).run()  # releases the lock
 
 

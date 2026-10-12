@@ -63,6 +63,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
 
+from buzyist import paths
 from buzyist.constants import (
     APP,
     APP_NAME,
@@ -106,33 +107,6 @@ from buzyist.constants import (
 
 __version__ = "1.7.0"
 
-FROZEN = getattr(sys, "frozen", False)  # running as the packaged Buzyist.exe
-SOURCE_DIR = Path(__file__).resolve().parent
-# Files that ship with the app (ui/, the icon): next to this script, or where
-# PyInstaller unpacked them.
-RES_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
-UI = RES_DIR / "ui"
-EXTENSION_SRC = RES_DIR / "extension"  # the Chrome extension, loaded unpacked (issue #2)
-ICON_PATH = RES_DIR / "busyist.ico"
-# Everything the app writes is per user, never next to the program: an
-# installed app cannot write to its own folder.
-DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
-# The folder Chrome loads the extension from. The packaged app copies it out
-# of _internal\ (see sync_extension) to a short path that survives updates
-# and reinstalls; from source it is the repo's extension/ so edits are live.
-EXTENSION_DIR = DATA_DIR / "chrome-extension" if FROZEN else EXTENSION_SRC
-CONFIG_PATH = DATA_DIR / "config.json"
-CONFIG_BACKUP = DATA_DIR / "config.json.bak"  # the config as it was up to an hour before, see ConfigStore._save
-SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
-HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
-TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
-USAGE_PATH = DATA_DIR / "usage.json"  # time spent per limited website (site limits)
-SYNC_PATH = DATA_DIR / "sync.json"  # sharing the limits and their time with other PCs
-LOG_PATH = DATA_DIR / "busyist.log"
-WEBVIEW_DIR = DATA_DIR / "webview"
-UPDATES_DIR = DATA_DIR / "updates"  # downloaded installers
-UPDATE_MARK = DATA_DIR / "update.json"  # the version an update was installing, checked on the next start
-SETUP_LOG = DATA_DIR / "update-setup.log"
 
 log = logging.getLogger(APP)
 
@@ -259,7 +233,7 @@ def read_json(path: Path, default, backup: Path | None = None):
 
 def quarantine(path: Path) -> Path | None:
     """Move a broken data file aside as <name>.corrupt-YYYYmmdd-HHMMSS (data folder only)."""
-    if not path.resolve().is_relative_to(DATA_DIR.resolve()):
+    if not path.resolve().is_relative_to(paths.DATA_DIR.resolve()):
         return None  # a file we ship, not one we wrote: leave it
     target = path.with_name(f"{path.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
     try:
@@ -662,7 +636,7 @@ class LocalClock:
     """
 
     def __init__(self):
-        saved = read_json(TIMER_PATH, None)
+        saved = read_json(paths.TIMER_PATH, None)
         try:
             self._snap = types.BusySnapshot.model_validate(saved)
         except Exception:
@@ -676,7 +650,7 @@ class LocalClock:
 
     def busy_snapshot_set(self, snap: types.BusySnapshot) -> None:
         self._snap = snap
-        write_json(TIMER_PATH, snap.model_dump(mode="json"))
+        write_json(paths.TIMER_PATH, snap.model_dump(mode="json"))
 
     def busy_profile(self, slot: str) -> SimpleNamespace:
         return SimpleNamespace(id="local", busy_bar_settings=LOCAL_SETTINGS)
@@ -890,7 +864,7 @@ UPDATE_EVERY = 6 * 3600  # seconds between checks for a new release
 # Only a copy Setup installed can update itself (by running the next Setup);
 # Setup leaves its uninstaller next to the exe. A portable copy only hears
 # that there is a new version.
-UPDATABLE = FROZEN and (Path(sys.executable).parent / "unins000.exe").exists()
+UPDATABLE = paths.FROZEN and (Path(sys.executable).parent / "unins000.exe").exists()
 
 
 def version_tuple(text) -> tuple[int, ...]:
@@ -1121,8 +1095,8 @@ def download_setup(release: dict) -> tuple[Path, str]:
     )
     if not expected:
         raise AppError("The release's checksums don't list its installer.")
-    UPDATES_DIR.mkdir(parents=True, exist_ok=True)
-    path = UPDATES_DIR / setup["name"]
+    paths.UPDATES_DIR.mkdir(parents=True, exist_ok=True)
+    path = paths.UPDATES_DIR / setup["name"]
     part = path.with_suffix(".part")
     digest = hashlib.sha256()
     try:
@@ -1231,8 +1205,8 @@ def tray_image(view: dict | None) -> Image.Image:
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     if not view:
-        if ICON_PATH.exists():
-            return Image.open(ICON_PATH).convert("RGBA").resize((size, size), Image.LANCZOS)
+        if paths.ICON_PATH.exists():
+            return Image.open(paths.ICON_PATH).convert("RGBA").resize((size, size), Image.LANCZOS)
         d.ellipse((7, 17, 57, 62), fill=FOCUS_RGB)
         d.rounded_rectangle((30, 2, 34, 16), radius=2, fill=LEAF_RGB)
         d.ellipse((14, 10, 32, 20), fill=LEAF_RGB)
@@ -1257,7 +1231,7 @@ def tray_image(view: dict | None) -> Image.Image:
 
 class App:
     def __init__(self):
-        saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
+        saved = read_json(paths.CONFIG_PATH, {}, backup=paths.CONFIG_BACKUP)
         if not isinstance(saved, dict):
             log.error("config.json doesn't hold settings (%s); starting from the defaults", type(saved).__name__)
             saved = {}
@@ -1266,13 +1240,13 @@ class App:
         self.secret_lost, resave = unprotect_secrets(saved)
         if saved:
             resave = migrate_config(saved) or resave
-            resave = resave or not CONFIG_PATH.exists()  # read from the backup: put config.json back
+            resave = resave or not paths.CONFIG_PATH.exists()  # read from the backup: put config.json back
         else:
             saved["config_version"] = CONFIG_VERSION  # a new install is current already
-        self.cfg = ConfigStore(CONFIG_PATH, Config.load(saved), backup=CONFIG_BACKUP, validate=Config.check)
+        self.cfg = ConfigStore(paths.CONFIG_PATH, Config.load(saved), backup=paths.CONFIG_BACKUP, validate=Config.check)
         if resave:
             self.cfg.save()  # also encrypts a token saved in plain text by an older version
-        self.usage = SiteUsage(USAGE_PATH)
+        self.usage = SiteUsage(paths.USAGE_PATH)
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
         self.usage.set_remote(self.shared["remote"])
@@ -1288,7 +1262,7 @@ class App:
         # Every task any filter has shown, by id, so a start still finds its
         # task if the list was switched while the request was in flight.
         self.tasks: dict[str, dict] = {}
-        self.session: dict | None = read_json(SESSION_PATH, None)
+        self.session: dict | None = read_json(paths.SESSION_PATH, None)
         self.recovering = self.session is not None
         self.snap: types.BusySnapshot | None = None
         self.bar_ok: bool | None = None
@@ -1297,7 +1271,7 @@ class App:
         self._focus_active = False
         self.focus_hooks: list = []  # called (off App.lock) when focus flips
         self.ended: dict | None = None
-        self.history: list[dict] = read_json(HISTORY_PATH, [])
+        self.history: list[dict] = read_json(paths.HISTORY_PATH, [])
         self.wake = threading.Event()
         self.quitting = False
         self._tray_key = None
@@ -1748,7 +1722,7 @@ class App:
             },
         )
         try:
-            write_json(SYNC_PATH, data)
+            write_json(paths.SYNC_PATH, data)
         except OSError:
             log.warning("couldn't write sync.json", exc_info=True)
 
@@ -2099,7 +2073,7 @@ class App:
                     session["done"] = rounds
                 elif interval != session.get("interval", 0):
                     session["interval"] = interval
-                    write_json(SESSION_PATH, session)
+                    write_json(paths.SESSION_PATH, session)
                     rounds = inner.interval_settings.interval_work_cycles_count
                     if state.phase == "rest":
                         mins = inner.interval_settings.interval_rest_ms // 60000
@@ -2108,7 +2082,7 @@ class App:
                         notify = ("Back to focus", f"Round {interval // 2 + 1}/{rounds}: {session['task']['content']}")
             if reason:
                 self.session = None
-                SESSION_PATH.unlink(missing_ok=True)
+                paths.SESSION_PATH.unlink(missing_ok=True)
                 silent = self.recovering
                 threading.Thread(target=self.finish, args=(session, reason, silent), daemon=True).start()
             self.recovering = False
@@ -2154,7 +2128,7 @@ class App:
                 }
             )
             self.history = self.history[-500:]
-            write_json(HISTORY_PATH, self.history)
+            write_json(paths.HISTORY_PATH, self.history)
             if reason == "replaced" or silent:
                 return
             self.ended = {"task": task, "done": done, "minutes": minutes, "reason": reason, "problems": problems}
@@ -2187,7 +2161,7 @@ class App:
         self.report_update()
         self.update_wake.wait(50)
         # Setup has finished with any installer left from the last update by now.
-        shutil.rmtree(UPDATES_DIR, ignore_errors=True)
+        shutil.rmtree(paths.UPDATES_DIR, ignore_errors=True)
         checked = 0.0
         while not self.quitting:
             if time.time() - checked > UPDATE_EVERY:
@@ -2252,12 +2226,12 @@ class App:
                 log.error("the installer %s changed after it was checked; deleting it", path)
                 path.unlink(missing_ok=True)
                 raise AppError("The installer changed after it was checked; not installing it.")
-            write_json(UPDATE_MARK, {"from": __version__, "to": release["version"]})
+            write_json(paths.UPDATE_MARK, {"from": __version__, "to": release["version"]})
             log.info("installing buZyist %s from %s", release["version"], path)
             # /RELAUNCH=1 makes Setup start buZyist again when it is done,
             # whether or not the update went through.
             subprocess.Popen(
-                [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1", f"/LOG={SETUP_LOG}"],
+                [str(path), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/RELAUNCH=1", f"/LOG={paths.SETUP_LOG}"],
                 close_fds=True,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
@@ -2266,7 +2240,7 @@ class App:
         except (AppError, OSError) as err:
             if locked:
                 locked.close()
-            UPDATE_MARK.unlink(missing_ok=True)
+            paths.UPDATE_MARK.unlink(missing_ok=True)
             message = str(err) if isinstance(err, AppError) else f"Couldn't start the installer ({err})."
             with self.lock:
                 self.updating, self.update_error = False, message
@@ -2279,18 +2253,18 @@ class App:
 
     def report_update(self) -> None:
         """After an update restart, say whether it worked."""
-        mark = read_json(UPDATE_MARK, None)
+        mark = read_json(paths.UPDATE_MARK, None)
         if not mark:
             return
-        UPDATE_MARK.unlink(missing_ok=True)
+        paths.UPDATE_MARK.unlink(missing_ok=True)
         if mark.get("to") == __version__:
             log.info("updated from %s to %s", mark.get("from"), __version__)
             self.notify(APP_NAME, f"Updated to version {__version__}.")
         else:
-            log.warning("the update to %s didn't install; see %s", mark.get("to"), SETUP_LOG)
+            log.warning("the update to %s didn't install; see %s", mark.get("to"), paths.SETUP_LOG)
             with self.lock:
                 self.update_failed = str(mark.get("to"))
-                self.update_error = f"Updating to {mark.get('to')} didn't work (details in {SETUP_LOG.name})."
+                self.update_error = f"Updating to {mark.get('to')} didn't work (details in {paths.SETUP_LOG.name})."
             self.notify(APP_NAME, f"Couldn't update to version {mark.get('to')}.")
 
     # ------------------------------------------------------------ actions
@@ -2330,7 +2304,7 @@ class App:
                     "local": self.bar.is_local,
                     "rounds": cycles,  # the bar may run more (BAR_CYCLES_MIN)
                 }
-                write_json(SESSION_PATH, self.session)
+                write_json(paths.SESSION_PATH, self.session)
                 self.recovering = False
         if old:
             threading.Thread(target=self.finish, args=(old, "replaced"), daemon=True).start()
@@ -2368,7 +2342,7 @@ class App:
                 }
             )
             self.history = self.history[-500:]
-            write_json(HISTORY_PATH, self.history)
+            write_json(paths.HISTORY_PATH, self.history)
 
     def _label_task(self, session: dict) -> None:
         label = session["label"]
@@ -2379,7 +2353,7 @@ class App:
             with self.lock:
                 session["label_added"] = True
                 if self.session is session:
-                    write_json(SESSION_PATH, session)
+                    write_json(paths.SESSION_PATH, session)
         except AppError as err:
             self.notify("Todoist", f"Couldn't add the @{label} label: {err}")
 
@@ -2702,7 +2676,7 @@ class App:
         visible = (self.cfg.get("use_todoist") and not self.cfg.get("todoist_token")) or "--show" in sys.argv
         self.main = webview.create_window(
             APP_NAME,
-            str(UI / "main.html"),
+            str(paths.UI / "main.html"),
             js_api=api,
             width=1040 if self.cfg.get("use_todoist") else SOLO_W,
             height=720 if self.cfg.get("use_todoist") else SOLO_H,
@@ -2715,7 +2689,7 @@ class App:
         x, y = mini_position(MINI_W, MINI_H)
         self.mini = webview.create_window(
             "buZyist timer",
-            str(UI / "mini.html"),
+            str(paths.UI / "mini.html"),
             js_api=api,
             width=MINI_W,
             height=MINI_H,
@@ -2747,7 +2721,7 @@ class App:
         threading.Thread(target=self.engine, daemon=True).start()
         self.blocker.start()
         self.site_server.start()
-        if FROZEN:  # from source, git is the updater
+        if paths.FROZEN:  # from source, git is the updater
             threading.Thread(target=self.updater, daemon=True, name="updater").start()
         threading.Thread(target=listen_for_second_launch, args=(self,), daemon=True).start()
 
@@ -2770,8 +2744,8 @@ class App:
             ready,
             gui="edgechromium",
             private_mode=False,
-            storage_path=str(WEBVIEW_DIR),
-            icon=str(ICON_PATH) if ICON_PATH.exists() else None,
+            storage_path=str(paths.WEBVIEW_DIR),
+            icon=str(paths.ICON_PATH) if paths.ICON_PATH.exists() else None,
         )
 
 
@@ -2844,14 +2818,14 @@ class Api:
             **{f"has_{k}": bool(cfg.get(k)) for k in SECRET_KEYS},
             **{f"{k}_lost": k in self._app.secret_lost for k in SECRET_KEYS},
             version=__version__,
-            data_dir=str(DATA_DIR),
+            data_dir=str(paths.DATA_DIR),
             can_auto_update=self._app.can_auto_update,
             extension_id=EXTENSION_ID,
             extension_connected=connected,
             extension_outdated=self._app.extension_outdated(),
             extension_version=self._app.extension_version,
             extension_latest=EXTENSION_VERSION,
-            extension_dir=str(EXTENSION_DIR),
+            extension_dir=str(paths.EXTENSION_DIR),
             extension_browser=(find_browser() or (None,))[0],
             sync_info=self._app.sync_info(),
         )
@@ -2872,13 +2846,13 @@ class Api:
         return self._do(self._app.install_update)
 
     def open_data_folder(self):
-        os.startfile(DATA_DIR)
+        os.startfile(paths.DATA_DIR)
 
     def open_extension_folder(self):
-        show_in_explorer(EXTENSION_DIR if EXTENSION_DIR.exists() else RES_DIR)
+        show_in_explorer(paths.EXTENSION_DIR if paths.EXTENSION_DIR.exists() else paths.RES_DIR)
 
     def copy_extension_path(self):
-        return {"ok": set_clipboard(str(EXTENSION_DIR))}
+        return {"ok": set_clipboard(str(paths.EXTENSION_DIR))}
 
     def install_extension(self):
         """
@@ -2889,19 +2863,19 @@ class Api:
 
         def go():
             sync_extension()
-            if not EXTENSION_DIR.exists():
+            if not paths.EXTENSION_DIR.exists():
                 raise AppError("The extension folder is missing; reinstall buZyist.")
-            copied = set_clipboard(str(EXTENSION_DIR))
+            copied = set_clipboard(str(paths.EXTENSION_DIR))
             browser = find_browser()
             if browser:
                 threading.Thread(target=open_browser_page, args=(browser[1], browser[2]), daemon=True).start()
             else:
-                show_in_explorer(EXTENSION_DIR)
+                show_in_explorer(paths.EXTENSION_DIR)
             return {
                 "browser": browser[0] if browser else None,
                 "page": browser[2] if browser else "chrome://extensions",
                 "copied": copied,
-                "path": str(EXTENSION_DIR),
+                "path": str(paths.EXTENSION_DIR),
             }
 
         return self._do(go)
@@ -2958,14 +2932,14 @@ def clear_webview_cache() -> None:
     caches main.html/main.js by heuristic and can show an old UI for hours
     after an update or a branch switch. Local Storage is left alone.
     """
-    profile = WEBVIEW_DIR / "EBWebView" / "Default"
+    profile = paths.WEBVIEW_DIR / "EBWebView" / "Default"
     for name in ("Cache", "Code Cache"):
         shutil.rmtree(profile / name, ignore_errors=True)
 
 
 def bundled_extension_version() -> str:
     """The version in the manifest of the extension that ships with this buZyist."""
-    manifest = read_json(EXTENSION_SRC / "manifest.json", {})
+    manifest = read_json(paths.EXTENSION_SRC / "manifest.json", {})
     return str(manifest.get("version") or "") if isinstance(manifest, dict) else ""
 
 
@@ -2979,25 +2953,25 @@ def sync_extension() -> None:
     from disk, so after an update it picks up the new files on its next start
     (or with Reload on chrome://extensions) without being loaded again.
     """
-    if EXTENSION_DIR == EXTENSION_SRC or not EXTENSION_SRC.is_dir():
+    if paths.EXTENSION_DIR == paths.EXTENSION_SRC or not paths.EXTENSION_SRC.is_dir():
         return
     try:
-        EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
-        wanted = {p.relative_to(EXTENSION_SRC) for p in EXTENSION_SRC.rglob("*") if p.is_file()}
+        paths.EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
+        wanted = {p.relative_to(paths.EXTENSION_SRC) for p in paths.EXTENSION_SRC.rglob("*") if p.is_file()}
         for rel in wanted:
-            src, dst = EXTENSION_SRC / rel, EXTENSION_DIR / rel
+            src, dst = paths.EXTENSION_SRC / rel, paths.EXTENSION_DIR / rel
             if dst.is_file() and dst.read_bytes() == src.read_bytes():
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
-        for p in sorted(EXTENSION_DIR.rglob("*"), reverse=True):  # files from older versions
-            rel = p.relative_to(EXTENSION_DIR)
+        for p in sorted(paths.EXTENSION_DIR.rglob("*"), reverse=True):  # files from older versions
+            rel = p.relative_to(paths.EXTENSION_DIR)
             if p.is_file() and rel not in wanted:
                 p.unlink()
             elif p.is_dir() and not any(p.iterdir()):
                 p.rmdir()
     except OSError:
-        log.exception("could not copy the Chrome extension to %s", EXTENSION_DIR)
+        log.exception("could not copy the Chrome extension to %s", paths.EXTENSION_DIR)
 
 
 # Browsers that can load the extension, with their extensions page. Chrome
@@ -3059,7 +3033,7 @@ def open_browser_page(exe: str, page: str) -> None:
             log.info("no browser window came up; not typing %s", page)
     except Exception:
         log.exception("could not open %s", page)
-    show_in_explorer(EXTENSION_DIR)
+    show_in_explorer(paths.EXTENSION_DIR)
 
 
 def window_exe(hwnd) -> str:
@@ -3292,10 +3266,10 @@ def mini_position(width: int, height: int) -> tuple[int, int]:
 
 
 def launch_command() -> str:
-    if FROZEN:
+    if paths.FROZEN:
         return f'"{sys.executable}"'
     pythonw = Path(sys.executable).with_name("pythonw.exe")
-    return f'"{pythonw if pythonw.exists() else sys.executable}" "{Path(__file__).resolve()}"'
+    return f'"{pythonw if pythonw.exists() else sys.executable}" "{paths.SCRIPT}"'
 
 
 def launch_at_login() -> str | None:
@@ -4536,7 +4510,7 @@ def clean_remote_sessions(raw, own_device: str) -> dict:
 
 def load_shared() -> dict:
     """sync.json: this PC's id in Chrome sync and what sharing has learnt so far."""
-    data = read_json(SYNC_PATH, {})
+    data = read_json(paths.SYNC_PATH, {})
     if not isinstance(data, dict):
         data = {}
     device = str(data.get("device") or "")
@@ -4661,7 +4635,7 @@ class AppBlocker:
         self._closed: dict[str, str] = {}  # app_key -> exe path, to reopen when focus ends
         self._closing: dict[int, float] = {}  # pid -> monotonic deadline: asked to close, ended after it
         # Never this process; from source, not the python.exe/launcher that started it either.
-        self._own_pids = {os.getpid()} | (set() if FROZEN else {os.getppid()})
+        self._own_pids = {os.getpid()} | (set() if paths.FROZEN else {os.getppid()})
         self._first_sweep = True  # the first enforce of a focus: existing apps, no toast
         self._preexisting: set[str] = set()  # apps already open when focus began: never popped
         self._session = process_session(os.getpid())
@@ -4982,9 +4956,9 @@ class FocusServer:
 
 
 def setup_logging() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    paths.DATA_DIR.mkdir(parents=True, exist_ok=True)
     handlers: list[logging.Handler] = [
-        RotatingFileHandler(LOG_PATH, maxBytes=500_000, backupCount=1, encoding="utf-8"),
+        RotatingFileHandler(paths.LOG_PATH, maxBytes=500_000, backupCount=1, encoding="utf-8"),
     ]
     if sys.stderr:  # there is no console under pythonw or the packaged exe
         handlers.append(logging.StreamHandler())
@@ -5002,13 +4976,13 @@ def setup_logging() -> None:
 
 def adopt_old_files() -> None:
     """Earlier versions kept their files next to the script; move them in once."""
-    if FROZEN:
+    if paths.FROZEN:
         return
     for name in ("config.json", "session.json", "history.json"):
-        old, new = SOURCE_DIR / name, DATA_DIR / name
+        old, new = paths.SOURCE_DIR / name, paths.DATA_DIR / name
         if old.exists() and not new.exists():
             shutil.copy2(old, new)
-            log.info("copied %s to %s", name, DATA_DIR)
+            log.info("copied %s to %s", name, paths.DATA_DIR)
 
 
 WEBVIEW2_CLIENT = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
@@ -5068,7 +5042,7 @@ def main() -> None:
     if instance is None:
         return  # already running; it has been asked to show its window
     setup_logging()
-    log.info("%s %s starting (%s)", APP_NAME, __version__, "packaged" if FROZEN else "from source")
+    log.info("%s %s starting (%s)", APP_NAME, __version__, "packaged" if paths.FROZEN else "from source")
     if not webview2_installed():
         answer = message_box(
             "buZyist needs the Microsoft Edge WebView2 Runtime, which draws its window.\n\n"

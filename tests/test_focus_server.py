@@ -12,7 +12,7 @@ import time
 import pytest
 
 import busyist
-from buzyist import constants
+from buzyist import constants, paths
 
 RULE = {
     "id": "abc123",
@@ -242,7 +242,7 @@ def test_trusted_get_registers_the_profile_and_takes_sync_owner(focus_server, ap
     assert r.status == 200
     assert app.shared["instances"]["abcdef123"]["email"] == "me@x.com"
     assert app.cfg["sync_owner"] == "abcdef123"
-    assert busyist.read_json(busyist.CONFIG_PATH, {})["sync_owner"] == "abcdef123"
+    assert busyist.read_json(paths.CONFIG_PATH, {})["sync_owner"] == "abcdef123"
     assert "sync" in r.json  # the owner's answers carry what to share
 
 
@@ -381,7 +381,7 @@ def test_concurrent_polling_and_usage(focus_server, limits):
     assert counts["get"] > 0 and counts["post"] > 0
 
     limits.usage.flush(force=True)
-    saved = json.loads(busyist.USAGE_PATH.read_text(encoding="utf-8"))
+    saved = json.loads(paths.USAGE_PATH.read_text(encoding="utf-8"))
     minutes = saved["minutes"]["abc123"]
     assert len(minutes) == 10  # the ten POSTing threads
     assert sum(minutes.values()) == pytest.approx(counts["post"] * 0.01, abs=0.1 * 10)
