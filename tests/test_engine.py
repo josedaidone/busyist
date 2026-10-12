@@ -19,6 +19,7 @@ import pytest
 from busylib import exceptions, types
 
 import busyist
+from buzyist import constants
 
 WIFI = "10.0.0.9"
 PIN = "1234"
@@ -63,7 +64,7 @@ class FakeBusyBar:
     def _check(self, method: str) -> None:
         if self.addr in self.device.down:
             raise exceptions.BusyBarRequestError(f"timed out reaching {self.addr}")
-        if self.addr != busyist.USB_ADDR and self.device.pin and self.token != self.device.pin:
+        if self.addr != constants.USB_ADDR and self.device.pin and self.token != self.device.pin:
             raise exceptions.BusyBarAPIError("Unauthorized", status_code=401, method="GET", path="/api/busy/snapshot")
         self.device.calls.append((self.addr, method))
 
@@ -140,7 +141,7 @@ def test_one_tomato_on_the_bar_ends_at_the_first_break(engine, deferred_threads,
     """The bar runs at least 2 cycles; a 1-tomato session stops it when the break would start."""
     app = engine({**BAR_CONFIG, "cycles": 1, "use_todoist": False})
     start(app, deferred_threads)
-    assert device.snap.snapshot.interval_settings.interval_work_cycles_count == busyist.BAR_CYCLES_MIN
+    assert device.snap.snapshot.interval_settings.interval_work_cycles_count == constants.BAR_CYCLES_MIN
     assert app.session["rounds"] == 1
     app.step(minutes=25, seconds=1)
     assert app.session is None
@@ -457,7 +458,7 @@ def test_a_session_without_a_task_never_calls_todoist(engine, deferred_threads):
 def test_a_todoist_failure_is_reported_and_the_history_kept(engine, deferred_threads):
     app = engine({"cycles": 1})
     start(app, deferred_threads, "t1")
-    app.todoist.errors["comment"] = busyist.AppError("Todoist answered 500")
+    app.todoist.errors["comment"] = constants.AppError("Todoist answered 500")
     app.step(minutes=26)
     assert app.ended["problems"] == ["Couldn't log the pomodoros: Todoist answered 500"]
     assert app.history[0]["pomodoros"] == 1
@@ -515,7 +516,7 @@ def test_focus_fails_open_after_three_failed_bar_polls(engine, deferred_threads,
     app = engine({**BAR_CONFIG, "use_todoist": False})
     start(app, deferred_threads)
     assert app.focus()["active"] is True
-    device.down = {WIFI, busyist.USB_ADDR}
+    device.down = {WIFI, constants.USB_ADDR}
     app.step(seconds=5)
     app.step(seconds=5)
     assert app.bar_fails == 2
@@ -582,7 +583,7 @@ def test_the_route_that_answered_is_tried_first_next_time(engine, device):
     device.down = set()
     device.calls.clear()
     app.bar.snapshot()
-    assert device.calls == [(busyist.USB_ADDR, "busy_snapshot")]  # USB worked last: first now
+    assert device.calls == [(constants.USB_ADDR, "busy_snapshot")]  # USB worked last: first now
     assert app.bar.via == "USB"
 
 
@@ -598,8 +599,8 @@ def test_wifi_down_falls_back_to_usb_for_a_whole_session(engine, deferred_thread
 
 def test_no_route_answers(engine, device):
     app = engine({**BAR_CONFIG, "use_todoist": False})
-    device.down = {WIFI, busyist.USB_ADDR}
-    with pytest.raises(busyist.AppError, match=r"Can't reach the BUSY Bar\. Wi-Fi: .*; USB: "):
+    device.down = {WIFI, constants.USB_ADDR}
+    with pytest.raises(constants.AppError, match=r"Can't reach the BUSY Bar\. Wi-Fi: .*; USB: "):
         app.bar.snapshot()
     assert app.bar.via is None
     app.engine_step()
@@ -609,7 +610,7 @@ def test_no_route_answers(engine, device):
 def test_a_refused_pin_is_an_app_error(engine, device):
     app = engine({**BAR_CONFIG, "use_todoist": False})
     device.pin = "9999"
-    with pytest.raises(busyist.AppError, match="refused the PIN"):
+    with pytest.raises(constants.AppError, match="refused the PIN"):
         app.bar.snapshot()
     assert device.calls == []  # a 401 isn't a route problem: USB isn't tried
     app.engine_step()
@@ -618,5 +619,5 @@ def test_a_refused_pin_is_an_app_error(engine, device):
 
 def test_no_route_configured(engine, device):
     app = engine({**BAR_CONFIG, "busybar_ip": "", "usb_fallback": False})
-    with pytest.raises(busyist.AppError, match="Wi-Fi address"):
+    with pytest.raises(constants.AppError, match="Wi-Fi address"):
         app.bar.snapshot()

@@ -7,6 +7,7 @@ import urllib.error
 import pytest
 
 import busyist
+from buzyist import constants
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
 
@@ -120,7 +121,7 @@ def test_todoist_errors_dont_include_the_token(monkeypatch, caplog):
         raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, io.BytesIO(b'{"error": "bad"}'))
 
     monkeypatch.setattr(busyist.urllib.request, "urlopen", refuse)
-    with pytest.raises(busyist.AppError) as err:
+    with pytest.raises(constants.AppError) as err:
         client.tasks("today")
     assert TOKEN not in str(err.value)
     assert TOKEN not in caplog.text

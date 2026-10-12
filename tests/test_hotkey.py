@@ -2,7 +2,8 @@
 
 import pytest
 
-from busyist import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, NAMED_KEYS, AppError, parse_hotkey
+from busyist import MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, NAMED_KEYS, parse_hotkey
+from buzyist.constants import AppError
 
 
 @pytest.mark.parametrize(

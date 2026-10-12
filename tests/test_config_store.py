@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 import busyist
+from buzyist import constants
 
 
 @pytest.fixture
@@ -31,9 +32,9 @@ def test_edit_replaces_the_dict_and_saves(store):
 
 
 def test_an_exception_discards_the_edit(store):
-    with pytest.raises(busyist.AppError), store.edit() as c:
+    with pytest.raises(constants.AppError), store.edit() as c:
         c["a"] = 99
-        raise busyist.AppError("no")
+        raise constants.AppError("no")
     assert store["a"] == 1
     assert not busyist.CONFIG_PATH.exists()
 
@@ -99,7 +100,7 @@ def test_save_settings_and_apply_sync_racing(make_app, monkeypatch):
     def sync():
         try:
             for i in range(rounds):
-                rule = dict(LIMIT_C, at=busyist.now_ms() + i)
+                rule = dict(LIMIT_C, at=constants.now_ms() + i)
                 remote = {"rules": [rule], "deleted": {}, "on": True, "on_at": 0, "rev": f"r{i}"}
                 app.apply_sync({"limits": remote}, "owner1")
         except Exception as err:  # pragma: no cover - reported below

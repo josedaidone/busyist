@@ -2,7 +2,8 @@
 
 import pytest
 
-from busyist import APP_PRESETS, MAX_BLOCKED_APPS, AppError, clean_blocked_apps, normalize_blocked_apps
+from busyist import APP_PRESETS, MAX_BLOCKED_APPS, clean_blocked_apps, normalize_blocked_apps
+from buzyist.constants import AppError
 
 PRESET_IDS = [p[0] for p in APP_PRESETS]
 

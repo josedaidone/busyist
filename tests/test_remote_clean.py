@@ -6,7 +6,8 @@ import re
 import pytest
 
 import busyist
-from busyist import MAX_SITE_LIMITS, SYNC_STALE_DAYS, SiteUsage, clean_remote_sessions, clean_remote_usage, load_shared
+from busyist import SiteUsage, clean_remote_sessions, clean_remote_usage, load_shared
+from buzyist.constants import MAX_SITE_LIMITS, SYNC_STALE_DAYS
 
 ME = "mydevice01"
 PC = "otherpc001"

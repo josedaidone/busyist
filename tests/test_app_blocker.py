@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import busyist
+from buzyist import constants
 
 SPOTIFY = {"id": "spotify", "name": "Spotify", "exes": ["Spotify.exe"], "on": True, "action": "close"}
 
@@ -20,7 +21,7 @@ SPOTIFY = {"id": "spotify", "name": "Spotify", "exes": ["Spotify.exe"], "on": Tr
 
 @pytest.mark.parametrize("name", ["explorer.exe", "Explorer", "chrome.exe", "buzyist.exe", "PYTHONW.EXE", "msedge"])
 def test_protected_programs_cant_be_added(name):
-    with pytest.raises(busyist.AppError, match=f"buZyist won't close {re.escape(name)}: Windows or your browser"):
+    with pytest.raises(constants.AppError, match=f"buZyist won't close {re.escape(name)}: Windows or your browser"):
         busyist.clean_blocked_apps([{"exes": [name], "on": True, "custom": True}])
 
 
@@ -30,7 +31,7 @@ def test_other_programs_still_can():
 
 
 def test_an_old_config_drops_protected_programs(caplog):
-    caplog.set_level(logging.WARNING, logger=busyist.APP)
+    caplog.set_level(logging.WARNING, logger=constants.APP)
     apps = busyist.normalize_blocked_apps(
         [
             {"exes": ["explorer.exe"], "on": True, "custom": True},
@@ -137,7 +138,7 @@ def tick(blocker, clock, seconds=busyist.AppBlocker.TICK):
 
 
 def test_close_asks_first_and_ends_it_after_the_grace_time(blocker, desktop, clock, caplog):
-    caplog.set_level(logging.INFO, logger=busyist.APP)
+    caplog.set_level(logging.INFO, logger=constants.APP)
     desktop.processes = {100: "Spotify.exe"}
     desktop.windows = {100}
     tick(blocker, clock)  # t=0: WM_CLOSE

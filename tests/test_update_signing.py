@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 import busyist
+from buzyist import constants
 from tools import minisign as tool
 
 DATA = Path(__file__).parent / "data"
@@ -226,7 +227,7 @@ def github(monkeypatch):
     def github_open(url, timeout=20, api=False):
         asked.append(url)
         if url not in files:
-            raise busyist.AppError("GitHub answered 404.")
+            raise constants.AppError("GitHub answered 404.")
         return io.BytesIO(files[url])
 
     monkeypatch.setattr(busyist, "github_open", github_open)
@@ -240,7 +241,7 @@ def signing_on(monkeypatch):
 
 
 def test_a_signed_release_downloads(github, signing_on, caplog):
-    caplog.set_level(logging.INFO, logger=busyist.APP)
+    caplog.set_level(logging.INFO, logger=constants.APP)
     path, sha = busyist.download_setup(release())
     assert path.read_bytes() == SETUP_BYTES
     assert sha == hashlib.sha256(SETUP_BYTES).hexdigest()
@@ -249,7 +250,7 @@ def test_a_signed_release_downloads(github, signing_on, caplog):
 
 def test_changed_checksums_are_refused(github, signing_on, caplog):
     github[DOWNLOADS + "SHA256SUMS.txt"] = github[DOWNLOADS + "SHA256SUMS.txt"].replace(b"  ", b"  x", 1)
-    with pytest.raises(busyist.AppError) as caught:
+    with pytest.raises(constants.AppError) as caught:
         busyist.download_setup(release())
     assert str(caught.value) == busyist.UNSIGNED_UPDATE == "The update isn't signed by buZyist; not installing it."
     assert "bad signature" in caplog.text
@@ -262,19 +263,19 @@ def test_a_swapped_setup_and_checksums_are_refused(github, signing_on):
     evil = b"MZ evil"
     github[DOWNLOADS + SETUP_NAME] = evil
     github[DOWNLOADS + "SHA256SUMS.txt"] = f"{hashlib.sha256(evil).hexdigest()}  {SETUP_NAME}\n".encode()
-    with pytest.raises(busyist.AppError, match="isn't signed by buZyist"):
+    with pytest.raises(constants.AppError, match="isn't signed by buZyist"):
         busyist.download_setup(release())
 
 
 def test_a_release_without_a_signature_is_refused(github, signing_on, caplog):
-    with pytest.raises(busyist.AppError, match="isn't signed by buZyist"):
+    with pytest.raises(constants.AppError, match="isn't signed by buZyist"):
         busyist.download_setup(release(sig=None))
     assert "has no SHA256SUMS.txt.minisig" in caplog.text
 
 
 def test_a_missing_signature_file_is_not_a_pass(github, signing_on):
     del github[DOWNLOADS + busyist.UPDATE_SIG_ASSET]
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         busyist.download_setup(release())
     assert not any(busyist.UPDATES_DIR.glob("*.exe"))
 
@@ -309,7 +310,7 @@ def test_shipped_keys_are_minisign_keys():
     ],
 )
 def test_downloads_must_come_from_the_repos_releases(url):
-    with pytest.raises(busyist.AppError, match="doesn't come from buZyist's GitHub releases"):
+    with pytest.raises(constants.AppError, match="doesn't come from buZyist's GitHub releases"):
         busyist.check_release_url(url)
 
 
@@ -319,7 +320,7 @@ def test_release_urls_that_pass():
 
 
 def test_a_foreign_setup_url_is_refused_before_downloading(github, signing_on):
-    with pytest.raises(busyist.AppError, match="GitHub releases"):
+    with pytest.raises(constants.AppError, match="GitHub releases"):
         busyist.download_setup(release(setup={"name": SETUP_NAME, "url": "https://evil.example/" + SETUP_NAME}))
     assert github["asked"] == []
 
@@ -356,7 +357,7 @@ def test_an_unsigned_update_shows_the_error(github, signing_on, make_app, side_e
     monkeypatch.setattr(busyist, "UPDATABLE", True)
     app = make_app()
     app.update = release(sig=None)
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         app.install_update()
     assert app.update_view()["error"] == busyist.UNSIGNED_UPDATE
     assert side_effects.processes == []

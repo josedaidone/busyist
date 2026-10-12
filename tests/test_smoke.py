@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import busyist
+from buzyist import constants
 from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
 
@@ -27,7 +28,7 @@ def test_data_paths_point_into_tmp(data_dir, tmp_path):
     assert os.environ["APPDATA"] == str(data_dir.parent)
     for name in ("CONFIG_PATH", "SESSION_PATH", "HISTORY_PATH", "TIMER_PATH", "UPDATE_MARK", "SETUP_LOG"):
         assert getattr(busyist, name).is_relative_to(tmp_path), name
-    assert busyist.DEVICE_NAME == "TEST-PC"
+    assert constants.DEVICE_NAME == "TEST-PC"
 
 
 def test_guard_refuses_writes_to_the_real_data_folder(appdata_guard):
@@ -102,7 +103,7 @@ def test_launch_at_login_writes_and_removes_the_run_value(monkeypatch):
     run = reg.keys[(reg.HKEY_CURRENT_USER, busyist.RUN_KEY)]
     assert busyist.launch_at_login() is None
     busyist.set_launch_at_login(True)
-    assert run == {busyist.APP: busyist.launch_command()}
+    assert run == {constants.APP: busyist.launch_command()}
     assert busyist.launch_at_login() == busyist.launch_command()
     busyist.set_launch_at_login(False)
     assert run == {}
@@ -135,10 +136,10 @@ def test_app_fixture_defaults(app):
 
 def test_clock_drives_now_and_busylib(clock):
     start = clock.ms
-    assert busyist.now_ms() == start
+    assert constants.now_ms() == start
     assert busyist.datetime.now() == clock.now()
     clock.advance(minutes=90)
-    assert busyist.now_ms() == start + 90 * 60_000
+    assert constants.now_ms() == start + 90 * 60_000
     assert busyist.date.today() == clock.now().date()
     mono = busyist.time.monotonic()
     busyist.time.sleep(5)
@@ -176,7 +177,7 @@ def test_a_local_one_tomato_session_runs_to_the_end(make_app, clock, deferred_th
 
 
 def test_focus_server_answers_on_a_free_port(focus_server):
-    assert focus_server.port not in (0, busyist.FOCUS_PORT)
+    assert focus_server.port not in (0, constants.FOCUS_PORT)
     answer = focus_server.get("/focus")
     assert answer.status == 200
     assert answer.json["active"] is False

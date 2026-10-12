@@ -23,7 +23,8 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 import busyist
-from busyist import LOCAL_SETTINGS, MAX_SITE_LIMITS, TOMBSTONE_DAYS
+from busyist import LOCAL_SETTINGS
+from buzyist.constants import MAX_SITE_LIMITS, TOMBSTONE_DAYS
 
 DAY_MS = 86400_000
 WORK, REST = 25 * 60_000, 5 * 60_000

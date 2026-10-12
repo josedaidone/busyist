@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import busyist
+from buzyist import constants
 
 VECTORS = json.loads((Path(__file__).parent / "site_patterns.json").read_text(encoding="utf-8"))
 CLEAN = VECTORS["clean"]
@@ -27,7 +28,7 @@ def test_enough_vectors():
 @pytest.mark.parametrize("vector", CLEAN, ids=lambda v: repr(v["in"]))
 def test_clean_site_pattern(vector):
     if vector["out"] is None:
-        with pytest.raises(busyist.AppError, match="isn't a website"):
+        with pytest.raises(constants.AppError, match="isn't a website"):
             busyist.clean_site_pattern(vector["in"])
     else:
         assert busyist.clean_site_pattern(vector["in"]) == vector["out"]
@@ -46,12 +47,12 @@ def test_match_patterns_are_saved_forms(pattern):
 @pytest.mark.parametrize("raw", ["", "   ", None])
 def test_clean_site_pattern_rejects_nothing(raw):
     # The UI's cleanSitePattern answers "" for nothing typed; on save it's an error.
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         busyist.clean_site_pattern(raw)
 
 
 def test_clean_site_pattern_takes_non_strings():
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         busyist.clean_site_pattern(42)
 
 
@@ -82,21 +83,21 @@ def test_clean_blocked_sites_empty():
 
 @pytest.mark.parametrize("values", [None, "youtube.com", {"youtube.com": 1}, ("youtube.com",)])
 def test_clean_blocked_sites_wants_a_list(values):
-    with pytest.raises(busyist.AppError, match="didn't come through"):
+    with pytest.raises(constants.AppError, match="didn't come through"):
         busyist.clean_blocked_sites(values)
 
 
 def test_clean_blocked_sites_rejects_a_bad_entry():
-    with pytest.raises(busyist.AppError, match="'localhost' isn't a website"):
+    with pytest.raises(constants.AppError, match="'localhost' isn't a website"):
         busyist.clean_blocked_sites(["youtube.com", "localhost"])
 
 
 def test_clean_blocked_sites_limit():
-    sites = [f"site{i}.com" for i in range(busyist.MAX_BLOCKED_SITES)]
+    sites = [f"site{i}.com" for i in range(constants.MAX_BLOCKED_SITES)]
     assert busyist.clean_blocked_sites(sites) == sites
     # Duplicates don't count towards the limit.
     assert busyist.clean_blocked_sites([*sites, "www.site0.com"]) == sites
-    with pytest.raises(busyist.AppError, match="Keep the allowed sites under"):
+    with pytest.raises(constants.AppError, match="Keep the allowed sites under"):
         busyist.clean_blocked_sites([*sites, "one-more.com"], kind="allowed")
-    with pytest.raises(busyist.AppError, match="Keep the blocked sites under"):
+    with pytest.raises(constants.AppError, match="Keep the blocked sites under"):
         busyist.clean_blocked_sites([*sites, "one-more.com"])

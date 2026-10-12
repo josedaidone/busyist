@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 import pytest
 
 import busyist
-from busyist import SYNC_DAYS, SiteUsage
+from busyist import SiteUsage
+from buzyist.constants import SYNC_DAYS
 
 RID = "abcdef01"
 OTHER = "abcdef02"

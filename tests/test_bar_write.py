@@ -8,6 +8,7 @@ from busylib.features import timer_state
 
 import busyist
 from busyist import LOCAL_SETTINGS, Bar, LocalClock, phase_ms
+from buzyist import constants
 
 WORK, REST = 25 * 60_000, 5 * 60_000
 
@@ -165,7 +166,7 @@ def test_pause_freezes_what_is_left(bar, clock):
 
 
 def test_pause_with_nothing_running(bar):
-    with pytest.raises(busyist.AppError, match="No session"):
+    with pytest.raises(constants.AppError, match="No session"):
         bar.set_paused(True)
 
 
@@ -179,7 +180,7 @@ def test_skip_goes_to_the_next_phase_and_ends_after_the_last_work(bar, clock):
     assert bar.snapshot().snapshot.current_interval == 2
     bar.next_phase()  # index 3 = cycles*2-1: the end
     assert bar.snapshot().snapshot.type == "NOT_STARTED"
-    with pytest.raises(busyist.AppError, match="No interval"):
+    with pytest.raises(constants.AppError, match="No interval"):
         bar.next_phase()
 
 

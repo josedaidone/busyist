@@ -14,21 +14,27 @@ Everything here keeps a test away from the real machine:
   user's data. It checks paths, not timestamps, so a copy of buZyist running
   on the same PC while the tests run doesn't trip it.
 - ``no_registry_writes`` (autouse): any registry write fails the test
-  (``busyist.winreg`` is a proxy whose write functions, and OpenKey asked for
-  write access, raise ``RegistryWriteRefused``; an audit hook refuses the
-  same through any other winreg), so nothing can rewrite the user's sign-in
-  entry. ``@pytest.mark.registry_writes`` lifts it on purpose; registry code
-  is better tested by monkeypatching ``busyist.winreg`` with a fake.
+  (``winreg``, in every app module that imports it, is a proxy whose write
+  functions, and OpenKey asked for write access, raise
+  ``RegistryWriteRefused``; an audit hook refuses the same through any other
+  winreg), so nothing can rewrite the user's sign-in entry.
+  ``@pytest.mark.registry_writes`` lifts it on purpose; registry code is
+  better tested by monkeypatching the module's ``winreg`` with a fake.
+
+The app is busyist.py plus the buzyist package: ``app_modules()`` lists them,
+and ``patch_everywhere`` replaces a name (``time``, ``threading``, a
+function) in each of them that has it, as patching the single busyist
+module did before the split.
 
 Opt-in fixtures:
 
-- ``clock``: a controllable clock behind ``busyist.time``, ``busyist.datetime``,
-  ``busyist.date`` and busylib's ``timer_state`` (see ``FakeClock``).
+- ``clock``: a controllable clock behind the app's ``time``, ``datetime``,
+  ``date`` and busylib's ``timer_state`` (see ``FakeClock``).
 - ``side_effects``: beeps, opened URLs/files, processes and message boxes are
   recorded instead of happening (``app``/``make_app`` use it).
 - ``app`` / ``make_app``: an ``App()`` on the local clock (no bar), with a
   ``FakeTodoist``, no window, no tray, no threads started.
-- ``deferred_threads``: ``threading.Thread``/``Timer`` as used by busyist are
+- ``deferred_threads``: ``threading.Thread``/``Timer`` as used by the app are
   queued instead of started; run them with ``run_pending()``.
 - ``focus_server``: the app's ``FocusServer`` on a free port, with a small
   HTTP ``request()`` helper.
@@ -45,9 +51,13 @@ import http.server
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time as _time
+import webbrowser
+import winreg as _winreg
+import winsound as _winsound
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -55,6 +65,33 @@ import busylib.features.timer as busylib_timer
 import pytest
 
 import busyist
+from buzyist import constants
+
+# ---------------------------------------------------------------- modules ---
+
+_MISSING = object()
+
+
+def app_modules() -> list:
+    """busyist.py and every buzyist module imported so far: where the app's names live."""
+    return [
+        module
+        for name, module in sorted(sys.modules.items())
+        if module is not None and (name in ("busyist", "buzyist") or name.startswith("buzyist."))
+    ]
+
+
+def patch_everywhere(monkeypatch, name: str, value, *, only=None) -> None:
+    """
+    Set `name` to `value` in every app module that has it (with `only`, just
+    where it is that object, e.g. the real `time` module), so a module that
+    imported a function by name sees the replacement too.
+    """
+    for module in app_modules():
+        current = vars(module).get(name, _MISSING)
+        if current is not _MISSING and (only is None or current is only):
+            monkeypatch.setattr(module, name, value)
+
 
 # ------------------------------------------------------------------ guard ---
 
@@ -171,7 +208,7 @@ _REG_WRITE_EVENTS = {
 }
 # KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_CREATE_LINK | DELETE | WRITE_DAC | WRITE_OWNER
 _REG_WRITE_ACCESS = 0x0002 | 0x0004 | 0x0020 | 0x10000 | 0x40000 | 0x80000
-# The functions refused on busyist.winreg (and, through the audit hook, on any winreg).
+# The functions refused on the app's winreg (and, through the audit hook, on any winreg).
 _REG_WRITE_FUNCTIONS = (
     "SetValue",
     "SetValueEx",
@@ -197,7 +234,7 @@ class RegistryWriteRefused(AssertionError):
 class RegistryGuard:
     """
     Refuses every registry write while a test runs, unless the test is marked
-    ``@pytest.mark.registry_writes``. Two layers: ``busyist.winreg`` is
+    ``@pytest.mark.registry_writes``. Two layers: the app's ``winreg`` is
     replaced by a proxy whose write functions (and OpenKey/OpenKeyEx asked for
     write access) raise, and an audit hook refuses the same through any other
     reference to winreg. Refusals are recorded too, so one caught by the code
@@ -226,7 +263,7 @@ class RegistryGuard:
             self.refuse(f"{event}{args!r}")
 
     def proxy(self, winreg):
-        """busyist.winreg as tests see it: reads go through, writes raise."""
+        """winreg as the app sees it in tests: reads go through, writes raise."""
 
         def refused(name):
             def call(*args, **kwargs):
@@ -267,8 +304,8 @@ def no_registry_writes(request, monkeypatch):
     """
     Every test runs behind REGISTRY (see RegistryGuard). A test that must
     write the real registry says so with ``@pytest.mark.registry_writes``;
-    one that exercises registry code should rather monkeypatch
-    ``busyist.winreg`` with a fake (which replaces the guarded proxy).
+    one that exercises registry code should rather monkeypatch the
+    module's ``winreg`` with a fake (which replaces the guarded proxy).
     """
     if request.node.get_closest_marker("registry_writes"):
         REGISTRY.allowed += 1
@@ -277,9 +314,7 @@ def no_registry_writes(request, monkeypatch):
         finally:
             REGISTRY.allowed -= 1
         return
-    winreg = getattr(busyist, "winreg", None)
-    if winreg is not None:
-        monkeypatch.setattr(busyist, "winreg", REGISTRY.proxy(winreg))
+    patch_everywhere(monkeypatch, "winreg", REGISTRY.proxy(_winreg), only=_winreg)
     before = len(REGISTRY.violations)
     yield REGISTRY
     if len(REGISTRY.violations) > before:
@@ -327,7 +362,7 @@ def data_dir(tmp_path, monkeypatch) -> Path:
     (packaged builds); from source it is the repo's read-only ``extension/``.
     """
     appdata = tmp_path / "AppData"
-    new_dir = appdata / busyist.APP
+    new_dir = appdata / constants.APP
     new_dir.mkdir(parents=True)
     monkeypatch.setenv("APPDATA", str(appdata))
     rebased = []
@@ -340,7 +375,7 @@ def data_dir(tmp_path, monkeypatch) -> Path:
     source = tmp_path / "source"
     source.mkdir()
     monkeypatch.setattr(busyist, "SOURCE_DIR", source)
-    monkeypatch.setattr(busyist, "DEVICE_NAME", "TEST-PC")
+    patch_everywhere(monkeypatch, "DEVICE_NAME", "TEST-PC")
     before = len(GUARD.violations)
     yield new_dir
     if len(GUARD.violations) > before:
@@ -395,7 +430,7 @@ class FakeClock:
     monotonic time at 1000.0 s; both only change through ``advance``/``sleep``,
     and ``set`` moves wall time alone (like the PC's clock being changed).
 
-    Thread-safe; ``time.sleep`` in busyist advances the clock instantly
+    Thread-safe; ``time.sleep`` in the app advances the clock instantly
     (recorded in ``sleeps``) instead of waiting. ``Event.wait``,
     ``threading.Timer`` and socket timeouts still use real time.
     """
@@ -429,7 +464,7 @@ class FakeClock:
     # What tests call.
     @property
     def ms(self) -> int:
-        """Wall time in epoch ms, what busyist.now_ms() returns."""
+        """Wall time in epoch ms, what constants.now_ms() returns."""
         return int(self._wall * 1000)
 
     def now(self, tz=None) -> _dt.datetime:
@@ -455,7 +490,7 @@ class FakeClock:
 
 
 class _FakeTimeModule:
-    """`time` as busyist and busylib's timer see it: FakeClock for the clocks, the real module for the rest."""
+    """`time` as the app and busylib's timer see it: FakeClock for the clocks, the real module for the rest."""
 
     def __init__(self, clock: FakeClock):
         self._clock = clock
@@ -513,9 +548,9 @@ def clock(monkeypatch) -> FakeClock:
     """
     A FakeClock behind every time source the app's logic reads:
 
-    - ``busyist.time`` (``time.time``/``monotonic``/``sleep``, so ``now_ms()``,
+    - the app's ``time`` (``time.time``/``monotonic``/``sleep``, so ``now_ms()``,
       the pause reminder, SiteUsage's flush timer ...),
-    - ``busyist.datetime.now/today`` and ``busyist.date.today``,
+    - the app's ``datetime.now/today`` and ``date.today``,
     - ``busylib.features.timer.time`` (``timer_state`` and the snapshot
       helpers default to ``time.time()``), so LocalClock timers run on it too.
 
@@ -524,14 +559,14 @@ def clock(monkeypatch) -> FakeClock:
     time zone, so build expectations with ``clock.now()``/``datetime``
     arithmetic rather than hard-coded epoch values. The real ``time`` and
     ``datetime`` modules are untouched (pytest and threads keep real time),
-    and ``isinstance(x, busyist.datetime)`` is False for a real datetime.
+    and ``isinstance(x, <module>.datetime)`` is False for a real datetime.
     """
     fake = FakeClock()
     fake_time = _FakeTimeModule(fake)
-    monkeypatch.setattr(busyist, "time", fake_time)
+    patch_everywhere(monkeypatch, "time", fake_time, only=_time)
     monkeypatch.setattr(busylib_timer, "time", fake_time)
-    monkeypatch.setattr(busyist, "datetime", FakeDatetime)
-    monkeypatch.setattr(busyist, "date", FakeDate)
+    patch_everywhere(monkeypatch, "datetime", FakeDatetime, only=_RealDatetime)
+    patch_everywhere(monkeypatch, "date", FakeDate, only=_RealDate)
     monkeypatch.setattr(_FakeClockClasses, "clock", fake)
     return fake
 
@@ -581,32 +616,32 @@ class _FakePopen:
 
 @pytest.fixture
 def side_effects(monkeypatch) -> SideEffects:
-    """Stub winsound, webbrowser.open, os.startfile, subprocess.Popen, message_box and set_launch_at_login (as busyist sees them)."""
+    """Stub winsound, webbrowser.open, os.startfile, subprocess.Popen, message_box and set_launch_at_login (as the app sees them)."""
     record = SideEffects()
 
     def beep(name):
         return lambda *args: record.beeps.append((name, *args))
 
-    winsound = busyist.winsound
-    monkeypatch.setattr(
-        busyist,
+    patch_everywhere(
+        monkeypatch,
         "winsound",
-        ModuleProxy(winsound, Beep=beep("Beep"), MessageBeep=beep("MessageBeep"), PlaySound=beep("PlaySound")),
+        ModuleProxy(_winsound, Beep=beep("Beep"), MessageBeep=beep("MessageBeep"), PlaySound=beep("PlaySound")),
+        only=_winsound,
     )
-    monkeypatch.setattr(busyist.webbrowser, "open", lambda url, *a, **k: record.urls.append(url) or True)
+    monkeypatch.setattr(webbrowser, "open", lambda url, *a, **k: record.urls.append(url) or True)
     monkeypatch.setattr(os, "startfile", lambda path, *a, **k: record.started.append(os.fspath(path)), raising=False)
 
     def popen(*args, **kwargs):
         record.processes.append((args[0] if args else kwargs.get("args"), kwargs))
         return _FakePopen(*args, **kwargs)
 
-    monkeypatch.setattr(busyist, "subprocess", ModuleProxy(busyist.subprocess, Popen=popen))
-    monkeypatch.setattr(
-        busyist, "message_box", lambda text, flags=0x40: record.message_boxes.append((text, flags)) or 1
+    patch_everywhere(monkeypatch, "subprocess", ModuleProxy(subprocess, Popen=popen), only=subprocess)
+    patch_everywhere(
+        monkeypatch, "message_box", lambda text, flags=0x40: record.message_boxes.append((text, flags)) or 1
     )
     # save_settings ends with apply_launch_at_login: without this, a test would
     # point the user's real sign-in entry at the test run's copy of busyist.py.
-    monkeypatch.setattr(busyist, "set_launch_at_login", record.launch_at_login.append)
+    patch_everywhere(monkeypatch, "set_launch_at_login", record.launch_at_login.append)
     return record
 
 
@@ -639,7 +674,7 @@ class FakeTodoist:
     def _record(self, name: str, *args) -> None:
         self.calls.append((name, args))
         if not self.cfg.get("todoist_token"):
-            raise busyist.AppError("Add your Todoist API token in Settings.")
+            raise constants.AppError("Add your Todoist API token in Settings.")
         if name in self.errors:
             raise self.errors[name]
 
@@ -724,7 +759,7 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
     LocalClock + follow_session + focus hooks), and use ``deferred_threads``
     to run what it hands to threads (``finish``, ``_label_task``, focus hooks).
     """
-    monkeypatch.setattr(busyist, "Todoist", FakeTodoist)
+    patch_everywhere(monkeypatch, "Todoist", FakeTodoist)
     built: list[busyist.App] = []
 
     def make(cfg: dict | None = None, *, fresh=False, session=None, history=None, timer=None) -> busyist.App:
@@ -790,7 +825,7 @@ class _DeferredThread:
 
 class DeferredThreads:
     """
-    ``busyist.threading.Thread``/``Timer`` replaced by recorders; everything
+    The app's ``threading.Thread``/``Timer`` replaced by recorders; everything
     else in ``threading`` (locks, events) is the real thing.
 
     - ``pending``: threads started and not run yet (FIFO); ``timers``: the same
@@ -831,9 +866,11 @@ class DeferredThreads:
 
 @pytest.fixture
 def deferred_threads(monkeypatch) -> DeferredThreads:
-    """Queue the threads busyist starts instead of running them (see DeferredThreads)."""
+    """Queue the threads the app starts instead of running them (see DeferredThreads)."""
     deferred = DeferredThreads()
-    monkeypatch.setattr(busyist, "threading", ModuleProxy(threading, Thread=deferred.Thread, Timer=deferred.Timer))
+    patch_everywhere(
+        monkeypatch, "threading", ModuleProxy(threading, Thread=deferred.Thread, Timer=deferred.Timer), only=threading
+    )
     return deferred
 
 
@@ -857,7 +894,7 @@ class FocusClient:
         body=None,
         *,
         headers: dict | None = None,
-        origin: str | None = busyist.EXTENSION_ORIGIN,
+        origin: str | None = constants.EXTENSION_ORIGIN,
     ) -> SimpleNamespace:
         """
         Send one request; returns ``SimpleNamespace(status, headers, body, json)``

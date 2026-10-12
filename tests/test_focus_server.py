@@ -12,6 +12,7 @@ import time
 import pytest
 
 import busyist
+from buzyist import constants
 
 RULE = {
     "id": "abc123",
@@ -34,7 +35,7 @@ def limits(app):
 
 
 def minute_now() -> int:
-    return busyist.now_ms() // 60000
+    return constants.now_ms() // 60000
 
 
 def raw_request(port: int, method: str, path: str, *, host: bool = True, headers: dict | None = None):
@@ -72,9 +73,9 @@ def test_get_with_web_origin_is_refused(focus_server):
 
 
 def test_get_with_extension_origin(focus_server):
-    r = focus_server.get(origin=busyist.EXTENSION_ORIGIN)
+    r = focus_server.get(origin=constants.EXTENSION_ORIGIN)
     assert r.status == 200
-    assert r.headers["Access-Control-Allow-Origin"] == busyist.EXTENSION_ORIGIN
+    assert r.headers["Access-Control-Allow-Origin"] == constants.EXTENSION_ORIGIN
     assert r.headers["Access-Control-Allow-Private-Network"] == "true"
 
 
@@ -104,7 +105,7 @@ def test_host_check_covers_post_and_options(focus_server, limits):
     evil = {"Host": f"evil.example:{focus_server.port}"}
     usage = {"usage": {"abc123": {str(minute_now()): 30}}}
     assert focus_server.post("/usage", usage, origin=None, headers=evil).status == 403
-    assert limits.usage.used("abc123", 0, busyist.now_ms() + 60000) == 0
+    assert limits.usage.used("abc123", 0, constants.now_ms() + 60000) == 0
     assert focus_server.request("OPTIONS", "/focus", headers=evil).status == 403
 
 
@@ -116,7 +117,7 @@ def test_unknown_path_is_404(focus_server):
 def test_preflight_from_extension(focus_server):
     r = focus_server.request("OPTIONS", "/focus")
     assert r.status == 204
-    assert r.headers["Access-Control-Allow-Origin"] == busyist.EXTENSION_ORIGIN
+    assert r.headers["Access-Control-Allow-Origin"] == constants.EXTENSION_ORIGIN
     assert "GET" in r.headers["Access-Control-Allow-Methods"]
     assert "POST" in r.headers["Access-Control-Allow-Methods"]
     assert "Content-Type" in r.headers["Access-Control-Allow-Headers"]
@@ -134,7 +135,7 @@ def test_preflight_from_web_is_refused(focus_server):
 def test_post_from_web_is_refused(focus_server, limits):
     r = focus_server.post("/usage", {"usage": {"abc123": {str(minute_now()): 30}}}, origin=WEB)
     assert r.status == 403
-    assert limits.usage.used("abc123", 0, busyist.now_ms() + 60000) == 0
+    assert limits.usage.used("abc123", 0, constants.now_ms() + 60000) == 0
 
 
 # ------------------------------------------------------------------ routes ---
@@ -170,7 +171,7 @@ def test_post_grant_gives_a_pass(focus_server, limits):
     r = focus_server.post("/grant", {"id": "abc123"})
     assert r.status == 200
     (status,) = r.json["limits"]
-    assert status["pass_until_ms"] > busyist.now_ms()
+    assert status["pass_until_ms"] > constants.now_ms()
     assert limits.usage.pass_until("abc123") == status["pass_until_ms"]
 
 
@@ -182,7 +183,7 @@ def test_post_grant_for_unknown_rule_still_answers(focus_server, limits):
 
 @pytest.mark.parametrize("body", [b"{not json", b"[1, 2]", b"\xff\xfe", b""])
 def test_post_with_bad_json_answers_normally(focus_server, limits, caplog, body):
-    with caplog.at_level(logging.WARNING, logger=busyist.APP):
+    with caplog.at_level(logging.WARNING, logger=constants.APP):
         r = focus_server.request("POST", "/usage", body, headers={"Content-Type": "application/json"})
     assert r.status == 200
     assert "limits" in r.json
@@ -195,7 +196,7 @@ def test_post_body_is_read_up_to_one_megabyte(focus_server):
     conn = http.client.HTTPConnection("127.0.0.1", focus_server.port, timeout=3)
     try:
         conn.putrequest("POST", "/usage")
-        conn.putheader("Origin", busyist.EXTENSION_ORIGIN)
+        conn.putheader("Origin", constants.EXTENSION_ORIGIN)
         conn.putheader("Content-Length", "5000000")
         conn.endheaders()
         conn.send(b" " * 1_000_000)
@@ -233,7 +234,7 @@ def test_plain_get_cannot_take_sync_owner(focus_server, app):
     assert "sync" not in r.json
 
 
-@pytest.mark.parametrize("origin", [None, busyist.EXTENSION_ORIGIN])
+@pytest.mark.parametrize("origin", [None, constants.EXTENSION_ORIGIN])
 def test_trusted_get_registers_the_profile_and_takes_sync_owner(focus_server, app, origin):
     app.cfg["sync_limits"] = True
     app.cfg["sync_owner"] = ""
@@ -281,7 +282,7 @@ def test_untrusted_post_records_usage_but_not_the_profile(focus_server, limits):
     assert "abcdef123" not in limits.shared["instances"]
     assert "sync" not in r.json
     assert focus_server.post("/grant", {"id": "abc123", "instance": "abcdef123"}).status == 200
-    assert limits.usage.pass_until("abc123") > busyist.now_ms()
+    assert limits.usage.pass_until("abc123") > constants.now_ms()
 
     r = focus_server.post("/usage", body, headers=TRUSTED)
     assert limits.cfg["sync_owner"] == "abcdef123"
@@ -317,9 +318,9 @@ def test_post_sync_from_non_owner_changes_nothing(focus_server, limits):
         "limits": {
             "rev": "r1",
             "on": True,
-            "on_at": busyist.now_ms(),
-            "rules": [dict(RULE, id="fff999", patterns=["evil.example"], at=busyist.now_ms())],
-            "deleted": {"abc123": busyist.now_ms()},
+            "on_at": constants.now_ms(),
+            "rules": [dict(RULE, id="fff999", patterns=["evil.example"], at=constants.now_ms())],
+            "deleted": {"abc123": constants.now_ms()},
         },
     }
     r = focus_server.post("/sync", shared, headers=TRUSTED)
@@ -333,11 +334,11 @@ def test_keep_alive_serves_several_requests(focus_server):
     conn = http.client.HTTPConnection("127.0.0.1", focus_server.port, timeout=5)
     try:
         for _ in range(2):
-            conn.request("GET", "/focus", headers={"Origin": busyist.EXTENSION_ORIGIN})
+            conn.request("GET", "/focus", headers={"Origin": constants.EXTENSION_ORIGIN})
             response = conn.getresponse()
             assert response.status == 200
             assert "active" in json.loads(response.read())
-        conn.request("POST", "/usage", body=b"{}", headers={"Origin": busyist.EXTENSION_ORIGIN})
+        conn.request("POST", "/usage", body=b"{}", headers={"Origin": constants.EXTENSION_ORIGIN})
         response = conn.getresponse()
         assert response.status == 200
         response.read()

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import busyist
+from buzyist import constants
 
 CONFIGS = Path(__file__).parent / "data" / "configs"
 
@@ -42,7 +43,7 @@ def test_defaults_and_model_agree():
 def test_a_new_install_starts_current(start):
     app = start()
     assert app.cfg["config_version"] == busyist.CONFIG_VERSION
-    assert app.cfg["filters"] == [busyist.DEFAULT_FILTER]
+    assert app.cfg["filters"] == [constants.DEFAULT_FILTER]
     assert app.bar.is_local
     assert not busyist.CONFIG_PATH.exists()  # nothing written until something changes
 
@@ -238,7 +239,7 @@ def test_a_config_that_isnt_an_object_gives_the_defaults(start, caplog, content)
 )
 def test_settings_errors_keep_their_messages(app, changes, message):
     before = busyist.CONFIG_PATH.read_bytes()
-    with pytest.raises(busyist.AppError) as err:
+    with pytest.raises(constants.AppError) as err:
         app.save_settings(changes)
     assert str(err.value) == message
     assert busyist.CONFIG_PATH.read_bytes() == before  # nothing saved
@@ -259,11 +260,11 @@ def test_settings_tidy_what_they_accept(app):
     assert cfg["busybar_ip"] == "192.168.1.60"
     assert cfg["blocked_sites"] == ["youtube.com"]
     assert cfg["focus_label"] == "deep"
-    assert cfg["filters"] == [busyist.DEFAULT_FILTER]
+    assert cfg["filters"] == [constants.DEFAULT_FILTER]
 
 
 def test_an_edit_that_breaks_the_schema_is_refused(app):
-    with pytest.raises(busyist.AppError), app.cfg.edit() as c:
+    with pytest.raises(constants.AppError), app.cfg.edit() as c:
         c["work_minutes"] = 1000
     assert app.cfg["work_minutes"] == 25
 
@@ -289,7 +290,7 @@ def test_bar_addresses_accepted(raw, clean):
     "raw", ["192.168.1.50/api", "bar local", "ftp://x", "a:99999", "-bad-.local", "[zz::1]", "::g"]
 )
 def test_bar_addresses_refused(raw):
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         busyist.clean_bar_address(raw)
 
 

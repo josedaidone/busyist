@@ -7,18 +7,8 @@ from datetime import date, datetime, timedelta
 import pytest
 
 import busyist
-from busyist import (
-    MAX_LIMIT_SITES,
-    MAX_SITE_LIMITS,
-    SITE_ANCHOR,
-    AppError,
-    SiteUsage,
-    budget_bounds,
-    clean_site_limit,
-    clean_site_limits,
-    site_limit_status,
-    window_spans,
-)
+from busyist import SiteUsage, budget_bounds, clean_site_limit, clean_site_limits, site_limit_status, window_spans
+from buzyist.constants import MAX_LIMIT_SITES, MAX_SITE_LIMITS, SITE_ANCHOR, AppError
 
 ALL_DAYS = list(range(7))
 MONDAY = datetime(2026, 1, 5, 9, 37)  # what the tests call "now" unless they say otherwise

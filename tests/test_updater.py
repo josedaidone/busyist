@@ -10,6 +10,7 @@ import sys
 import pytest
 
 import busyist
+from buzyist import constants
 
 VERSION = "9.9.9"
 SETUP_NAME = f"Buzyist-Setup-{VERSION}.exe"
@@ -27,7 +28,7 @@ class FakeGitHub:
     def __call__(self, url, timeout=20, api=False):
         self.asked.append(url)
         if url not in self.files:
-            raise busyist.AppError("GitHub answered 404.")
+            raise constants.AppError("GitHub answered 404.")
         return io.BytesIO(self.files[url])
 
 
@@ -65,14 +66,14 @@ def test_download_setup_returns_the_file_and_its_hash(github):
 
 def test_download_setup_refuses_a_wrong_checksum(github):
     github.files[DOWNLOADS + "SHA256SUMS.txt"] = sums_for(b"something else")
-    with pytest.raises(busyist.AppError, match="doesn't match"):
+    with pytest.raises(constants.AppError, match="doesn't match"):
         busyist.download_setup(release())
     assert not any(busyist.UPDATES_DIR.iterdir())
 
 
 def test_download_setup_needs_the_installer_in_the_checksums(github):
     github.files[DOWNLOADS + "SHA256SUMS.txt"] = sums_for(name="Other.exe")
-    with pytest.raises(busyist.AppError, match="don't list its installer"):
+    with pytest.raises(constants.AppError, match="don't list its installer"):
         busyist.download_setup(release())
 
 
@@ -111,14 +112,14 @@ def test_open_locked_keeps_writers_out(tmp_path):
 def test_open_locked_retries_then_gives_up(tmp_path, clock):
     path = tmp_path / "setup.exe"
     path.write_bytes(b"installer")
-    with open(path, "r+b"), pytest.raises(busyist.AppError, match="Couldn't lock the downloaded installer"):
+    with open(path, "r+b"), pytest.raises(constants.AppError, match="Couldn't lock the downloaded installer"):
         busyist.open_locked(path)  # someone holds it open for writing
     assert clock.sleeps == [0.5, 0.5]  # three attempts
 
 
 @pytest.mark.windows_only
 def test_open_locked_missing_file(tmp_path, clock):
-    with pytest.raises(busyist.AppError):
+    with pytest.raises(constants.AppError):
         busyist.open_locked(tmp_path / "nope.exe")
 
 
@@ -162,7 +163,7 @@ def test_install_update_refuses_a_setup_swapped_after_the_check(
         return path, sha
 
     monkeypatch.setattr(busyist, "download_setup", download_then_swap)
-    with pytest.raises(busyist.AppError, match="changed after it was checked"):
+    with pytest.raises(constants.AppError, match="changed after it was checked"):
         updatable.install_update()
     assert side_effects.processes == []
     assert not (busyist.UPDATES_DIR / SETUP_NAME).exists()
@@ -186,7 +187,7 @@ def test_install_update_gives_up_when_the_setup_cant_be_locked(
 
     monkeypatch.setattr(busyist, "download_setup", download_and_hold)
     try:
-        with pytest.raises(busyist.AppError, match="Couldn't lock"):
+        with pytest.raises(constants.AppError, match="Couldn't lock"):
             updatable.install_update()
     finally:
         for f in holders:
