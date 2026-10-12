@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage
+from buzyist import constants, paths, storage, updater_sign
 from tools import minisign as tool
 
 DATA = Path(__file__).parent / "data"
@@ -56,7 +56,7 @@ RFC8032 = [
 @pytest.mark.parametrize(("seed", "public", "message", "signature"), RFC8032)
 def test_ed25519_rfc8032_vectors(seed, public, message, signature):
     seed, public, message, signature = map(bytes.fromhex, (seed, public, message, signature))
-    assert busyist.ed25519_verify(public, message, signature)
+    assert updater_sign.ed25519_verify(public, message, signature)
     assert tool.public_key(seed) == public
     assert tool.sign(seed, message) == signature
 
@@ -65,12 +65,12 @@ def test_ed25519_rfc8032_vectors(seed, public, message, signature):
 def test_ed25519_rejects_tampering(seed, public, message, signature):
     public, message, signature = map(bytes.fromhex, (public, message, signature))
     flipped = bytes([signature[0] ^ 1]) + signature[1:]
-    assert not busyist.ed25519_verify(public, message, flipped)
-    assert not busyist.ed25519_verify(public, b"x", signature)
-    assert not busyist.ed25519_verify(public[:31], message, signature)
+    assert not updater_sign.ed25519_verify(public, message, flipped)
+    assert not updater_sign.ed25519_verify(public, b"x", signature)
+    assert not updater_sign.ed25519_verify(public[:31], message, signature)
     # S must be below the group order (no malleable signatures).
-    s = int.from_bytes(signature[32:], "little") + busyist._ED_L
-    assert not busyist.ed25519_verify(public, message, signature[:32] + s.to_bytes(32, "little"))
+    s = int.from_bytes(signature[32:], "little") + updater_sign._ED_L
+    assert not updater_sign.ed25519_verify(public, message, signature[:32] + s.to_bytes(32, "little"))
 
 
 # ----------------------------------------------------------------- minisign
@@ -84,41 +84,43 @@ def resign(sig_text: str, mutate) -> str:
 
 
 def test_minisign_vector_verifies():
-    assert busyist.minisign_verify(SUMS, SUMS_SIG, [TEST_PUB]) == "timestamp:1767600000\tfile:SHA256SUMS.txt\thashed"
-    assert busyist.minisign_verify(SUMS, SUMS_SIG.replace("\n", "\r\n"), [TEST_PUB])  # CRLF is fine too
+    assert (
+        updater_sign.minisign_verify(SUMS, SUMS_SIG, [TEST_PUB]) == "timestamp:1767600000\tfile:SHA256SUMS.txt\thashed"
+    )
+    assert updater_sign.minisign_verify(SUMS, SUMS_SIG.replace("\n", "\r\n"), [TEST_PUB])  # CRLF is fine too
 
 
 def test_minisign_any_listed_key_will_do():
     other_pub, _ = tool.generate(None)
-    assert busyist.minisign_verify(SUMS, SUMS_SIG, [other_pub.splitlines()[1], TEST_PUB])
+    assert updater_sign.minisign_verify(SUMS, SUMS_SIG, [other_pub.splitlines()[1], TEST_PUB])
 
 
 def test_minisign_refuses_a_changed_file():
     with pytest.raises(ValueError, match="doesn't match the file"):
-        busyist.minisign_verify(SUMS.replace(b"1111", b"2222", 1), SUMS_SIG, [TEST_PUB])
+        updater_sign.minisign_verify(SUMS.replace(b"1111", b"2222", 1), SUMS_SIG, [TEST_PUB])
 
 
 def test_minisign_refuses_a_changed_trusted_comment():
     with pytest.raises(ValueError, match="trusted comment"):
-        busyist.minisign_verify(SUMS, SUMS_SIG.replace("timestamp:1767600000", "timestamp:1767600001"), [TEST_PUB])
+        updater_sign.minisign_verify(SUMS, SUMS_SIG.replace("timestamp:1767600000", "timestamp:1767600001"), [TEST_PUB])
 
 
 def test_minisign_refuses_another_key():
     other_pub, _ = tool.generate(None)
     with pytest.raises(ValueError, match="unknown key"):
-        busyist.minisign_verify(SUMS, SUMS_SIG, [other_pub.splitlines()[1]])
+        updater_sign.minisign_verify(SUMS, SUMS_SIG, [other_pub.splitlines()[1]])
     # Same key id, other key: the signature check catches it.
-    key_id, _ = busyist.minisign_key(TEST_PUB)
-    _, other = busyist.minisign_key(other_pub.splitlines()[1])
+    key_id, _ = updater_sign.minisign_key(TEST_PUB)
+    _, other = updater_sign.minisign_key(other_pub.splitlines()[1])
     impostor = base64.b64encode(b"Ed" + key_id + other).decode()
     with pytest.raises(ValueError, match="doesn't match"):
-        busyist.minisign_verify(SUMS, SUMS_SIG, [impostor])
+        updater_sign.minisign_verify(SUMS, SUMS_SIG, [impostor])
 
 
 def test_minisign_refuses_legacy_mode():
     legacy = resign(SUMS_SIG, lambda raw: b"Ed" + raw[2:])
     with pytest.raises(ValueError, match="prehashed"):
-        busyist.minisign_verify(SUMS, legacy, [TEST_PUB])
+        updater_sign.minisign_verify(SUMS, legacy, [TEST_PUB])
 
 
 @pytest.mark.parametrize(
@@ -127,14 +129,14 @@ def test_minisign_refuses_legacy_mode():
 )
 def test_minisign_refuses_garbage(text):
     with pytest.raises(ValueError):
-        busyist.minisign_verify(SUMS, text, [TEST_PUB])
+        updater_sign.minisign_verify(SUMS, text, [TEST_PUB])
 
 
 def test_minisign_key_parsing():
-    key_id, public = busyist.minisign_key(TEST_PUB)
+    key_id, public = updater_sign.minisign_key(TEST_PUB)
     assert len(key_id) == 8 and len(public) == 32
     with pytest.raises(ValueError):
-        busyist.minisign_key(base64.b64encode(b"Xx" + bytes(40)).decode())
+        updater_sign.minisign_key(base64.b64encode(b"Xx" + bytes(40)).decode())
 
 
 # --------------------------------------------------------------------- tool
@@ -158,7 +160,7 @@ def test_tool_encrypted_key_roundtrip():
     with pytest.raises(ValueError, match="wrong password"):
         tool.load_secret(sec_text, "wrong")
     signed = tool.sign_file(b"data", key_id, seed, trusted_comment="c")
-    assert busyist.minisign_verify(b"data", signed, [pub_text.splitlines()[1]]) == "c"
+    assert updater_sign.minisign_verify(b"data", signed, [pub_text.splitlines()[1]]) == "c"
 
 
 def test_tool_sign_cli(tmp_path, monkeypatch):
@@ -168,7 +170,7 @@ def test_tool_sign_cli(tmp_path, monkeypatch):
     monkeypatch.delenv("MINISIGN_PASSWORD", raising=False)
     assert tool.main(["sign", "-m", str(target)]) == 0
     signed = (tmp_path / "SHA256SUMS.txt.minisig").read_text(encoding="utf-8")
-    assert "file:SHA256SUMS.txt\thashed" in busyist.minisign_verify(SUMS, signed, [TEST_PUB])
+    assert "file:SHA256SUMS.txt\thashed" in updater_sign.minisign_verify(SUMS, signed, [TEST_PUB])
 
 
 def test_tool_refuses_a_key_the_app_doesnt_know(tmp_path, monkeypatch):
@@ -291,7 +293,7 @@ def test_shipped_keys_are_minisign_keys():
     # Empty until the maintainer adds the real key (docs/RELEASING.md); a
     # typo in one would make every update fail, so check what's there.
     for key in busyist.UPDATE_PUBKEYS:
-        busyist.minisign_key(key)
+        updater_sign.minisign_key(key)
     assert TEST_PUB not in busyist.UPDATE_PUBKEYS  # the test key must never ship
 
 
