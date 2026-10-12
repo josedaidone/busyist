@@ -11,6 +11,7 @@ import pytest
 
 import busyist
 from buzyist import constants, paths, storage
+from buzyist.win32 import files as files_mod
 
 VERSION = "9.9.9"
 SETUP_NAME = f"Buzyist-Setup-{VERSION}.exe"
@@ -84,7 +85,7 @@ def test_download_setup_needs_the_installer_in_the_checksums(github):
 def test_open_locked_keeps_writers_out(tmp_path):
     path = tmp_path / "setup.exe"
     path.write_bytes(b"installer")
-    _handle, locked = busyist.open_locked(path)
+    _handle, locked = files_mod.open_locked(path)
     try:
         with pytest.raises(PermissionError):
             open(path, "r+b")  # noqa: SIM115 - the open itself must fail
@@ -113,14 +114,14 @@ def test_open_locked_retries_then_gives_up(tmp_path, clock):
     path = tmp_path / "setup.exe"
     path.write_bytes(b"installer")
     with open(path, "r+b"), pytest.raises(constants.AppError, match="Couldn't lock the downloaded installer"):
-        busyist.open_locked(path)  # someone holds it open for writing
+        files_mod.open_locked(path)  # someone holds it open for writing
     assert clock.sleeps == [0.5, 0.5]  # three attempts
 
 
 @pytest.mark.windows_only
 def test_open_locked_missing_file(tmp_path, clock):
     with pytest.raises(constants.AppError):
-        busyist.open_locked(tmp_path / "nope.exe")
+        files_mod.open_locked(tmp_path / "nope.exe")
 
 
 # ------------------------------------------------------------ install_update

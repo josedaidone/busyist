@@ -27,7 +27,6 @@ import hashlib
 import http.server
 import json
 import logging
-import msvcrt
 import os
 import re
 import shutil
@@ -92,6 +91,7 @@ from buzyist.todoist import Todoist
 from buzyist.updater_sign import minisign_verify
 from buzyist.usage import SiteUsage
 from buzyist.win32.clipboard import set_clipboard
+from buzyist.win32.files import open_locked
 from buzyist.win32.input import send_keys
 from buzyist.win32.registry import set_launch_at_login, webview2_installed
 from buzyist.win32.windows import (
@@ -253,55 +253,6 @@ def download_setup(release: dict) -> tuple[Path, str]:
         raise AppError("The downloaded installer doesn't match the release's checksum; not installing it.")
     part.replace(path)
     return path, expected
-
-
-# CreateFileW, for open_locked.
-GENERIC_READ = 0x80000000
-FILE_SHARE_READ = 0x1
-OPEN_EXISTING = 3
-FILE_ATTRIBUTE_NORMAL = 0x80
-LOCK_ATTEMPTS = 3  # an antivirus scanning the new file can hold it for a moment
-
-
-def open_locked(path: Path, attempts: int = LOCK_ATTEMPTS, delay: float = 0.5):
-    """
-    Open a file for reading so that nobody can write, rename or delete it
-    while it stays open (share mode FILE_SHARE_READ only). Returns (handle,
-    file object); closing the file object closes the handle. Running the file
-    with CreateProcess still works, since that only reads it.
-
-    Retries a few times (antivirus scans hold new files briefly), then raises
-    AppError: the caller must never fall back to an unlocked file.
-    """
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private handle: own argtypes
-    kernel32.CreateFileW.argtypes = [
-        ctypes.wintypes.LPCWSTR,
-        ctypes.wintypes.DWORD,
-        ctypes.wintypes.DWORD,
-        ctypes.c_void_p,
-        ctypes.wintypes.DWORD,
-        ctypes.wintypes.DWORD,
-        ctypes.wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
-    invalid = ctypes.wintypes.HANDLE(-1).value
-    error = 0
-    for attempt in range(attempts):
-        handle = kernel32.CreateFileW(
-            str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None
-        )
-        if handle and handle != invalid:
-            try:
-                fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
-            except OSError:
-                kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
-                raise
-            return handle, os.fdopen(fd, "rb")
-        error = ctypes.get_last_error()
-        log.info("couldn't lock %s (Windows error %s), attempt %d", path, error, attempt + 1)
-        if attempt + 1 < attempts:
-            time.sleep(delay)
-    raise AppError(f"Couldn't lock the downloaded installer (Windows error {error}); not installing it.")
 
 
 def stream_sha256(stream) -> str:
