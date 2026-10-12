@@ -11,8 +11,7 @@ import time
 
 import pytest
 
-import busyist
-from buzyist import constants, paths, site_rules, storage
+from buzyist import constants, extension, paths, site_rules, storage
 
 RULE = {
     "id": "abc123",
@@ -214,11 +213,11 @@ def test_old_extension_version_is_flagged(focus_server, app):
     assert app.extension_version == "0.0.1"
     assert app.extension_connected()
     assert app.extension_outdated()
-    assert app._ext_warned == busyist.EXTENSION_VERSION  # the reload notice went out
+    assert app._ext_warned == extension.EXTENSION_VERSION  # the reload notice went out
 
 
 def test_current_extension_version_is_not_flagged(focus_server, app):
-    focus_server.get(f"/focus?v={busyist.EXTENSION_VERSION}")
+    focus_server.get(f"/focus?v={extension.EXTENSION_VERSION}")
     assert app.extension_connected()
     assert not app.extension_outdated()
 
@@ -267,7 +266,7 @@ def test_untrusted_get_still_counts_as_the_extension(focus_server, app):
     assert app.extension_connected()
     assert app.extension_version == "1.6.0"
     assert app.extension_outdated()
-    assert app._ext_warned == busyist.EXTENSION_VERSION
+    assert app._ext_warned == extension.EXTENSION_VERSION
 
 
 def test_untrusted_post_records_usage_but_not_the_profile(focus_server, limits):
@@ -360,7 +359,7 @@ def test_concurrent_polling_and_usage(focus_server, limits):
         try:
             while time.monotonic() < stop:
                 if n % 2:
-                    r = focus_server.get(f"/focus?v={busyist.EXTENSION_VERSION}")
+                    r = focus_server.get(f"/focus?v={extension.EXTENSION_VERSION}")
                     kind = "get"
                 else:
                     r = focus_server.post("/usage", {"usage": {"abc123": {str(minute): 0.01}}})
