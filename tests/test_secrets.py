@@ -7,7 +7,7 @@ import urllib.error
 import pytest
 
 import busyist
-from buzyist import constants, paths, todoist
+from buzyist import constants, paths, secrets_dpapi, todoist
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
 
@@ -18,18 +18,18 @@ def on_disk() -> str:
 
 @pytest.mark.windows_only
 def test_protect_round_trip():
-    blob = busyist.protect(TOKEN)
+    blob = secrets_dpapi.protect(TOKEN)
     assert blob.startswith("dpapi:v1:")
     assert TOKEN not in blob
-    assert busyist.unprotect(blob) == TOKEN
-    assert busyist.unprotect(busyist.protect("é ü 🍅")) == "é ü 🍅"
+    assert secrets_dpapi.unprotect(blob) == TOKEN
+    assert secrets_dpapi.unprotect(secrets_dpapi.protect("é ü 🍅")) == "é ü 🍅"
 
 
 @pytest.mark.windows_only
 @pytest.mark.parametrize("blob", ["dpapi:v1:AAAA", "dpapi:v1:not base64!", "plain"])
 def test_unprotect_refuses_what_it_cant_read(blob):
     with pytest.raises((OSError, ValueError)):
-        busyist.unprotect(blob)
+        secrets_dpapi.unprotect(blob)
 
 
 @pytest.mark.windows_only
