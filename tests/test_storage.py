@@ -141,18 +141,22 @@ def test_corrupt_config_starts_from_the_backup(make_app, data_dir, caplog):
         app.site_server.stop()
 
 
-def test_save_config_keeps_an_hourly_backup(app, clock, monkeypatch):
-    first = busyist.CONFIG_PATH.read_text(encoding="utf-8")
+def test_save_config_keeps_an_hourly_backup(make_app, clock):
+    def read(path):
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    app = make_app({"todoist_token": "", "filters": [{"name": "Today", "query": "today"}], "active_filter": "Today"})
+    assert not busyist.CONFIG_BACKUP.exists()  # nothing to migrate: nothing written yet
+    first = read(busyist.CONFIG_PATH)
     app.save_settings({"work_minutes": 30})
-    assert busyist.CONFIG_BACKUP.read_text(encoding="utf-8") == first
+    assert read(busyist.CONFIG_BACKUP) == first
     # Within the hour the backup stays as it was.
-    stamp = busyist.CONFIG_BACKUP.stat().st_mtime
-    monkeypatch.setattr(busyist.time, "time", lambda: stamp + 600)
+    clock.advance(minutes=10)
     app.save_settings({"work_minutes": 35})
-    assert busyist.CONFIG_BACKUP.read_text(encoding="utf-8") == first
+    assert read(busyist.CONFIG_BACKUP) == first
     # Later on it's refreshed with the file being replaced.
-    before = busyist.CONFIG_PATH.read_text(encoding="utf-8")
-    monkeypatch.setattr(busyist.time, "time", lambda: stamp + 3700)
+    before = read(busyist.CONFIG_PATH)
+    clock.advance(minutes=55)
     app.save_settings({"work_minutes": 45})
-    assert busyist.CONFIG_BACKUP.read_text(encoding="utf-8") == before
-    assert json.loads(busyist.CONFIG_PATH.read_text(encoding="utf-8"))["work_minutes"] == 45
+    assert read(busyist.CONFIG_BACKUP) == before
+    assert read(busyist.CONFIG_PATH)["work_minutes"] == 45

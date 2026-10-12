@@ -418,6 +418,7 @@ class SideEffects:
         self.started: list[str] = []  # os.startfile
         self.processes: list[tuple] = []  # subprocess.Popen(args, kwargs)
         self.message_boxes: list[tuple] = []  # message_box(text, flags)
+        self.launch_at_login: list[bool] = []  # set_launch_at_login(on): the real one edits HKCU\...\Run
 
 
 class _FakePopen:
@@ -439,7 +440,7 @@ class _FakePopen:
 
 @pytest.fixture
 def side_effects(monkeypatch) -> SideEffects:
-    """Stub winsound, webbrowser.open, os.startfile, subprocess.Popen and message_box (as busyist sees them)."""
+    """Stub winsound, webbrowser.open, os.startfile, subprocess.Popen, message_box and set_launch_at_login (as busyist sees them)."""
     record = SideEffects()
 
     def beep(name):
@@ -462,6 +463,9 @@ def side_effects(monkeypatch) -> SideEffects:
     monkeypatch.setattr(
         busyist, "message_box", lambda text, flags=0x40: record.message_boxes.append((text, flags)) or 1
     )
+    # save_settings ends with apply_launch_at_login: without this, a test would
+    # point the user's real sign-in entry at the test run's copy of busyist.py.
+    monkeypatch.setattr(busyist, "set_launch_at_login", record.launch_at_login.append)
     return record
 
 

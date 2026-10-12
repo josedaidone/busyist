@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import ctypes
 import ctypes.wintypes
 import hashlib
@@ -43,6 +44,7 @@ import uuid
 import webbrowser
 import winreg
 import winsound
+from collections.abc import Iterator, Mapping
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
@@ -81,7 +83,7 @@ DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
 # and reinstalls; from source it is the repo's extension/ so edits are live.
 EXTENSION_DIR = DATA_DIR / "chrome-extension" if FROZEN else EXTENSION_SRC
 CONFIG_PATH = DATA_DIR / "config.json"
-CONFIG_BACKUP = DATA_DIR / "config.json.bak"  # the config as it was up to an hour before, see save_config
+CONFIG_BACKUP = DATA_DIR / "config.json.bak"  # the config as it was up to an hour before, see ConfigStore._save
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
@@ -331,7 +333,7 @@ def write_bytes_atomic(path: Path, data: bytes) -> None:
 
 def write_json(path: Path, data) -> None:
     # Serialized first, so a value that can't be written leaves nothing behind.
-    # Callers pass data no other thread is changing (see App.save_config).
+    # Callers pass data no other thread is changing (see ConfigStore).
     text = json.dumps(data, indent=2, ensure_ascii=False)
     write_bytes_atomic(path, text.encode("utf-8"))
 
@@ -392,7 +394,11 @@ def protect_secrets(cfg) -> dict:
     """A copy of the settings as they go to disk: the secrets encrypted."""
     out = dict(cfg)
     for key in SECRET_KEYS:
-        value = str(out.get(key) or "")
+        if key not in out:
+            continue
+        value = str(out[key] or "")
+        if value.startswith(DPAPI_PREFIX):
+            continue  # already encrypted (a file being backed up)
         if value:
             try:
                 out[key] = protect(value)
@@ -424,6 +430,119 @@ def unprotect_secrets(cfg: dict) -> tuple[list[str], bool]:
         elif value:
             plain = True
     return lost, plain
+
+
+# ------------------------------------------------------------------ config ---
+
+
+class ConfigStore(Mapping):
+    """
+    The settings, shared by every thread (App, Todoist, Bar, the HTTP server).
+
+    Copy-on-write: the current dict is never changed in place. A change is a
+    transaction, `with cfg.edit() as c: c[...] = ...`, on a deep copy that
+    replaces the whole dict when the block ends (an exception inside discards
+    it) and is saved to config.json; edits are serialized by one lock.
+    Readers need no lock: `cfg.get(key)` / `cfg[key]` read the current dict,
+    and `cfg.view()` is that dict itself, a consistent picture of all the
+    keys for a reader that looks at several. Never change what they return
+    (lists and dicts included); take `snapshot()` for a copy of your own.
+
+    Lock order: the store's lock before `App.sync_lock` (save_settings and
+    apply_sync hold an edit while they stamp the sync state), never the
+    other way round.
+    """
+
+    def __init__(self, path: Path, data: dict, backup: Path | None = None):
+        self._lock = threading.RLock()
+        self._data = data
+        self._path = path
+        self._backup = backup
+        self._backup_at: float | None = None  # time.time() of the last backup this run
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self) -> Iterator:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def view(self) -> dict:
+        """The current settings as one dict; read-only by convention."""
+        return self._data
+
+    def snapshot(self) -> dict:
+        """A deep copy of the current settings, free to change."""
+        return copy.deepcopy(self._data)
+
+    @contextlib.contextmanager
+    def edit(self, save: bool = True):
+        """A transaction on a copy of the settings; saved when it changed something."""
+        with self._lock:
+            draft = copy.deepcopy(self._data)
+            yield draft
+            if draft != self._data:
+                if save:
+                    self._save(draft)
+                self._data = draft
+
+    def __setitem__(self, key, value) -> None:
+        """One key as its own transaction (for tests and one-liners)."""
+        with self.edit() as c:
+            c[key] = value
+
+    def update(self, *args, **kwargs) -> None:
+        """Several keys as one transaction."""
+        with self.edit() as c:
+            c.update(*args, **kwargs)
+
+    def save(self) -> None:
+        """Write the current settings to disk, as they are."""
+        with self._lock:
+            self._save(self._data)
+
+    def _save(self, data: dict) -> None:
+        """
+        Write config.json with the secrets encrypted, first keeping the file
+        it replaces as the backup when that is over an hour old.
+        """
+        disk = protect_secrets(data)
+        if self._backup is not None and self._path.exists():
+            now, last = time.time(), self._backup_at
+            if last is None:
+                with contextlib.suppress(OSError):
+                    last = self._backup.stat().st_mtime
+            if last is None or not 0 <= now - last <= BACKUP_EVERY_S:
+                try:
+                    raw = self._path.read_bytes()
+                    try:
+                        old = json.loads(raw)
+                    except ValueError:
+                        old = None
+                    if isinstance(old, dict):
+                        write_json(self._backup, protect_secrets(old))  # a file from before 1.8 has them in plain text
+                    else:
+                        write_bytes_atomic(self._backup, raw)
+                    self._backup_at = now
+                except OSError:
+                    log.warning("couldn't back up %s", self._path.name, exc_info=True)
+        write_json(self._path, disk)
+
+
+def migrate_filters(cfg: dict) -> bool:
+    """Turn the old single `todoist_filter` into the first saved filter; True if it changed `cfg`."""
+    if cfg.get("filters"):
+        return False
+    legacy = (cfg.pop("todoist_filter", "") or "").strip()
+    first = {"name": "Today", "query": legacy} if legacy else dict(DEFAULT_FILTER)
+    cfg["filters"] = [first]
+    cfg["active_filter"] = first["name"]
+    return True
 
 
 # ----------------------------------------------------------------- Todoist ---
@@ -919,19 +1038,28 @@ def tray_image(view: dict | None) -> Image.Image:
 
 class App:
     def __init__(self):
-        self.cfg = dict(DEFAULTS)
+        cfg = copy.deepcopy(DEFAULTS)
         saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
-        self.cfg.update(saved)
+        cfg.update(saved)
         # Secrets the config holds but this user can't decrypt (shown in Settings).
-        self.secret_lost, plain_secrets = unprotect_secrets(self.cfg)
-        self.cfg.pop("theme", None)  # there was a dark theme before 1.5.0
-        self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
-        # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
-        self.cfg["blocked_sites"] = _sanitize_sites(self.cfg.get("blocked_sites"))
-        self.cfg["allowed_sites"] = _sanitize_sites(self.cfg.get("allowed_sites"))
-        if self.cfg.get("site_mode") not in SITE_MODES:
-            self.cfg["site_mode"] = "block"
-        self.cfg["site_limits"] = _sanitize_site_limits(self.cfg.get("site_limits"))
+        self.secret_lost, resave = unprotect_secrets(cfg)
+        cfg.pop("theme", None)  # there was a dark theme before 1.5.0
+        cfg["blocked_apps"] = normalize_blocked_apps(cfg.get("blocked_apps"))
+        # Drop junk quietly.
+        cfg["blocked_sites"] = _sanitize_sites(cfg.get("blocked_sites"))
+        cfg["allowed_sites"] = _sanitize_sites(cfg.get("allowed_sites"))
+        if cfg.get("site_mode") not in SITE_MODES:
+            cfg["site_mode"] = "block"
+        cfg["site_limits"] = _sanitize_site_limits(cfg.get("site_limits"))
+        if saved and "use_busybar" not in saved:
+            # Set up before the bar was optional, so set up for one.
+            cfg["use_busybar"] = True
+            resave = True
+        if migrate_filters(cfg) and CONFIG_PATH.exists():
+            resave = True
+        self.cfg = ConfigStore(CONFIG_PATH, cfg, backup=CONFIG_BACKUP)
+        if resave:
+            self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(USAGE_PATH)
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
@@ -942,12 +1070,6 @@ class App:
         # bar's timer was last matched to (remote_session).
         self.remote_sessions: dict[str, dict] = {}
         self._remote_match: tuple[str, int] | None = None
-        if saved and "use_busybar" not in saved:
-            # Set up before the bar was optional, so set up for one.
-            self.cfg["use_busybar"] = True
-            plain_secrets = True
-        if plain_secrets:
-            self.save_config()  # also encrypts a token saved in plain text by an older version
         self.todoist = Todoist(self.cfg)
         self.bar = Bar(self.cfg)
         self.lock = threading.RLock()  # guards everything below
@@ -983,7 +1105,6 @@ class App:
         # Installing silently needs a Setup-installed copy this user can write
         # to; an all-users install would raise an admin prompt out of nowhere.
         self.can_auto_update = UPDATABLE and app_dir_writable()
-        self._migrate_filters()
         # Closes distracting apps during focus (issue #1); idle until a work
         # phase starts, so nothing runs when the feature is off.
         self.blocker = AppBlocker(self)
@@ -994,36 +1115,7 @@ class App:
         self._ext_warned = ""  # the version we last told the user to reload for
         self.site_server = FocusServer(self)
 
-    def save_config(self) -> None:
-        """
-        Write config.json from a copy of the settings (another thread may be
-        changing them), with the secrets encrypted, first keeping the file it replaces as config.json.bak
-        when the backup is over an hour old.
-        """
-        data = protect_secrets(self.cfg)
-        try:
-            age = time.time() - CONFIG_BACKUP.stat().st_mtime
-        except OSError:
-            age = None
-        if (age is None or not 0 <= age <= BACKUP_EVERY_S) and CONFIG_PATH.exists():
-            try:
-                write_bytes_atomic(CONFIG_BACKUP, CONFIG_PATH.read_bytes())
-            except OSError:
-                log.warning("couldn't back up config.json", exc_info=True)
-        write_json(CONFIG_PATH, data)
-
     # -------------------------------------------------------------- filters
-
-    def _migrate_filters(self) -> None:
-        """Turn the old single `todoist_filter` into the first saved filter."""
-        if self.cfg.get("filters"):
-            return
-        legacy = (self.cfg.pop("todoist_filter", "") or "").strip()
-        first = {"name": "Today", "query": legacy} if legacy else dict(DEFAULT_FILTER)
-        self.cfg["filters"] = [first]
-        self.cfg["active_filter"] = first["name"]
-        if CONFIG_PATH.exists():
-            self.save_config()
 
     @property
     def todoist_on(self) -> bool:
@@ -1031,16 +1123,17 @@ class App:
         return bool(self.cfg.get("use_todoist")) and bool(self.cfg.get("todoist_token"))
 
     def active_filter(self) -> dict:
-        filters = self.cfg["filters"]
-        return next((f for f in filters if f["name"] == self.cfg["active_filter"]), filters[0])
+        cfg = self.cfg.view()
+        filters = cfg["filters"]
+        return next((f for f in filters if f["name"] == cfg["active_filter"]), filters[0])
 
     def task_list(self, name: str | None = None, tasks: list[dict] | None = None) -> dict:
         """Load (or take) the tasks of a saved filter, making it the active one."""
         if name is not None and name != self.cfg["active_filter"]:
-            if not any(f["name"] == name for f in self.cfg["filters"]):
-                raise AppError(f"There is no filter called {name!r}.")
-            self.cfg["active_filter"] = name
-            self.save_config()
+            with self.cfg.edit() as c:
+                if not any(f["name"] == name for f in c["filters"]):
+                    raise AppError(f"There is no filter called {name!r}.")
+                c["active_filter"] = name
         if not self.cfg.get("use_todoist"):
             raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
@@ -1068,41 +1161,45 @@ class App:
             raise AppError("Give the filter a name.")
         if len(name) > 40:
             raise AppError("Keep the name under 40 characters.")
-        filters = self.cfg["filters"]
-        if any(f["name"].lower() == name.lower() and f["name"] != old_name for f in filters):
-            raise AppError(f"There is already a filter called {name!r}.")
-        if old_name is None and len(filters) >= MAX_FILTERS:
-            raise AppError(f"That's {MAX_FILTERS} filters already; delete one first.")
-        tasks = self.check_query(query)
-        entry = {"name": name, "query": query}
-        index = next((i for i, f in enumerate(filters) if f["name"] == old_name), None)
-        if index is None:
-            filters.append(entry)
-        else:
-            filters[index] = entry
-        self.cfg["active_filter"] = name
-        self.save_config()
+
+        def check(filters):
+            if any(f["name"].lower() == name.lower() and f["name"] != old_name for f in filters):
+                raise AppError(f"There is already a filter called {name!r}.")
+            if old_name is None and len(filters) >= MAX_FILTERS:
+                raise AppError(f"That's {MAX_FILTERS} filters already; delete one first.")
+
+        check(self.cfg["filters"])
+        tasks = self.check_query(query)  # over the network: outside the edit
+        with self.cfg.edit() as c:
+            filters = c["filters"]
+            check(filters)  # again: the list may have changed meanwhile
+            entry = {"name": name, "query": query}
+            index = next((i for i, f in enumerate(filters) if f["name"] == old_name), None)
+            if index is None:
+                filters.append(entry)
+            else:
+                filters[index] = entry
+            c["active_filter"] = name
         return self.task_list(tasks=tasks)
 
     def delete_filter(self, name: str) -> dict:
-        filters = self.cfg["filters"]
-        if len(filters) <= 1:
-            raise AppError("Keep at least one filter.")
-        self.cfg["filters"] = [f for f in filters if f["name"] != name]
-        if self.cfg["active_filter"] == name:
-            self.cfg["active_filter"] = self.cfg["filters"][0]["name"]
-        self.save_config()
+        with self.cfg.edit() as c:
+            if len(c["filters"]) <= 1:
+                raise AppError("Keep at least one filter.")
+            c["filters"] = [f for f in c["filters"] if f["name"] != name]
+            if c["active_filter"] == name:
+                c["active_filter"] = c["filters"][0]["name"]
         return self.task_list()
 
     def move_filter(self, name: str, delta: int) -> dict:
-        filters = self.cfg["filters"]
-        i = next((i for i, f in enumerate(filters) if f["name"] == name), None)
-        if i is None:
-            raise AppError(f"There is no filter called {name!r}.")
-        j = max(0, min(len(filters) - 1, i + delta))
-        filters.insert(j, filters.pop(i))
-        self.save_config()
-        return {"filters": filters, "active": self.active_filter()["name"]}
+        with self.cfg.edit() as c:
+            filters = c["filters"]
+            i = next((i for i, f in enumerate(filters) if f["name"] == name), None)
+            if i is None:
+                raise AppError(f"There is no filter called {name!r}.")
+            j = max(0, min(len(filters) - 1, i + delta))
+            filters.insert(j, filters.pop(i))
+        return {"filters": self.cfg["filters"], "active": self.active_filter()["name"]}
 
     # ------------------------------------------------------------ timer view
 
@@ -1227,7 +1324,7 @@ class App:
 
     def blocks_view(self) -> dict:
         """What focus blocks are switched on, for the timer's "focus guard" line."""
-        cfg = self.cfg
+        cfg = self.cfg.view()
         apps = sum(1 for a in cfg.get("blocked_apps") or [] if a.get("on")) if cfg.get("block_apps") else 0
         mode = cfg.get("site_mode", "block")
         sites = (
@@ -1319,12 +1416,13 @@ class App:
         The browser profile that shares the limits with other PCs (`instance`
         is the sync owner) also gets `sync`, see sync_payload.
         """
-        on = bool(self.cfg.get("block_sites"))
-        limits_on = bool(self.cfg.get("site_limits_on"))
-        mode = self.cfg.get("site_mode", "block")
+        cfg = self.cfg.view()
+        on = bool(cfg.get("block_sites"))
+        limits_on = bool(cfg.get("site_limits_on"))
+        mode = cfg.get("site_mode", "block")
         focus = self.focus()
         active = on and focus["active"]
-        patterns = list(self.cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
+        patterns = list(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
         out = {
             "active": active,
             "task": focus["task"] if active else "",
@@ -1416,8 +1514,10 @@ class App:
                     del seen[iid]
                 self._save_shared()
         if self.sync_on() and not self.cfg.get("sync_owner"):
-            self.cfg["sync_owner"] = instance
-            self.save_config()
+            with self.cfg.edit() as c:
+                if c.get("sync_owner"):
+                    return  # another request took it meanwhile
+                c["sync_owner"] = instance
             log.info("sharing through browser profile %s (%s)", instance, account or "no account")
 
     def _save_shared(self) -> None:
@@ -1570,7 +1670,9 @@ class App:
         if not self.cfg.get("sync_limits"):
             return  # only the task is shared: leave the limits alone
         new_rules = new_on = None
-        with self.sync_lock:
+        # Config lock, then sync_lock (the order everywhere): no other edit can
+        # land between reading the rules in _merge_limits and saving the merge.
+        with self.cfg.edit() as c, self.sync_lock:
             sh = self.shared
             if "limits" in data and data["limits"] is None:
                 sh["joined"] = owner  # nothing shared yet: ours become the shared copy
@@ -1585,13 +1687,10 @@ class App:
                 self.usage.set_remote(sh["remote"])
             sh["last_sync"] = now_ms()
             self._save_shared()
-        if new_rules is not None and (
-            new_rules != self.cfg.get("site_limits") or new_on != bool(self.cfg.get("site_limits_on"))
-        ):
-            log.info("limits merged from Chrome sync: %d rules", len(new_rules))
-            self.cfg["site_limits"] = new_rules
-            self.cfg["site_limits_on"] = new_on
-            self.save_config()
+            if new_rules is not None and (new_rules != c.get("site_limits") or new_on != bool(c.get("site_limits_on"))):
+                log.info("limits merged from Chrome sync: %d rules", len(new_rules))
+                c["site_limits"] = new_rules
+                c["site_limits_on"] = new_on
 
     def sync_info(self) -> dict:
         """For Settings: the browser profiles seen, the other PCs and when we last synced."""
@@ -2100,38 +2199,40 @@ class App:
             raise AppError("Pick the browser profile that shares the limits.")
         if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
             raise AppError("Pick whether to block the listed websites or allow only them.")
-        merged = dict(self.cfg, **clean)
-        for key in ("work_minutes", "rest_minutes"):
-            if not PHASE_MIN <= merged[key] <= PHASE_MAX:
-                raise AppError(f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.")
-        if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
-            raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
-        old_hotkey = self.cfg["hotkey"]
-        bar_changed = any(
-            self.cfg.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
-        )
-        if merged["use_busybar"] != self.cfg["use_busybar"] and self.session:
-            raise AppError("Stop the running session before switching between the bar and this PC.")
-        if merged["hotkey"] != old_hotkey:
-            try:
-                self.bind_hotkey(merged["hotkey"])
-            except AppError:
-                self.bind_hotkey(old_hotkey)
-                raise
-        old_limits = self.cfg.get("site_limits") or []
-        on_changed = "site_limits_on" in clean and clean["site_limits_on"] != self.cfg.get("site_limits_on")
-        sync_off = self.cfg.get("sync_limits") and not merged.get("sync_limits")
+        # One transaction from the checks to the sync stamps, so an apply_sync
+        # can't slip in between (config lock, then sync_lock inside).
+        with self.cfg.edit() as c:
+            merged = dict(c, **clean)
+            for key in ("work_minutes", "rest_minutes"):
+                if not PHASE_MIN <= merged[key] <= PHASE_MAX:
+                    raise AppError(f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.")
+            if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
+                raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
+            old_hotkey = c["hotkey"]
+            bar_changed = any(
+                c.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
+            )
+            if merged["use_busybar"] != c["use_busybar"] and self.session:
+                raise AppError("Stop the running session before switching between the bar and this PC.")
+            if merged["hotkey"] != old_hotkey:
+                try:
+                    self.bind_hotkey(merged["hotkey"])
+                except AppError:
+                    self.bind_hotkey(old_hotkey)
+                    raise
+            old_limits = c.get("site_limits") or []
+            on_changed = "site_limits_on" in clean and clean["site_limits_on"] != c.get("site_limits_on")
+            sync_off = c.get("sync_limits") and not merged.get("sync_limits")
+            c.update(clean)
+            if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
+                self.note_limits_edit(old_limits, c["site_limits"], on_changed)
+            if sync_off:
+                with self.sync_lock:
+                    self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
+                    self._save_shared()
         if not merged.get("sync_session"):
             self.remote_sessions = {}
-        self.cfg.update(clean)
-        self.save_config()
         self.secret_lost = [k for k in self.secret_lost if k not in clean]
-        if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
-            self.note_limits_edit(old_limits, self.cfg["site_limits"], on_changed)
-        if sync_off:
-            with self.sync_lock:
-                self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
-                self._save_shared()
         self.apply_launch_at_login()
         if bar_changed:
             self.bar.reset()
@@ -2467,7 +2568,7 @@ class Api:
         )
 
     def get_settings(self):
-        cfg = self._app.cfg
+        cfg = self._app.cfg.view()
         # extension_connected: the Chrome extension called in the last ~2 min.
         connected = self._app.extension_connected()
         return dict(
