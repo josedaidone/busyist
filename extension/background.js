@@ -15,6 +15,8 @@
 //    inside blocked hours. buZyist keeps the totals; if it isn't running, the
 //    last answer is cached and enforced, and the time measured meanwhile is
 //    kept and sent when buZyist is back.
+//
+// 3. Sharing limits across PCs: see "sharing across PCs" below.
 
 const BASE = "http://127.0.0.1:47616";
 const VERSION = chrome.runtime.getManifest().version;
@@ -22,6 +24,7 @@ const VERSION = chrome.runtime.getManifest().version;
 const FOCUS_URL = BASE + "/focus?v=" + VERSION;
 const USAGE_URL = BASE + "/usage";
 const GRANT_URL = BASE + "/grant";
+const SYNC_URL = BASE + "/sync";
 const BLOCKED = chrome.runtime.getURL("blocked.html");
 // Higher wins. Limits beat the allow rules, so a limited site stays blocked in
 // allow mode; focus blocks in "block" mode beat limits, so the focus page shows.
@@ -43,12 +46,39 @@ let passes = {}; // {ruleId: untilMs} granted from the block page while buZyist 
 let counting = { ids: [], since: 0 }; // the rules being timed right now
 let timer = null;
 let cache = { at: 0, data: null };
+// This browser profile: a random id kept for good, and its Google account (""
+// when not signed in). buZyist uses them to pick the one profile per PC that
+// shares limits through Chrome sync, and to name it in Settings.
+const me = { id: "", account: "" };
 
-const ready = chrome.storage.local.get(["lastGood", "pending", "passes"]).then((s) => {
+const ready = chrome.storage.local.get(["lastGood", "pending", "passes", "instanceId"]).then(async (s) => {
   lastGood = s.lastGood || null;
   pending = s.pending || {};
   passes = s.passes || {};
+  me.id = s.instanceId || "";
+  if (!/^[a-z0-9]{6,32}$/.test(me.id)) {
+    me.id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    await chrome.storage.local.set({ instanceId: me.id });
+  }
+  me.account = await profileEmail();
 });
+
+// Needs the identity.email permission; "" if the profile isn't signed in.
+function profileEmail() {
+  return new Promise((resolve) => {
+    try {
+      chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }, (info) => {
+        void chrome.runtime.lastError;
+        resolve((info && info.email) || "");
+      });
+    } catch (e) {
+      resolve("");
+    }
+  });
+}
+
+const who = () => ({ version: VERSION, instance: me.id, account: me.account });
+const focusUrl = () => FOCUS_URL + "&i=" + me.id + "&a=" + encodeURIComponent(me.account);
 
 const saveState = () => chrome.storage.local.set({ lastGood, pending, passes });
 
@@ -193,7 +223,7 @@ async function fetchState(force) {
   let data = null;
   const sent = JSON.parse(JSON.stringify(pending));
   try {
-    data = await post(USAGE_URL, { usage: sent, version: VERSION });
+    data = await post(USAGE_URL, Object.assign({ usage: sent }, who()));
     if (data) {
       // What we sent is now in buZyist's totals; anything measured while the
       // request was out stays pending.
@@ -206,12 +236,13 @@ async function fetchState(force) {
         if (pending[id] && !Object.keys(pending[id]).length) delete pending[id];
       }
     } else {
-      const res = await fetch(FOCUS_URL, { cache: "no-store" }); // an older buZyist
+      const res = await fetch(focusUrl(), { cache: "no-store" }); // an older buZyist
       data = res.ok ? await res.json() : null;
     }
   } catch (e) {
     data = null;
   }
+  if (data && force) data = await shareSync(data);
   if (data) {
     lastGood = data;
     // Remember a pass that buZyist now knows about, and drop the local copy.
@@ -225,6 +256,163 @@ async function fetchState(force) {
   saveState();
   return data;
 }
+
+// ---------------------------------------------------- sharing across PCs
+//
+// With "Share limits and time with my other PCs" on, buZyist picks one
+// browser profile per PC (the first to connect, or the one chosen in
+// Settings) and only that one gets `sync` in its answers. It keeps two things
+// in chrome.storage.sync, which Chrome copies to every browser signed in to
+// the same Google account:
+//   limits.0, limits.1 ..  the rules, as merged by the last PC to write:
+//                          {rev, n, by, on, on_at, deleted, rules} in .0,
+//                          more {rev, rules} chunks when they pass 8 KB
+//   u.<pc>.<rule id>       one PC's time on one rule: {n: PC name, t: when
+//                          written, b, m, d} (see SiteUsage.export)
+// buZyist does the merging (App._merge_limits: rule by rule, newest edit
+// wins, removals leave tombstones), so this side only carries the shared
+// copy to buZyist when its `rev` is new, and writes buZyist's copy back
+// when it differs. Time never conflicts: each PC writes only its own keys
+// and buZyist adds up the others'. All this happens on the forced exchanges
+// (every 30 s, and when Chrome sync brings a change); time is written at
+// most once a minute.
+
+const CHUNK_BYTES = 7000;
+const USAGE_WRITE_MS = 60000;
+const STALE_MS = 40 * 86400000; // a PC not heard from in this long is forgotten
+const TORN_MS = 120000; // chunks from different writes for this long: write ours over them
+let lastUsageWrite = 0;
+let tornSince = 0;
+
+// The shared rules, null if there are none, undefined while a change is
+// still arriving (chunks from different writes).
+function readLimits(all) {
+  const head = all["limits.0"];
+  if (!head || typeof head.rev !== "string") return null;
+  const rules = [];
+  for (let i = 0; i < (head.n || 1); i++) {
+    const chunk = all["limits." + i];
+    if (!chunk || chunk.rev !== head.rev || !Array.isArray(chunk.rules)) return undefined;
+    rules.push(...chunk.rules);
+  }
+  return { rev: head.rev, on: !!head.on, on_at: head.on_at || 0, deleted: head.deleted || {}, rules };
+}
+
+// JSON with sorted keys, to tell whether two copies hold the same thing.
+function canon(value) {
+  if (Array.isArray(value)) return "[" + value.map(canon).join(",") + "]";
+  if (value && typeof value === "object") {
+    return "{" + Object.keys(value).sort().map((k) => JSON.stringify(k) + ":" + canon(value[k])).join(",") + "}";
+  }
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+const docOf = (d) => ({ rules: d.rules, deleted: d.deleted, on: !!d.on, on_at: d.on_at || 0 });
+
+// Every other PC's time: {pc: {name, t, rules: {ruleId: {b, m, d}}}}.
+function readUsage(all, device, now) {
+  const out = {};
+  for (const [key, v] of Object.entries(all)) {
+    const m = /^u\.([a-z0-9]+)\.([a-f0-9]+)$/.exec(key);
+    if (!m || m[1] === device || !v || now - (v.t || 0) > STALE_MS) continue;
+    const pc = (out[m[1]] = out[m[1]] || { name: "", t: 0, rules: {} });
+    pc.name = v.n || pc.name;
+    pc.t = Math.max(pc.t, v.t || 0);
+    pc.rules[m[2]] = { b: v.b, m: v.m || {}, d: v.d || {} };
+  }
+  return out;
+}
+
+async function writeLimits(s, all) {
+  const doc = s.doc;
+  const rev = s.device + "." + Date.now().toString(36);
+  const head = { rev, n: 1, by: s.device, on: !!doc.on, on_at: doc.on_at || 0, deleted: doc.deleted || {}, rules: [] };
+  const chunks = [head];
+  let cur = head;
+  for (const rule of doc.rules || []) {
+    if (cur.rules.length && JSON.stringify(cur).length + JSON.stringify(rule).length > CHUNK_BYTES) {
+      cur = { rev, rules: [] };
+      chunks.push(cur);
+    }
+    cur.rules.push(rule);
+  }
+  head.n = chunks.length;
+  const items = {};
+  chunks.forEach((c, i) => { items["limits." + i] = c; });
+  await chrome.storage.sync.set(items);
+  const stale = Object.keys(all).filter((k) => /^limits\.\d+$/.test(k) && Number(k.slice(7)) >= chunks.length);
+  if (stale.length) await chrome.storage.sync.remove(stale);
+}
+
+// This PC's time, only what changed, at most once a minute. Also clears
+// this PC's keys for rules that are gone and other PCs' long-silent ones.
+async function writeUsage(s, all, now) {
+  if (now - lastUsageWrite < USAGE_WRITE_MS) return;
+  const prefix = "u." + s.device + ".";
+  const usage = s.usage || {};
+  const items = {};
+  for (const [id, u] of Object.entries(usage)) {
+    const old = all[prefix + id];
+    if (old && old.n === s.name && canon([old.b, old.m, old.d]) === canon([u.b, u.m, u.d])) continue;
+    items[prefix + id] = { n: s.name, t: now, b: u.b, m: u.m, d: u.d };
+  }
+  const drop = Object.entries(all).filter(([k, v]) => k.startsWith("u.") && (k.startsWith(prefix)
+    ? !(k.slice(prefix.length) in usage) : !v || now - (v.t || 0) > STALE_MS)).map(([k]) => k);
+  if (Object.keys(items).length) await chrome.storage.sync.set(items);
+  if (drop.length) await chrome.storage.sync.remove(drop);
+  if (Object.keys(items).length || drop.length) lastUsageWrite = now;
+}
+
+// Hand buZyist what other PCs shared, then share ours. Returns the newest
+// answer from buZyist (it changes when rules came from another PC).
+async function shareSync(data) {
+  if (!data.sync || !data.sync.device) return data;
+  let all;
+  try {
+    all = await chrome.storage.sync.get(null);
+  } catch (e) {
+    return data;
+  }
+  const now = Date.now();
+  let s = data.sync;
+  let remote = readLimits(all);
+  if (remote === undefined) {
+    // Two PCs wrote at once and Chrome kept chunks of both. Wait for the
+    // rest to arrive; if it never does, our merged copy replaces them.
+    tornSince = tornSince || now;
+    if (now - tornSince > TORN_MS) remote = null;
+  } else {
+    tornSince = 0;
+  }
+  const others = readUsage(all, s.device, now);
+  const body = {};
+  if (remote ? remote.rev !== s.rev_seen : remote === null && !s.joined) body.limits = remote;
+  const seen = s.seen || {};
+  if (Object.keys(others).length !== Object.keys(seen).length
+      || Object.entries(others).some(([pc, u]) => seen[pc] !== u.t)) body.usage = others;
+  if (Object.keys(body).length) {
+    const res = await post(SYNC_URL, Object.assign(body, who())).catch(() => null);
+    if (!res || !res.sync) return data;
+    data = res;
+    s = res.sync;
+  }
+  try {
+    if (s.joined && remote !== undefined && (!remote || canon(docOf(remote)) !== canon(docOf(s.doc)))) {
+      await writeLimits(s, all);
+    }
+    await writeUsage(s, all, now);
+  } catch (e) {
+    console.warn("buZyist: couldn't write to Chrome sync", e);
+  }
+  return data;
+}
+
+// Another PC changed something: pass it on soon (a few changes usually come together).
+let syncSoon = null;
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "sync" || syncSoon) return;
+  syncSoon = setTimeout(() => { syncSoon = null; sync(true); }, 2000);
+});
 
 // ----------------------------------------------------------------- rules
 
@@ -390,7 +578,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       const minutes = (lastGood && lastGood.pass_minutes) || 2;
       passes[msg.id] = Date.now() + minutes * 60000;
       saveState();
-      try { await post(GRANT_URL, { id: msg.id, version: VERSION }); } catch (e) { /* the local pass still holds */ }
+      try { await post(GRANT_URL, Object.assign({ id: msg.id }, who())); } catch (e) { /* the local pass still holds */ }
       await sync(true);
     }
     if (msg.type === "popup") { reply(await exclusive(() => popupData())); return; }

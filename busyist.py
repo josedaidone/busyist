@@ -56,7 +56,7 @@ from PIL import Image, ImageDraw, ImageFont
 # sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
 APP_NAME = "buZyist"
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 REPO_URL = "https://github.com/josedaidone/buzyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
@@ -80,6 +80,7 @@ SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart pi
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
 USAGE_PATH = DATA_DIR / "usage.json"  # time spent per limited website (site limits)
+SYNC_PATH = DATA_DIR / "sync.json"  # sharing the limits and their time with other PCs
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"
 UPDATES_DIR = DATA_DIR / "updates"  # downloaded installers
@@ -111,6 +112,12 @@ MAX_LIMIT_SITES = 20  # websites in one limit
 LIMIT_UNITS = {"minute": 1, "hour": 60, "day": 1440, "week": 10080}  # in minutes
 SITE_ANCHOR = date(2024, 1, 1)  # a Monday: day/week periods count from here
 PASS_SECONDS = 120  # what "allow 2 more minutes" on the block page grants
+# Sharing limits across PCs (see App.sync_payload): days of per-day time each
+# PC shares, and how long an unheard-of PC's time keeps counting.
+SYNC_DAYS = 35
+SYNC_STALE_DAYS = 40
+TOMBSTONE_DAYS = 60  # a limit removed on one PC stays removed on PCs that were off this long
+DEVICE_NAME = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "PC")[:60]
 SITE_MODES = ("block", "allow")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 MINI_W, MINI_H = 340, 108
@@ -156,6 +163,12 @@ DEFAULTS = {
     # per period and/or hours when the site is blocked. See clean_site_limit.
     "site_limits_on": False,
     "site_limits": [],
+    # Share the limits and the time spent on them with your other PCs, through
+    # Chrome sync. One browser profile per PC does it: sync_owner is its
+    # extension instance id, taken by the first one to connect when empty.
+    # Off by default: it sends the rules and the time to Google's servers.
+    "sync_limits": False,
+    "sync_owner": "",
 }
 
 MAX_BLOCKED_APPS = 20  # added by hand, on top of the presets
@@ -702,6 +715,9 @@ class App:
             self.cfg["site_mode"] = "block"
         self.cfg["site_limits"] = _sanitize_site_limits(self.cfg.get("site_limits"))
         self.usage = SiteUsage(USAGE_PATH)
+        self.sync_lock = threading.Lock()  # guards self.shared
+        self.shared = load_shared()
+        self.usage.set_remote(self.shared["remote"])
         if saved and "use_busybar" not in saved:
             # Set up before the bar was optional, so set up for one.
             self.cfg["use_busybar"] = True
@@ -962,7 +978,7 @@ class App:
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
             }
 
-    def site_focus(self) -> dict:
+    def site_focus(self, instance: str = "") -> dict:
         """
         What the Chrome extension (issue #2) reads from /focus: the same work-
         phase rule as the app blocker, but only when site blocking is on. When
@@ -972,6 +988,9 @@ class App:
         `mode` and `patterns` are what the extension uses (patterns may hold
         wildcards and paths). `sites` is kept for extensions from before
         those: only the plain domains of a blocklist, which they understand.
+
+        The browser profile that shares the limits with other PCs (`instance`
+        is the sync owner) also gets `sync`, see sync_payload.
         """
         on = bool(self.cfg.get("block_sites"))
         limits_on = bool(self.cfg.get("site_limits_on"))
@@ -979,7 +998,7 @@ class App:
         focus = self.focus()
         active = on and focus["active"]
         patterns = list(self.cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
-        return {
+        out = {
             "active": active,
             "task": focus["task"] if active else "",
             "ends_at_ms": focus["ends_at_ms"] if active else 0,
@@ -990,6 +1009,9 @@ class App:
             "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
             "pass_minutes": PASS_SECONDS // 60,
         }
+        if self.is_sync_owner(instance):
+            out["sync"] = self.sync_payload()
+        return out
 
     def extension_connected(self) -> bool:
         return bool(self.extension_last) and (now_ms() - self.extension_last) < 120_000
@@ -999,18 +1021,233 @@ class App:
         return self.extension_connected() and (
             version_tuple(self.extension_version) < version_tuple(EXTENSION_VERSION))
 
-    def note_extension(self, version) -> None:
+    def note_extension(self, version, instance="", account=None) -> None:
         """
         The extension just called, saying which version it is. Chrome doesn't
         reload an unpacked extension when its files change, so after an update
         the old one keeps running until the user reloads it: say so, once.
+
+        Extensions from 1.5.0 also say which browser profile they run in
+        (`instance`, a random id per profile) and its Google account, so
+        Settings can offer the profiles that could share the limits.
         """
         self.extension_last = now_ms()
         self.extension_version = str(version or "")[:20]
+        instance = str(instance or "")
+        if re.fullmatch(r"[a-z0-9]{6,32}", instance):
+            self.note_instance(instance, account)
         if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
             self._ext_warned = EXTENSION_VERSION
             self.notify("Reload the buZyist extension",
                         "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.")
+
+    # ---------------------------------------------- sharing across PCs
+    #
+    # With sync_limits on, the limit rules and the time spent on them are
+    # shared with the user's other PCs through chrome.storage.sync, which
+    # Chrome copies between every browser signed in to the same Google
+    # account. buZyist can't reach it; the extension can. So one browser
+    # profile per PC, the sync owner (the first to connect, or the one picked
+    # in Settings), gets `sync` in its /focus answers: this PC's rules and
+    # time to write there. It posts back to /sync what the other PCs wrote.
+    # Other profiles on this PC (a work profile, say) still enforce the
+    # limits and report time as before; they just don't touch Chrome sync.
+    #
+    # Rules are merged one by one, never replaced wholesale, so a PC that was
+    # off for a week can't wipe what changed elsewhere meanwhile. Each rule
+    # carries `at`, when it was last edited, and the newer copy of a rule
+    # wins; a removed rule leaves a tombstone (`deleted`: id -> when) that
+    # beats any older copy, kept TOMBSTONE_DAYS. The on/off switch is one
+    # more value with its own `at`. The first time this PC meets the shared
+    # copy (`joined` is the owner it last merged through), its rules for the
+    # same websites as a shared rule are taken to be that rule and dropped.
+    # Time never conflicts: each PC writes only its own and adds up everybody
+    # else's (SiteUsage.remote).
+
+    def is_sync_owner(self, instance) -> bool:
+        owner = self.cfg.get("sync_owner")
+        return bool(self.cfg.get("sync_limits") and owner and instance == owner)
+
+    def note_instance(self, instance: str, account) -> None:
+        now = now_ms()
+        with self.sync_lock:
+            seen = self.shared["instances"]
+            entry = seen.get(instance)
+            save = entry is None or (account is not None and entry.get("email") != account)
+            entry = seen.setdefault(instance, {"email": "", "seen": 0})
+            if account is not None:
+                entry["email"] = str(account)[:100]
+            entry["seen"] = now
+            if save:
+                old = now - 60 * 86400_000
+                for iid in [i for i, e in seen.items() if e.get("seen", 0) < old]:
+                    del seen[iid]
+                self._save_shared()
+        if self.cfg.get("sync_limits") and not self.cfg.get("sync_owner"):
+            self.cfg["sync_owner"] = instance
+            write_json(CONFIG_PATH, self.cfg)
+            log.info("sharing limits through browser profile %s (%s)", instance, account or "no account")
+
+    def _save_shared(self) -> None:
+        """Write sync.json; call with sync_lock held."""
+        sh = self.shared
+        data = dict(sh, remote={dev: dict(d, rules={rid: dict(u, m={str(k): v for k, v in u["m"].items()})
+                                                     for rid, u in d["rules"].items()})
+                               for dev, d in sh["remote"].items()})
+        try:
+            write_json(SYNC_PATH, data)
+        except OSError:
+            log.warning("couldn't write sync.json", exc_info=True)
+
+    def sync_payload(self) -> dict:
+        """
+        What the sync owner's extension shares through Chrome sync: this PC's
+        id and name, `doc` (the rules as merged here, each with its `at`, plus
+        tombstones and the switch) and this PC's time per rule
+        (SiteUsage.export). `rev_seen` is the shared copy last merged here,
+        `joined` whether this PC has met it yet, `seen` which other PCs'
+        time it has (their `t`).
+        """
+        rules = self.cfg.get("site_limits") or []
+        with self.sync_lock:
+            sh = self.shared
+            return {
+                "device": sh["device"], "name": DEVICE_NAME,
+                "joined": sh["joined"] == self.cfg.get("sync_owner"),
+                "rev_seen": sh["rev_seen"],
+                "doc": {
+                    "rules": [dict(r, at=sh["rule_at"].get(r["id"], 0)) for r in rules],
+                    "deleted": dict(sh["deleted"]),
+                    "on": bool(self.cfg.get("site_limits_on")), "on_at": sh["on_at"],
+                },
+                "usage": self.usage.export([r["id"] for r in rules]),
+                "seen": {dev: d["t"] for dev, d in sh["remote"].items()},
+            }
+
+    def note_limits_edit(self, old: list[dict], new: list[dict], on_changed: bool) -> None:
+        """Settings saved the limits: stamp what changed, tombstone what's gone."""
+        now = now_ms()
+        before = {r["id"]: r for r in old}
+        with self.sync_lock:
+            sh = self.shared
+            for r in new:
+                if before.get(r["id"]) != r:
+                    sh["rule_at"][r["id"]] = now
+            for rid in before.keys() - {r["id"] for r in new}:
+                sh["deleted"][rid] = now
+                sh["rule_at"].pop(rid, None)
+            if on_changed:
+                sh["on_at"] = now
+            self._save_shared()
+
+    def _merge_limits(self, remote: dict, first: bool) -> tuple[list[dict], bool]:
+        """
+        Merge the shared copy into ours (see "sharing across PCs"); call with
+        sync_lock held. Updates the stamps and returns the rules and switch.
+        Order: the shared copy's, then rules only this PC has.
+        """
+        sh = self.shared
+        now = now_ms()
+        deleted = dict(sh["deleted"])
+        for rid, when in remote["deleted"].items() if isinstance(remote.get("deleted"), dict) else []:
+            try:
+                deleted[str(rid)] = max(deleted.get(str(rid), 0), int(when))
+            except (TypeError, ValueError):
+                continue
+        old = now - TOMBSTONE_DAYS * 86400_000
+        deleted = {rid: when for rid, when in deleted.items() if when > old}
+        theirs, their_at = [], {}
+        for raw in remote.get("rules") if isinstance(remote.get("rules"), list) else []:
+            try:
+                rule = clean_site_limit(raw)
+                at = int(raw.get("at") or 0)
+            except (AppError, AttributeError, TypeError, ValueError):
+                continue
+            if rule["id"] not in their_at:
+                theirs.append(rule)
+                their_at[rule["id"]] = at
+        mine = {r["id"]: r for r in self.cfg.get("site_limits") or []}
+        merged, stamps = [], {}
+        for rule in theirs:
+            rid, at = rule["id"], their_at[rule["id"]]
+            if rid in mine and sh["rule_at"].get(rid, 0) > at:
+                rule, at = mine[rid], sh["rule_at"][rid]
+            if deleted.get(rid, -1) < at:
+                merged.append(rule)
+                stamps[rid] = at
+        shared_sites = {tuple(sorted(r["patterns"])) for r in merged}
+        for rid, rule in mine.items():
+            at = sh["rule_at"].get(rid, 0)
+            if rid in their_at or deleted.get(rid, -1) >= at:
+                continue
+            if first and tuple(sorted(rule["patterns"])) in shared_sites:
+                continue  # set up on both PCs before they met: one rule
+            merged.append(rule)
+            stamps[rid] = at
+        merged = merged[:MAX_SITE_LIMITS]
+        on = bool(self.cfg.get("site_limits_on"))
+        try:
+            their_on_at = int(remote.get("on_at") or 0)
+        except (TypeError, ValueError):
+            their_on_at = 0
+        if first:
+            on = on or bool(remote.get("on"))
+            sh["on_at"] = max(sh["on_at"], their_on_at)
+        elif their_on_at > sh["on_at"]:
+            on, sh["on_at"] = bool(remote.get("on")), their_on_at
+        sh["deleted"] = deleted
+        sh["rule_at"] = {r["id"]: stamps[r["id"]] for r in merged}
+        return merged, on
+
+    def apply_sync(self, data: dict, instance) -> None:
+        """
+        The sync owner's extension read Chrome sync: `limits` is the shared
+        copy of the rules (a doc as in sync_payload plus its `rev`, or None
+        when there is none yet), `usage` every other PC's time. Either may
+        be missing (unchanged).
+        """
+        if not self.is_sync_owner(instance):
+            return
+        owner = self.cfg["sync_owner"]
+        new_rules = new_on = None
+        with self.sync_lock:
+            sh = self.shared
+            if "limits" in data and data["limits"] is None:
+                sh["joined"] = owner  # nothing shared yet: ours become the shared copy
+            elif isinstance(data.get("limits"), dict):
+                remote = data["limits"]
+                first = sh["joined"] != owner
+                new_rules, new_on = self._merge_limits(remote, first)
+                sh["joined"] = owner
+                sh["rev_seen"] = str(remote.get("rev") or "")[:40]
+            if "usage" in data:
+                sh["remote"] = clean_remote_usage(data["usage"], sh["device"])
+                self.usage.set_remote(sh["remote"])
+            sh["last_sync"] = now_ms()
+            self._save_shared()
+        if new_rules is not None and (new_rules != self.cfg.get("site_limits")
+                                      or new_on != bool(self.cfg.get("site_limits_on"))):
+            log.info("limits merged from Chrome sync: %d rules", len(new_rules))
+            self.cfg["site_limits"] = new_rules
+            self.cfg["site_limits_on"] = new_on
+            write_json(CONFIG_PATH, self.cfg)
+
+    def sync_info(self) -> dict:
+        """For Settings: the browser profiles seen, the other PCs and when we last synced."""
+        now = now_ms()
+        with self.sync_lock:
+            sh = self.shared
+            return {
+                "owner": self.cfg.get("sync_owner", ""),
+                "instances": sorted(({"id": iid, "email": e.get("email", ""), "seen_ms": e.get("seen", 0),
+                                      "connected": now - e.get("seen", 0) < 120_000}
+                                     for iid, e in sh["instances"].items()),
+                                    key=lambda e: -e["seen_ms"]),
+                "devices": sorted(({"name": d["name"] or "Another PC", "t": d["t"]}
+                                   for d in sh["remote"].values()), key=lambda d: -d["t"]),
+                "last_sync_ms": sh["last_sync"],
+                "device_name": DEVICE_NAME,
+            }
 
     def site_limits_status(self, enabled_only: bool = False) -> list[dict]:
         """Where every site-limit rule stands right now (see site_limit_status)."""
@@ -1412,6 +1649,8 @@ class App:
             clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
         if "site_limits" in changes:
             clean["site_limits"] = clean_site_limits(changes["site_limits"])
+        if "sync_owner" in clean and not re.fullmatch(r"[a-z0-9]{0,32}", clean["sync_owner"]):
+            raise AppError("Pick the browser profile that shares the limits.")
         if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
             raise AppError("Pick whether to block the listed websites or allow only them.")
         merged = dict(self.cfg, **clean)
@@ -1431,8 +1670,17 @@ class App:
             except AppError:
                 self.bind_hotkey(old_hotkey)
                 raise
+        old_limits = self.cfg.get("site_limits") or []
+        on_changed = "site_limits_on" in clean and clean["site_limits_on"] != self.cfg.get("site_limits_on")
+        sync_off = self.cfg.get("sync_limits") and not merged.get("sync_limits")
         self.cfg.update(clean)
         write_json(CONFIG_PATH, self.cfg)
+        if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
+            self.note_limits_edit(old_limits, self.cfg["site_limits"], on_changed)
+        if sync_off:
+            with self.sync_lock:
+                self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
+                self._save_shared()
         self.apply_launch_at_login()
         if bar_changed:
             self.bar.reset()
@@ -1746,7 +1994,11 @@ class Api:
                     extension_version=self._app.extension_version,
                     extension_latest=EXTENSION_VERSION,
                     extension_dir=str(EXTENSION_DIR),
-                    extension_browser=(find_browser() or (None,))[0])
+                    extension_browser=(find_browser() or (None,))[0],
+                    sync_info=self._app.sync_info())
+
+    def sync_info(self):
+        return self._do(self._app.sync_info)
 
     def site_usage(self):
         """Every site-limit rule with its usage, for the Websites tab."""
@@ -2796,6 +3048,9 @@ class SiteUsage:
         self.minutes: dict[str, dict[int, float]] = {}
         self.days: dict[str, dict[str, float]] = {}
         self.passes: dict[str, int] = {}
+        # Other PCs' time, from Chrome sync (App.apply_sync): {device: {"rules":
+        # {rule id: {"b": epoch minute, "m": {minutes after b: s}, "d": {day: s}}}}}.
+        self.remote: dict[str, dict] = {}
         self.dirty = False
         self._saved = time.time()
         try:
@@ -2818,12 +3073,57 @@ class SiteUsage:
     def used(self, rid: str, start_ms: int, end_ms: int) -> float:
         """Seconds on this rule from start_ms up to end_ms."""
         first, last = start_ms // 60000, end_ms // 60000
+        in_span = lambda day: start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms  # noqa: E731
         with self.lock:
             total = sum(s for m, s in self.minutes.get(rid, {}).items() if first <= m <= last)
-            for day, seconds in self.days.get(rid, {}).items():
-                if start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms:
-                    total += seconds
+            total += sum(s for day, s in self.days.get(rid, {}).items() if in_span(day))
+            for device in self.remote.values():
+                theirs = device["rules"].get(rid)
+                if theirs:
+                    base = theirs["b"]
+                    total += sum(s for m, s in theirs["m"].items() if first <= base + m <= last)
+                    total += sum(s for day, s in theirs["d"].items() if in_span(day))
         return total
+
+    def set_remote(self, remote: dict) -> None:
+        with self.lock:
+            self.remote = remote
+
+    def export(self, rids: list[str]) -> dict:
+        """
+        This PC's own time per rule, to share with other PCs: today per
+        minute (`m`, minutes after `b`, today's midnight; budgets shorter than
+        a day never reach past midnight) and per day before that (`d`, the
+        last SYNC_DAYS days). Chrome sync takes 8 KB per item, so a day with
+        hours on one site is shared in coarser slices (5, 15, 60 minutes).
+        """
+        today = date.today()
+        base = _ms(datetime.combine(today, dtime.min)) // 60000
+        oldest = (today - timedelta(days=SYNC_DAYS)).strftime("%Y-%m-%d")
+        out = {}
+        with self.lock:
+            for rid in rids:
+                minutes: dict[int, float] = {}
+                days: dict[str, float] = {}
+                for minute, s in self.minutes.get(rid, {}).items():
+                    if minute >= base:
+                        minutes[minute - base] = minutes.get(minute - base, 0.0) + s
+                    else:
+                        day = datetime.fromtimestamp(minute * 60).strftime("%Y-%m-%d")
+                        days[day] = days.get(day, 0.0) + s
+                for day, s in self.days.get(rid, {}).items():
+                    days[day] = days.get(day, 0.0) + s
+                d = {day: round(s) for day, s in sorted(days.items()) if day >= oldest and round(s) > 0}
+                for step in (1, 5, 15, 60):
+                    slices: dict[int, float] = {}
+                    for m, s in minutes.items():
+                        slices[m // step * step] = slices.get(m // step * step, 0.0) + s
+                    m = {str(k): round(s) for k, s in sorted(slices.items()) if round(s) > 0}
+                    if len(json.dumps({"m": m, "d": d})) < 6500:
+                        break
+                if m or d:
+                    out[rid] = {"b": base, "m": m, "d": d}
+        return out
 
     def grant(self, rid: str, until_ms: int) -> None:
         with self.lock:
@@ -2864,6 +3164,79 @@ class SiteUsage:
             write_json(self.path, data)
         except OSError:
             log.warning("couldn't write usage.json", exc_info=True)
+
+
+def clean_remote_usage(raw, own_device: str) -> dict:
+    """
+    Other PCs' time as the extension read it from Chrome sync, checked:
+    {device: {"name", "t", "rules": {rule id: {"b", "m", "d"}}}}. A PC not
+    heard from in SYNC_STALE_DAYS is dropped.
+    """
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    cutoff = now_ms() - SYNC_STALE_DAYS * 86400_000
+    for dev, data in list(raw.items())[:20]:
+        if dev == own_device or not re.fullmatch(r"[a-z0-9]{6,32}", str(dev)) or not isinstance(data, dict):
+            continue
+        try:
+            t = int(data.get("t") or 0)
+        except (TypeError, ValueError):
+            continue
+        if t < cutoff:
+            continue
+        rules = {}
+        raw_rules = data.get("rules")
+        for rid, u in list(raw_rules.items() if isinstance(raw_rules, dict) else [])[:MAX_SITE_LIMITS * 2]:
+            if not re.fullmatch(r"[a-f0-9]{6,16}", str(rid)) or not isinstance(u, dict):
+                continue
+            try:
+                minutes = {int(k): float(v) for k, v in (u.get("m") or {}).items()}
+                days = {str(k): float(v) for k, v in (u.get("d") or {}).items()}
+                rules[rid] = {
+                    "b": int(u.get("b") or 0),
+                    "m": {k: v for k, v in minutes.items() if 0 <= k < 2880 and 0 < v <= 3600},
+                    "d": {k: v for k, v in days.items()
+                          if re.fullmatch(r"\d{4}-\d{2}-\d{2}", k) and 0 < v <= 86400},
+                }
+            except (AttributeError, TypeError, ValueError):
+                continue
+        out[dev] = {"name": str(data.get("name") or "")[:60], "t": t, "rules": rules}
+    return out
+
+
+def load_shared() -> dict:
+    """sync.json: this PC's id in Chrome sync and what sharing has learnt so far."""
+    data = read_json(SYNC_PATH, {})
+    if not isinstance(data, dict):
+        data = {}
+    device = str(data.get("device") or "")
+    if not re.fullmatch(r"[a-z0-9]{6,32}", device):
+        device = uuid.uuid4().hex[:12]
+    instances = data.get("instances") if isinstance(data.get("instances"), dict) else {}
+    def stamps(raw) -> dict[str, int]:
+        out = {}
+        for k, v in (raw.items() if isinstance(raw, dict) else []):
+            try:
+                out[str(k)] = int(v)
+            except (TypeError, ValueError):
+                continue
+        return out
+    try:
+        on_at, last = int(data.get("on_at") or 0), int(data.get("last_sync") or 0)
+    except (TypeError, ValueError):
+        on_at, last = 0, 0
+    return {
+        "device": device,
+        "rule_at": stamps(data.get("rule_at")),  # rule id -> when it was last edited, here or elsewhere
+        "deleted": stamps(data.get("deleted")),  # rule id -> when it was removed
+        "on_at": on_at,  # when site_limits_on was last switched
+        "rev_seen": str(data.get("rev_seen") or ""),  # the shared copy last merged here
+        "joined": str(data.get("joined") or ""),  # the owner we merged with the shared copy through
+        "instances": {str(k): v for k, v in instances.items() if isinstance(v, dict)},  # browser profiles seen
+        "remote": clean_remote_usage(data.get("remote"), device),
+        "last_sync": last,
+    }
 
 
 def exe_label(image: str) -> str:
@@ -3067,7 +3440,8 @@ class FocusServer:
 
     It serves GET /focus, returning App.site_focus(), and two POST routes that
     answer with the same thing: /usage (time the extension measured on
-    limited sites) and /grant (the block page's "2 more minutes"). OPTIONS is
+    limited sites), /grant (the block page's "2 more minutes") and /sync
+    (what other PCs shared through Chrome sync, see App.apply_sync). OPTIONS is
     answered for the CORS preflight, including Private Network Access
     (`Access-Control-Allow-Private-Network`), which Chrome requires before it
     will let an extension reach `127.0.0.1`. It fails quietly if the port is
@@ -3120,8 +3494,10 @@ class FocusServer:
                 if not self._cors(200):
                     return
                 query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-                app.note_extension((query.get("v") or [""])[0])
-                body = json.dumps(app.site_focus()).encode("utf-8")
+                instance = (query.get("i") or [""])[0]
+                account = (query.get("a") or [""])[0] if "i" in query else None
+                app.note_extension((query.get("v") or [""])[0], instance, account)
+                body = json.dumps(app.site_focus(instance)).encode("utf-8")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
@@ -3130,7 +3506,7 @@ class FocusServer:
 
             def do_POST(self):
                 route = self.path.split("?")[0]
-                if route not in ("/usage", "/grant"):
+                if route not in ("/usage", "/grant", "/sync"):
                     self.send_response(404)
                     self.send_header("Content-Length", "0")
                     self.end_headers()
@@ -3143,18 +3519,23 @@ class FocusServer:
                     data = None
                 if not self._cors(200):
                     return
-                app.note_extension(data.get("version") if isinstance(data, dict) else "")
-                if isinstance(data, dict):
-                    try:
-                        if route == "/usage":
-                            app.record_usage(data.get("usage"))
-                        else:
-                            app.grant_pass(data.get("id"))
-                    except AppError:
-                        pass
-                    except Exception:
-                        log.exception("site limit request failed")
-                body = json.dumps(app.site_focus()).encode("utf-8")
+                if not isinstance(data, dict):
+                    data = {}
+                instance = str(data.get("instance") or "")
+                account = data.get("account") if isinstance(data.get("account"), str) else None
+                app.note_extension(data.get("version"), instance, account)
+                try:
+                    if route == "/usage":
+                        app.record_usage(data.get("usage"))
+                    elif route == "/sync":
+                        app.apply_sync(data, instance)
+                    else:
+                        app.grant_pass(data.get("id"))
+                except AppError:
+                    pass
+                except Exception:
+                    log.exception("site limit request failed")
+                body = json.dumps(app.site_focus(instance)).encode("utf-8")
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))

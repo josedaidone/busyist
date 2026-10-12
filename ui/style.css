@@ -595,6 +595,10 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 /* website limits */
 #limitsFields { margin-top: 12px; }
 #limitsFields.muted { opacity: .55; }
+#syncBox { margin-top: 18px; }
+#syncBox .field { margin-bottom: 8px; }
+#syncFields.muted { opacity: .55; }
+#syncStatus { font-size: 13px; font-weight: 600; }
 .limit-list { display: grid; gap: 8px; margin: 0 0 12px; }
 .limit-row { border-radius: var(--r-row); padding: 8px 14px 12px; display: grid; gap: 6px; background: var(--surface); }
 .limit-row.off { opacity: .6; }

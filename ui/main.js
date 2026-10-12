@@ -891,6 +891,8 @@ async function openSettings(tab) {
   closeLimitEditor();
   renderLimits();
   refreshLimitUsage();
+  syncOwner = s.sync_owner || "";
+  renderSync(s.sync_info);
   $("addBlockedSite").value = "";
   $("extDir").textContent = s.extension_dir || "extension";
   $("extDir").title = s.extension_dir || "";
@@ -1157,9 +1159,64 @@ async function refreshLimitUsage() {
   limitUsage = Object.fromEntries(r.rules.map((rule) => [rule.id, rule]));
   renderLimits();
 }
-setInterval(() => {
-  if ($("drawer").classList.contains("on") && settingsTab === "limits") refreshLimitUsage();
+setInterval(async () => {
+  if (!$("drawer").classList.contains("on") || settingsTab !== "limits") return;
+  refreshLimitUsage();
+  const r = await api.sync_info();
+  if (r.ok) renderSync(r);
 }, 5000);
+
+// Sharing limits with other PCs through Chrome sync: one browser profile per
+// PC does it (busyist.py, "sharing across PCs"). The profiles come from the
+// extensions that have called buZyist; the first one is picked by itself.
+let syncOwner = "";  // as picked here, saved with the rest
+
+const agoText = (ms) => {
+  const min = Math.round((Date.now() - ms) / 60000);
+  if (min < 1) return "just now";
+  if (min < 60) return `${min} min ago`;
+  if (min < 48 * 60) return `${Math.round(min / 60)} h ago`;
+  return `${Math.round(min / 1440)} days ago`;
+};
+
+function renderSync(info) {
+  info = info || { instances: [], devices: [] };
+  const select = $("s_sync_owner");
+  if (document.activeElement !== select) {
+    select.replaceChildren();
+    const auto = el("option", "", info.instances.length ? "The first profile to connect" : "Waiting for the extension\u2026");
+    auto.value = "";
+    select.append(auto);
+    for (const inst of info.instances) {
+      const name = inst.email || `A profile not signed in to Chrome (${inst.id.slice(0, 4)})`;
+      const opt = el("option", "", name + (inst.connected ? "" : ` \u00b7 last seen ${agoText(inst.seen_ms)}`));
+      opt.value = inst.id;
+      select.append(opt);
+    }
+    if (syncOwner && !info.instances.some((i) => i.id === syncOwner)) {
+      const gone = el("option", "", "A profile not seen lately");
+      gone.value = syncOwner;
+      select.append(gone);
+    }
+    select.value = syncOwner;
+  }
+  const owner = info.instances.find((i) => i.id === syncOwner);
+  const status = $("syncStatus");
+  const others = info.devices.map((d) => `${d.name} (${agoText(d.t)})`).join(", ");
+  const synced = !!info.last_sync_ms;
+  let text;
+  if (!owner) text = "Not shared yet: load the extension in Chrome";
+  else if (!owner.email) text = "This profile isn't signed in to Chrome, so nothing leaves this PC";
+  else if (!synced) text = "Waiting for Chrome sync\u2026";
+  else text = `Synced ${agoText(info.last_sync_ms)}` + (others ? ` \u00b7 also counting ${others}` : " \u00b7 no other PC yet");
+  status.textContent = text;
+  const good = !!(owner && owner.email && synced);
+  status.classList.toggle("ok", good);
+  status.classList.toggle("bad", !good);
+  $("syncFields").classList.toggle("muted", !$("s_sync_limits").checked);
+}
+$("s_sync_owner").onchange = () => { syncOwner = $("s_sync_owner").value; };
+$("s_sync_limits").onchange = () => $("syncFields").classList.toggle("muted", !$("s_sync_limits").checked);
 
 function openLimitEditor(index) {
   const rule = index === undefined
@@ -1397,7 +1454,7 @@ $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules });
+  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");

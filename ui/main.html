@@ -294,6 +294,18 @@
         <div class="limit-editor hidden" id="limitEditor"></div>
         <button type="button" class="btn" id="addLimitBtn">Add a website limit</button>
       </div>
+      <div class="extension-box" id="syncBox">
+        <label class="switch"><input type="checkbox" name="sync_limits" id="s_sync_limits"><span class="knob"></span>Share limits and time with my other PCs</label>
+        <div class="help">Through Chrome sync: on each PC, sign one Chrome profile in to the same Google account, with sync on, and load the buZyist extension there. Time on Instagram here then counts on your other PCs too. Only the limits are shared; your other settings stay on each PC.</div>
+        <div id="syncFields">
+          <div class="field">
+            <label for="s_sync_owner">Chrome profile that shares</label>
+            <select class="input" id="s_sync_owner"></select>
+            <div class="help">Pick the profile signed in to the account you use on your other PCs. Other profiles on this PC still enforce the limits and count time; they just don't share it.</div>
+          </div>
+          <div class="extension-status" id="syncStatus">Not synced yet</div>
+        </div>
+      </div>
     </div>
 
     <div class="section" role="tabpanel" id="p_general" data-panel="general">
