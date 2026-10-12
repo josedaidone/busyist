@@ -1027,7 +1027,7 @@ function renderBlockedApps() {
   $("blockedAppsFields").classList.toggle("muted", !$("s_block_apps").checked);
 }
 
-// Programs the blocker never closes: PROTECTED_EXES in busyist.py, which
+// Programs the blocker never closes: PROTECTED_EXES in buzyist/blocker.py, which
 // has the last word when Settings are saved.
 const PROTECTED_EXES = new Set([
   "explorer", "svchost", "csrss", "wininit", "winlogon", "lsass", "services", "smss",
@@ -1125,7 +1125,7 @@ function addBlockedSite() {
   sites.push(site);
   renderBlockedSites();
 }
-// Mirrors clean_site_pattern in busyist.py, which has the final say on save.
+// Mirrors clean_site_pattern in buzyist/site_rules.py, which has the final say on save.
 // "" for nothing typed, null for something that isn't a website.
 function cleanSitePattern(raw) {
   let text = String(raw).trim().toLowerCase();
@@ -1230,7 +1230,7 @@ setInterval(async () => {
 }, 5000);
 
 // Sharing limits with other PCs through Chrome sync: one browser profile per
-// PC does it (busyist.py, "sharing across PCs"). The profiles come from the
+// PC does it (buzyist/app_sync.py, "sharing across PCs"). The profiles come from the
 // extensions that have called buZyist; the first one is picked by itself.
 let syncOwner = "";  // as picked here, saved with the rest
 

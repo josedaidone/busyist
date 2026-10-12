@@ -67,7 +67,7 @@ would install that in silence. So `SHA256SUMS.txt` is signed with [minisign](htt
 
 ### What the app does
 
-`UPDATE_PUBKEYS` in `busyist.py` lists the public keys an update may be signed with.
+`UPDATE_PUBKEYS` in `buzyist/updater.py` lists the public keys an update may be signed with.
 
 - **`UPDATE_PUBKEYS` is empty (how the code ships today):** nothing is checked. The app logs
   `this build has no update signing key; trusting SHA256SUMS.txt without a signature` and installs
@@ -100,7 +100,7 @@ offline medium (a USB stick in a drawer, a password manager), out of the repo (`
 gitignored). **If the key is lost, installed copies can't update themselves any more** (people will
 have to download the next version by hand), so keep that backup.
 
-Then put the second line of `buzyist.pub` (it starts with `RW`) in `busyist.py`:
+Then put the second line of `buzyist.pub` (it starts with `RW`) in `buzyist/updater.py`:
 
 ```python
 UPDATE_PUBKEYS: list[str] = ["RW...your key..."]

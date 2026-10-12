@@ -172,7 +172,7 @@ The full steps, including test builds and what to do when one fails, are in
 [docs/RELEASING.md](docs/RELEASING.md).
 
 Project layout:
-- `busyist.py`: the app;
+- `busyist.py`: the entry point (and `__version__`); `buzyist/`: the app, one module per part (see CLAUDE.md);
 - `ui/`: the window and mini timer (HTML/CSS/JS, shown with pywebview);
 - `extension/`: the Chrome extension that blocks websites during focus and enforces website limits;
 - `packaging/`: the PyInstaller spec and the Inno Setup script;
