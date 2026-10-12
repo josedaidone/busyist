@@ -82,3 +82,15 @@ class AppError(Exception):
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def app_version() -> str:
+    """
+    This copy's version: ``__version__`` in busyist.py, the one place it is
+    written (build.ps1, the PyInstaller spec, the Inno script and the release
+    workflow read it there). Run as a script, busyist.py registers itself as
+    the ``busyist`` module first, so this never loads it a second time.
+    """
+    import busyist  # noqa: PLC0415 - busyist.py imports this package, so not at import time
+
+    return busyist.__version__

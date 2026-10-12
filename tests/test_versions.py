@@ -2,7 +2,7 @@
 
 import pytest
 
-from busyist import version_tuple
+from buzyist.updater import version_tuple
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,7 @@ import sys
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage
+from buzyist import constants, paths, storage, updater
 from buzyist.win32 import files as files_mod
 
 VERSION = "9.9.9"
@@ -20,7 +20,7 @@ SETUP_BYTES = b"MZ pretend this is an installer" * 100
 
 
 class FakeGitHub:
-    """busyist.github_open serving fixed bodies by URL; records what was asked."""
+    """updater.github_open serving fixed bodies by URL; records what was asked."""
 
     def __init__(self, files: dict[str, bytes]):
         self.files = files
@@ -50,7 +50,7 @@ def sums_for(data: bytes = SETUP_BYTES, name: str = SETUP_NAME) -> bytes:
 @pytest.fixture
 def github(monkeypatch):
     fake = FakeGitHub({DOWNLOADS + SETUP_NAME: SETUP_BYTES, DOWNLOADS + "SHA256SUMS.txt": sums_for()})
-    monkeypatch.setattr(busyist, "github_open", fake)
+    monkeypatch.setattr(updater, "github_open", fake)
     return fake
 
 
@@ -58,7 +58,7 @@ def github(monkeypatch):
 
 
 def test_download_setup_returns_the_file_and_its_hash(github):
-    path, sha = busyist.download_setup(release())
+    path, sha = updater.download_setup(release())
     assert path == paths.UPDATES_DIR / SETUP_NAME
     assert path.read_bytes() == SETUP_BYTES
     assert sha == hashlib.sha256(SETUP_BYTES).hexdigest()
@@ -68,14 +68,14 @@ def test_download_setup_returns_the_file_and_its_hash(github):
 def test_download_setup_refuses_a_wrong_checksum(github):
     github.files[DOWNLOADS + "SHA256SUMS.txt"] = sums_for(b"something else")
     with pytest.raises(constants.AppError, match="doesn't match"):
-        busyist.download_setup(release())
+        updater.download_setup(release())
     assert not any(paths.UPDATES_DIR.iterdir())
 
 
 def test_download_setup_needs_the_installer_in_the_checksums(github):
     github.files[DOWNLOADS + "SHA256SUMS.txt"] = sums_for(name="Other.exe")
     with pytest.raises(constants.AppError, match="don't list its installer"):
-        busyist.download_setup(release())
+        updater.download_setup(release())
 
 
 # --------------------------------------------------------------- open_locked
@@ -156,7 +156,7 @@ def test_install_update_runs_the_checked_setup(updatable, github, side_effects, 
 def test_install_update_refuses_a_setup_swapped_after_the_check(
     updatable, github, side_effects, deferred_threads, monkeypatch
 ):
-    real = busyist.download_setup
+    real = updater.download_setup
 
     def download_then_swap(rel):
         path, sha = real(rel)
@@ -178,7 +178,7 @@ def test_install_update_refuses_a_setup_swapped_after_the_check(
 def test_install_update_gives_up_when_the_setup_cant_be_locked(
     updatable, github, side_effects, deferred_threads, monkeypatch, clock
 ):
-    real = busyist.download_setup
+    real = updater.download_setup
     holders = []
 
     def download_and_hold(rel):

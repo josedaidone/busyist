@@ -211,11 +211,17 @@ def sign_file(data: bytes, key_id: bytes, seed: bytes, *, trusted_comment: str) 
 
 
 def app_pubkeys(source: Path) -> list[str]:
-    """UPDATE_PUBKEYS as written in busyist.py."""
-    for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
-        target = getattr(node, "target", None) or (getattr(node, "targets", None) or [None])[0]
-        if isinstance(node, ast.Assign | ast.AnnAssign) and getattr(target, "id", None) == "UPDATE_PUBKEYS":
-            return list(ast.literal_eval(node.value))
+    """
+    UPDATE_PUBKEYS as written in the app: in `source` itself, else (for
+    busyist.py, the entry script) in buzyist/updater.py next to it.
+    """
+    for path in (source, source.parent / "buzyist" / "updater.py"):
+        if not path.is_file():
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            target = getattr(node, "target", None) or (getattr(node, "targets", None) or [None])[0]
+            if isinstance(node, ast.Assign | ast.AnnAssign) and getattr(target, "id", None) == "UPDATE_PUBKEYS":
+                return list(ast.literal_eval(node.value))
     raise ValueError(f"no UPDATE_PUBKEYS in {source}")
 
 
@@ -261,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         pub_text, sec_text = generate(None if args.no_password else _new_password())
         args.public.write_text(pub_text, encoding="ascii")
         args.secret.write_text(sec_text, encoding="ascii")
-        print(f"Public key ({args.public}), for UPDATE_PUBKEYS in busyist.py:\n  {pub_text.splitlines()[1]}")
+        print(f"Public key ({args.public}), for UPDATE_PUBKEYS in buzyist/updater.py:\n  {pub_text.splitlines()[1]}")
         print(f"Secret key: {args.secret}. Keep it (and a backup) offline; never commit it.")
         return 0
 

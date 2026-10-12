@@ -23,7 +23,6 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import ctypes.wintypes
-import hashlib
 import http.server
 import json
 import logging
@@ -70,12 +69,12 @@ from buzyist.constants import (
     MINI_W,
     PASS_SECONDS,
     PAUSE_REMIND_S,
-    RELEASES_API,
     REPO_URL,
     SOLO_H,
     SOLO_W,
     TOMBSTONE_DAYS,
     AppError,
+    app_version,
     now_ms,
 )
 from buzyist.hotkey import GlobalHotkey
@@ -88,7 +87,15 @@ from buzyist.site_rules import (
 from buzyist.storage import read_json, write_json
 from buzyist.sync import clean_remote_sessions, clean_remote_usage, load_shared
 from buzyist.todoist import Todoist
-from buzyist.updater_sign import minisign_verify
+from buzyist.updater import (
+    UPDATABLE,
+    UPDATE_EVERY,
+    app_dir_writable,
+    download_setup,
+    latest_release,
+    stream_sha256,
+    version_tuple,
+)
 from buzyist.usage import SiteUsage
 from buzyist.win32.clipboard import set_clipboard
 from buzyist.win32.files import open_locked
@@ -105,173 +112,11 @@ from buzyist.win32.windows import (
 )
 
 __version__ = "1.7.0"
+if __name__ == "__main__":
+    sys.modules.setdefault("busyist", sys.modules[__name__])  # so app_version() reads this copy, not a second one
 
 
 log = logging.getLogger(APP)
-
-
-# ----------------------------------------------------------------- updates ---
-
-UPDATE_EVERY = 6 * 3600  # seconds between checks for a new release
-# Only a copy Setup installed can update itself (by running the next Setup);
-# Setup leaves its uninstaller next to the exe. A portable copy only hears
-# that there is a new version.
-UPDATABLE = paths.FROZEN and (Path(sys.executable).parent / "unins000.exe").exists()
-
-
-def version_tuple(text) -> tuple[int, ...]:
-    """'v1.2.0' or '1.2.0' -> (1, 2, 0); () if it isn't one, which sorts before every version."""
-    match = re.fullmatch(r"v?(\d+(?:\.\d+)*)", str(text).strip())
-    return tuple(int(x) for x in match.group(1).split(".")) if match else ()
-
-
-def github_open(url: str, timeout: float = 20, api: bool = False):
-    headers = {"User-Agent": f"{APP}/{__version__}"}
-    if api:
-        headers["Accept"] = "application/vnd.github+json"
-    try:
-        return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout)
-    except urllib.error.HTTPError as err:
-        raise AppError(f"GitHub answered {err.code}.")
-    except OSError as err:
-        raise AppError(f"Can't reach GitHub ({getattr(err, 'reason', err)}).")
-
-
-# Release signing (#022): SHA256SUMS.txt is signed with minisign (Ed25519,
-# prehashed "ED" mode) and published as SHA256SUMS.txt.minisig. These are
-# the public keys an update may be signed with: the base64 line of a
-# minisign .pub file ("RW..."), the current key first and the next one
-# (for a rotation) after it. See docs/RELEASING.md.
-#
-# While the list is EMPTY, signatures are not checked: the app logs a
-# warning and trusts SHA256SUMS.txt alone, as before. Once it holds a key,
-# a release without a valid signature by one of these keys is never
-# installed (no fallback).
-UPDATE_PUBKEYS: list[str] = []
-UPDATE_SIG_ASSET = "SHA256SUMS.txt.minisig"
-UNSIGNED_UPDATE = "The update isn't signed by buZyist; not installing it."
-# Every download of an update must come from this repository's releases.
-RELEASE_DOWNLOAD_PATH = urllib.parse.urlsplit(REPO_URL).path.rstrip("/") + "/releases/download/"
-
-
-def check_release_url(url: str) -> None:
-    """Refuse to download an update from anywhere but this repository's GitHub releases."""
-    parts = urllib.parse.urlsplit(str(url or ""))
-    segments = parts.path.split("/")
-    if (
-        parts.scheme != "https"
-        or parts.netloc.lower() != "github.com"
-        or not parts.path.lower().startswith(RELEASE_DOWNLOAD_PATH.lower())
-        or ".." in segments
-        or "." in segments
-    ):
-        log.error("refused an update download from %s", url)
-        raise AppError("The update doesn't come from buZyist's GitHub releases; not installing it.")
-
-
-def latest_release() -> dict | None:
-    """The newest published release if it is newer than this copy, else None."""
-    try:
-        with github_open(RELEASES_API, api=True) as response:
-            release = json.loads(response.read())
-    except (OSError, ValueError) as err:
-        raise AppError(f"Couldn't read the latest release from GitHub ({err}).")
-    tag = release.get("tag_name") or ""
-    if (version_tuple(tag) or ()) <= version_tuple(__version__):
-        return None
-    version = tag.lstrip("v")
-    assets = {a.get("name"): a for a in release.get("assets", [])}
-    # Releases from 1.5.0 on ship the installer under both names, so copies
-    # from before the rename (which look for Busyist-Setup) still update.
-    setup = assets.get(f"Buzyist-Setup-{version}.exe") or assets.get(f"Busyist-Setup-{version}.exe")
-    sums = assets.get("SHA256SUMS.txt")
-    sig = assets.get(UPDATE_SIG_ASSET)
-    return {
-        "version": version,
-        "url": release.get("html_url") or REPO_URL + "/releases/latest",
-        "setup": setup and {"name": setup["name"], "url": setup["browser_download_url"]},
-        "sums": sums and sums["browser_download_url"],
-        "sig": sig and sig["browser_download_url"],
-    }
-
-
-def download_setup(release: dict) -> tuple[Path, str]:
-    """
-    Download a release's installer and check it against its SHA256SUMS,
-    after checking SHA256SUMS' signature (when this build has UPDATE_PUBKEYS).
-    Returns the file and its SHA-256 (hex), which install_update checks again
-    through a locked handle right before running it.
-    """
-    setup = release["setup"]
-    if not setup or not release["sums"]:
-        raise AppError(f"Release {release['version']} has no installer to update with.")
-    for url in (setup["url"], release["sums"], release.get("sig")):
-        if url:
-            check_release_url(url)
-    try:
-        with github_open(release["sums"]) as response:
-            raw_sums = response.read()
-    except OSError as err:
-        raise AppError(f"Couldn't download the release checksums ({err}).")
-    if UPDATE_PUBKEYS:
-        if not release.get("sig"):
-            log.error("release %s has no %s; not installing it", release["version"], UPDATE_SIG_ASSET)
-            raise AppError(UNSIGNED_UPDATE)
-        try:
-            with github_open(release["sig"]) as response:
-                signature = response.read().decode("utf-8", "replace")
-        except OSError as err:
-            raise AppError(f"Couldn't download the release signature ({err}).")
-        try:
-            trusted = minisign_verify(raw_sums, signature, UPDATE_PUBKEYS)
-        except ValueError as err:
-            log.error("release %s: bad signature on SHA256SUMS.txt (%s); not installing it", release["version"], err)
-            raise AppError(UNSIGNED_UPDATE)
-        log.info("release %s: SHA256SUMS.txt is signed (%s)", release["version"], trusted)
-    else:
-        log.warning("this build has no update signing key; trusting SHA256SUMS.txt without a signature")
-    sums = raw_sums.decode("ascii", "replace")
-    expected = next(
-        (parts[0].lower() for parts in map(str.split, sums.splitlines()) if parts[1:] == [setup["name"]]), None
-    )
-    if not expected:
-        raise AppError("The release's checksums don't list its installer.")
-    paths.UPDATES_DIR.mkdir(parents=True, exist_ok=True)
-    path = paths.UPDATES_DIR / setup["name"]
-    part = path.with_suffix(".part")
-    digest = hashlib.sha256()
-    try:
-        with github_open(setup["url"], timeout=60) as response, part.open("wb") as out:
-            while chunk := response.read(1 << 16):
-                digest.update(chunk)
-                out.write(chunk)
-    except OSError as err:
-        part.unlink(missing_ok=True)
-        raise AppError(f"The download failed ({err}).")
-    if digest.hexdigest() != expected:
-        part.unlink(missing_ok=True)
-        raise AppError("The downloaded installer doesn't match the release's checksum; not installing it.")
-    part.replace(path)
-    return path, expected
-
-
-def stream_sha256(stream) -> str:
-    """SHA-256 (hex) of what's left to read in a binary file object."""
-    digest = hashlib.sha256()
-    while chunk := stream.read(1 << 16):
-        digest.update(chunk)
-    return digest.hexdigest()
-
-
-def app_dir_writable() -> bool:
-    """Whether this user can replace the program files without an admin prompt."""
-    probe = Path(sys.executable).parent / f".{APP}-write-test"
-    try:
-        probe.write_bytes(b"")
-        probe.unlink()
-        return True
-    except OSError:
-        return False
 
 
 # --------------------------------------------------------------- tray icon ---
@@ -1318,7 +1163,7 @@ class App:
                 log.error("the installer %s changed after it was checked; deleting it", path)
                 path.unlink(missing_ok=True)
                 raise AppError("The installer changed after it was checked; not installing it.")
-            write_json(paths.UPDATE_MARK, {"from": __version__, "to": release["version"]})
+            write_json(paths.UPDATE_MARK, {"from": app_version(), "to": release["version"]})
             log.info("installing buZyist %s from %s", release["version"], path)
             # /RELAUNCH=1 makes Setup start buZyist again when it is done,
             # whether or not the update went through.
@@ -1349,9 +1194,9 @@ class App:
         if not mark:
             return
         paths.UPDATE_MARK.unlink(missing_ok=True)
-        if mark.get("to") == __version__:
-            log.info("updated from %s to %s", mark.get("from"), __version__)
-            self.notify(APP_NAME, f"Updated to version {__version__}.")
+        if mark.get("to") == app_version():
+            log.info("updated from %s to %s", mark.get("from"), app_version())
+            self.notify(APP_NAME, f"Updated to version {app_version()}.")
         else:
             log.warning("the update to %s didn't install; see %s", mark.get("to"), paths.SETUP_LOG)
             with self.lock:
@@ -1909,7 +1754,7 @@ class Api:
             **{k: "" for k in SECRET_KEYS},
             **{f"has_{k}": bool(cfg.get(k)) for k in SECRET_KEYS},
             **{f"{k}_lost": k in self._app.secret_lost for k in SECRET_KEYS},
-            version=__version__,
+            version=app_version(),
             data_dir=str(paths.DATA_DIR),
             can_auto_update=self._app.can_auto_update,
             extension_id=EXTENSION_ID,
@@ -2379,7 +2224,7 @@ def main() -> None:
     if instance is None:
         return  # already running; it has been asked to show its window
     setup_logging()
-    log.info("%s %s starting (%s)", APP_NAME, __version__, "packaged" if paths.FROZEN else "from source")
+    log.info("%s %s starting (%s)", APP_NAME, app_version(), "packaged" if paths.FROZEN else "from source")
     if not webview2_installed():
         answer = message_box(
             "buZyist needs the Microsoft Edge WebView2 Runtime, which draws its window.\n\n"
