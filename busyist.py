@@ -108,6 +108,7 @@ from buzyist.sync import clean_remote_sessions, clean_remote_usage, load_shared
 from buzyist.todoist import Todoist
 from buzyist.usage import SiteUsage
 from buzyist.win32.clipboard import set_clipboard
+from buzyist.win32.input import send_keys
 from buzyist.win32.processes import list_processes, process_session, relaunch_app, relaunch_target, terminate_process
 from buzyist.win32.windows import (
     close_windows,
@@ -2594,57 +2595,6 @@ def open_browser_page(exe: str, page: str) -> None:
     except Exception:
         log.exception("could not open %s", page)
     show_in_explorer(paths.EXTENSION_DIR)
-
-
-class _KEYBDINPUT(ctypes.Structure):
-    _fields_ = [
-        ("wVk", ctypes.wintypes.WORD),
-        ("wScan", ctypes.wintypes.WORD),
-        ("dwFlags", ctypes.wintypes.DWORD),
-        ("time", ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_size_t),
-    ]
-
-
-class _MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
-    _fields_ = [
-        ("dx", ctypes.wintypes.LONG),
-        ("dy", ctypes.wintypes.LONG),
-        ("mouseData", ctypes.wintypes.DWORD),
-        ("dwFlags", ctypes.wintypes.DWORD),
-        ("time", ctypes.wintypes.DWORD),
-        ("dwExtraInfo", ctypes.c_size_t),
-    ]
-
-
-class _INPUT(ctypes.Structure):
-    class _U(ctypes.Union):
-        _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
-
-    _anonymous_ = ("u",)
-    _fields_ = [("type", ctypes.wintypes.DWORD), ("u", _U)]
-
-
-def send_keys(text: str) -> None:
-    """Ctrl+L, type `text`, Enter, into the foreground window."""
-    KEYUP, UNICODE, CTRL, L, ENTER = 0x2, 0x4, 0x11, 0x4C, 0x0D
-
-    def key(vk=0, scan=0, flags=0):
-        i = _INPUT(type=1)  # INPUT_KEYBOARD
-        i.ki = _KEYBDINPUT(vk, scan, flags, 0, 0)
-        return i
-
-    seq = [key(CTRL), key(L), key(L, flags=KEYUP), key(CTRL, flags=KEYUP)]
-    u32 = ctypes.WinDLL("user32")
-    arr = (_INPUT * len(seq))(*seq)
-    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
-    time.sleep(0.15)
-    seq = []
-    for ch in text:
-        seq += [key(scan=ord(ch), flags=UNICODE), key(scan=ord(ch), flags=UNICODE | KEYUP)]
-    seq += [key(ENTER), key(ENTER, flags=KEYUP)]
-    arr = (_INPUT * len(seq))(*seq)
-    u32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
 
 
 def show_in_explorer(path: Path) -> None:
