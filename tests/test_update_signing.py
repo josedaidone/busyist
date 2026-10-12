@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage, updater, updater_sign
+from buzyist import app_updates, constants, paths, storage, updater, updater_sign
 from tools import minisign as tool
 
 DATA = Path(__file__).parent / "data"
@@ -345,7 +345,7 @@ def test_latest_release_finds_the_signature(monkeypatch):
 
 @pytest.mark.windows_only
 def test_a_signed_update_installs_end_to_end(github, signing_on, make_app, side_effects, deferred_threads, monkeypatch):
-    monkeypatch.setattr(busyist, "UPDATABLE", True)
+    monkeypatch.setattr(app_updates, "UPDATABLE", True)
     app = make_app()
     app.update = release()
     app.install_update()
@@ -357,7 +357,7 @@ def test_a_signed_update_installs_end_to_end(github, signing_on, make_app, side_
 
 @pytest.mark.windows_only
 def test_an_unsigned_update_shows_the_error(github, signing_on, make_app, side_effects, deferred_threads, monkeypatch):
-    monkeypatch.setattr(busyist, "UPDATABLE", True)
+    monkeypatch.setattr(app_updates, "UPDATABLE", True)
     app = make_app()
     app.update = release(sig=None)
     with pytest.raises(constants.AppError):

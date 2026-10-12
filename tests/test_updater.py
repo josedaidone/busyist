@@ -10,7 +10,7 @@ import sys
 import pytest
 
 import busyist
-from buzyist import constants, paths, storage, updater
+from buzyist import app_updates, constants, paths, storage, updater
 from buzyist.win32 import files as files_mod
 
 VERSION = "9.9.9"
@@ -129,7 +129,7 @@ def test_open_locked_missing_file(tmp_path, clock):
 
 @pytest.fixture
 def updatable(monkeypatch, make_app, deferred_threads):
-    monkeypatch.setattr(busyist, "UPDATABLE", True)
+    monkeypatch.setattr(app_updates, "UPDATABLE", True)
     app = make_app()
     app.update = release()
     return app
@@ -163,7 +163,7 @@ def test_install_update_refuses_a_setup_swapped_after_the_check(
         path.write_bytes(b"MZ evil")  # another process replaces it before it runs
         return path, sha
 
-    monkeypatch.setattr(busyist, "download_setup", download_then_swap)
+    monkeypatch.setattr(app_updates, "download_setup", download_then_swap)
     with pytest.raises(constants.AppError, match="changed after it was checked"):
         updatable.install_update()
     assert side_effects.processes == []
@@ -186,7 +186,7 @@ def test_install_update_gives_up_when_the_setup_cant_be_locked(
         holders.append(open(path, "r+b"))  # noqa: SIM115 - e.g. an antivirus scanning it
         return path, sha
 
-    monkeypatch.setattr(busyist, "download_setup", download_and_hold)
+    monkeypatch.setattr(app_updates, "download_setup", download_and_hold)
     try:
         with pytest.raises(constants.AppError, match="Couldn't lock"):
             updatable.install_update()
