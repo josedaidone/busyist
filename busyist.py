@@ -3991,8 +3991,13 @@ class FocusServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+        class Server(http.server.ThreadingHTTPServer):
+            # The default backlog of 5 refuses connections when several
+            # profiles, popups and block pages call at the same moment.
+            request_queue_size = 64
+
         try:
-            self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+            self.httpd = Server(("127.0.0.1", self.port), Handler)
         except OSError as err:
             log.warning("focus server couldn't bind 127.0.0.1:%d: %s", self.port, err)
             return
