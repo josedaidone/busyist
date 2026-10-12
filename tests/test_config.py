@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import blocker, constants, paths
 
 CONFIGS = Path(__file__).parent / "data" / "configs"
 
@@ -37,7 +37,7 @@ def test_defaults_and_model_agree():
     for key, value in busyist.DEFAULTS.items():
         if key != "blocked_apps":  # the presets are filled in
             assert model[key] == value, key
-    assert [a["id"] for a in model["blocked_apps"]] == [p[0] for p in busyist.APP_PRESETS]
+    assert [a["id"] for a in model["blocked_apps"]] == [p[0] for p in blocker.APP_PRESETS]
 
 
 def test_a_new_install_starts_current(start):

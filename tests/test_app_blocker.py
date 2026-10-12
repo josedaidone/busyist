@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 import busyist
+from buzyist import blocker as blocker_mod
 from buzyist import constants
 
 SPOTIFY = {"id": "spotify", "name": "Spotify", "exes": ["Spotify.exe"], "on": True, "action": "close"}
@@ -22,17 +23,17 @@ SPOTIFY = {"id": "spotify", "name": "Spotify", "exes": ["Spotify.exe"], "on": Tr
 @pytest.mark.parametrize("name", ["explorer.exe", "Explorer", "chrome.exe", "buzyist.exe", "PYTHONW.EXE", "msedge"])
 def test_protected_programs_cant_be_added(name):
     with pytest.raises(constants.AppError, match=f"buZyist won't close {re.escape(name)}: Windows or your browser"):
-        busyist.clean_blocked_apps([{"exes": [name], "on": True, "custom": True}])
+        blocker_mod.clean_blocked_apps([{"exes": [name], "on": True, "custom": True}])
 
 
 def test_other_programs_still_can():
-    apps = busyist.clean_blocked_apps([{"exes": ["Notion.exe"], "on": True, "custom": True}])
+    apps = blocker_mod.clean_blocked_apps([{"exes": ["Notion.exe"], "on": True, "custom": True}])
     assert [a["exes"] for a in apps if a["custom"]] == [["Notion.exe"]]
 
 
 def test_an_old_config_drops_protected_programs(caplog):
     caplog.set_level(logging.WARNING, logger=constants.APP)
-    apps = busyist.normalize_blocked_apps(
+    apps = blocker_mod.normalize_blocked_apps(
         [
             {"exes": ["explorer.exe"], "on": True, "custom": True},
             "Chrome.exe",  # the first format: a bare program name
@@ -50,15 +51,15 @@ def test_an_old_config_loads_without_them(make_app):
 
 
 def test_presets_are_not_protected():
-    for _id, _name, exes, _action, _on in busyist.APP_PRESETS:
-        assert not {busyist.app_key(e) for e in exes} & busyist.PROTECTED_EXES
+    for _id, _name, exes, _action, _on in blocker_mod.APP_PRESETS:
+        assert not {blocker_mod.app_key(e) for e in exes} & blocker_mod.PROTECTED_EXES
 
 
 def test_main_js_mirrors_the_list():
     source = (Path(busyist.__file__).parent / "ui" / "main.js").read_text(encoding="utf-8")
     block = re.search(r"const PROTECTED_EXES = new Set\(\[(.*?)\]\);", source, re.DOTALL)
     assert block, "PROTECTED_EXES not found in ui/main.js"
-    assert set(re.findall(r'"([^"]+)"', block.group(1))) == busyist.PROTECTED_EXES
+    assert set(re.findall(r'"([^"]+)"', block.group(1))) == blocker_mod.PROTECTED_EXES
 
 
 # ------------------------------------------------------------------ enforce
@@ -80,7 +81,7 @@ class FakeDesktop:
             "close_windows",
             "terminate_process",
         ):
-            monkeypatch.setattr(busyist, name, getattr(self, name))
+            monkeypatch.setattr(blocker_mod, name, getattr(self, name))
 
     def list_processes(self):
         return list(self.processes.items())
@@ -123,7 +124,7 @@ def desktop(monkeypatch):
 def blocker(desktop, clock):
     app = SimpleNamespace(cfg={"blocked_apps": [SPOTIFY]}, notify=lambda *a: notes.append(a))
     notes: list[tuple] = []
-    made = busyist.AppBlocker(app)
+    made = blocker_mod.AppBlocker(app)
     made.notes = notes
     return made
 
@@ -131,7 +132,7 @@ def blocker(desktop, clock):
 FOCUS = {"active": True, "ends_at_ms": 1767600000000}
 
 
-def tick(blocker, clock, seconds=busyist.AppBlocker.TICK):
+def tick(blocker, clock, seconds=blocker_mod.AppBlocker.TICK):
     blocker.enforce(FOCUS)
     blocker._first_sweep = False  # what _loop does after each enforce
     clock.advance(seconds)
@@ -221,7 +222,7 @@ def test_from_source_the_parent_is_spared_too(blocker, desktop, clock, monkeypat
 def test_a_pid_windows_wont_end_is_not_retried(blocker, desktop, clock, monkeypatch):
     desktop.processes = {100: "Spotify.exe"}
     tries = []
-    monkeypatch.setattr(busyist, "terminate_process", lambda pid: tries.append(pid) or 5)
+    monkeypatch.setattr(blocker_mod, "terminate_process", lambda pid: tries.append(pid) or 5)
     for _ in range(3):
         tick(blocker, clock)
     assert tries == [100]
