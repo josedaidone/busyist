@@ -1567,18 +1567,22 @@ class App:
                 return  # a reading from before our own start
             state = timer_state(snap)
             inner = snap.snapshot
+            # The bar may run more work phases than the session asked for
+            # (BAR_CYCLES_MIN); what it ran past ours never counts.
+            rounds = session.get("rounds")
             if state.mode != "interval":
                 reason = "stopped"
             elif state.is_finished:
                 reason = "finished"
-                session["done"] = inner.interval_settings.interval_work_cycles_count
+                count = inner.interval_settings.interval_work_cycles_count
+                session["done"] = min(count, int(rounds)) if rounds else count
             else:
                 reason = None
                 # Even intervals are work, odd ones rest: the work phases
                 # fully behind us are the even indices below the current one.
                 interval = state.interval or 0
-                session["done"] = max(session["done"], (interval + 1) // 2)
-                rounds = session.get("rounds")
+                done = max(session["done"], (interval + 1) // 2)
+                session["done"] = min(done, int(rounds)) if rounds else done
                 if rounds and interval >= rounds * 2 - 1:
                     # Fewer rounds than the bar runs: our session ends here.
                     reason, stop_bar = "finished", True
