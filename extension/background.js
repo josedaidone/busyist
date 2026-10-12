@@ -110,8 +110,22 @@ function patternRegex(pattern) {
   return "^(https?://" + hostRe + "(?::\\d+)?" + pathRe + ")$";
 }
 
+// Every tab is tested against every pattern on each pass, so each pattern is
+// compiled once. Without the g flag a RegExp keeps no state between tests.
+const regexCache = new Map(); // pattern -> RegExp, or null when it doesn't compile
+function compiled(pattern) {
+  let re = regexCache.get(pattern);
+  if (re === undefined) {
+    try { re = new RegExp(patternRegex(pattern), "i"); } catch (e) { re = null; }
+    if (regexCache.size > 2000) regexCache.clear(); // patterns come and go with Settings edits
+    regexCache.set(pattern, re);
+  }
+  return re;
+}
+
 function matches(pattern, url) {
-  try { return new RegExp(patternRegex(pattern), "i").test(url); } catch (e) { return false; }
+  const re = compiled(pattern);
+  return !!re && re.test(url);
 }
 
 // buZyist versions before allowlists only send `sites` (domains to block).
