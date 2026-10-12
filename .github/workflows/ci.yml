@@ -84,6 +84,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
+          # The checkout is shallow (one commit), so fetch the base to diff against.
+          git fetch --no-tags --depth=1 origin "$env:BASE_SHA"
+          if ($LASTEXITCODE -ne 0) { throw "git fetch of the base commit failed" }
           $changed = git diff --name-only "$env:BASE_SHA" HEAD -- extension/
           if ($LASTEXITCODE -ne 0) { throw "git diff failed" }
           $changed = @($changed | Where-Object { $_ })
