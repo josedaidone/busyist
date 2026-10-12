@@ -38,6 +38,18 @@ jobs:
           BUILD_PYTHON: python
         run: ./build.ps1
 
+      # Signs SHA256SUMS.txt for the in-app updater (#022, docs/RELEASING.md).
+      # Without the secret it only warns, unless busyist.py already lists
+      # UPDATE_PUBKEYS (installed copies would refuse an unsigned release).
+      - name: Sign the checksums
+        shell: pwsh
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+        run: |
+          python tools/minisign.py sign -m dist/SHA256SUMS.txt --app busyist.py --optional
+          if ($LASTEXITCODE -ne 0) { throw "Signing SHA256SUMS.txt failed" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: buzyist-build
@@ -45,6 +57,7 @@ jobs:
             dist/*.exe
             dist/*.zip
             dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.minisig
 
       - name: Publish the release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -54,4 +67,5 @@ jobs:
             dist/*.exe
             dist/*.zip
             dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt.minisig
           generate_release_notes: true

@@ -6,6 +6,9 @@ busybar_todoist.json
 *.log
 .webview/
 old/
+# Release signing keys (#022): keep them offline. The tests' throwaway key is the exception.
+*.key
+!tests/data/test-minisign.key
 
 # Environments and build output
 .venv/
