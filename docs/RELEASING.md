@@ -1,43 +1,41 @@
 # Releasing buZyist
 
-Releases are built and published by GitHub Actions (`.github/workflows/release.yml`). Pushing a
-tag like `v1.0.1` starts the build; nothing is published until a tag is pushed.
+Releases are built and published by GitHub Actions (`.github/workflows/release.yml`), from the
+version in `busyist.py`. **Merging a PR that bumps `__version__` publishes that version**; merging
+one that doesn't publishes nothing.
+
+Installed copies update themselves silently within about 6 hours of a release, so only bump the
+version in a PR you have tested (see "Before you tag" below).
 
 ## Make a release
 
-1. Bump the version in `busyist.py`. Keep the exact format, since `build.ps1`, the PyInstaller spec,
-   the Inno script and CI all read it by regex:
+1. In the PR (or a small PR of its own), bump the version in `busyist.py`. Keep the exact format,
+   since `build.ps1`, the PyInstaller spec, the Inno script and CI all read it by regex:
 
    ```python
    __version__ = "1.0.1"
    ```
 
-2. Commit and push:
+2. Merge the PR into `main`. On that push the workflow's first job (`version`) reads `__version__`:
+   - if the tag `v1.0.1` already exists, it stops there (that's every merge without a bump);
+   - if the version is older than the latest `v*` tag, it fails (no accidental downgrade);
+   - otherwise it runs the CI checks (lint and tests, `ci.yml`), installs Inno Setup, runs
+     `build.ps1` (job `build`, read-only token) and publishes (job `publish`, the only one allowed
+     to write), which **creates the tag `v1.0.1` on the merged commit**. A failing test stops it
+     before anything is built.
 
-   ```powershell
-   git commit -am "buZyist 1.0.1"
-   git push
-   ```
+   Runs never overlap (`concurrency: release`), so two quick merges release one after the other.
 
-3. Tag the same version and push the tag:
+3. Watch the run on the [Actions tab](https://github.com/josedaidone/buzyist/actions)
+   ("Build and release", about 5–10 minutes).
 
-   ```powershell
-   git tag v1.0.1
-   git push origin v1.0.1
-   ```
-
-   The build fails on purpose if the tag and `__version__` differ.
-
-4. Watch the run on the [Actions tab](https://github.com/josedaidone/buzyist/actions)
-   ("Build and release", about 5–10 minutes). It runs the CI checks (lint and tests, `ci.yml`),
-   checks the version, installs Inno Setup, runs `build.ps1` (job `build`, read-only token) and
-   publishes the release (job `publish`, the only one allowed to write). A failing
-   test stops it before anything is built.
-
-5. When it's green, the [latest release](https://github.com/josedaidone/buzyist/releases/latest)
+4. When it's green, the [latest release](https://github.com/josedaidone/buzyist/releases/latest)
    has `Buzyist-Setup-x.y.z.exe`, the portable zip, `SHA256SUMS.txt` and (once signing is set up,
    see below) `SHA256SUMS.txt.minisig`, with notes generated from
    the commits. Edit the notes on the release page if you want.
+
+Pushing a tag by hand still works too (`git tag v1.0.1; git push origin v1.0.1`): it builds and
+publishes that tag, and fails on purpose if the tag and `__version__` differ.
 
 ## Test a build without publishing
 
@@ -47,7 +45,13 @@ uploaded as a downloadable artifact of that run, and no release is created.
 ## If it fails
 
 - Open the failed step and read its log.
-- **Tag doesn't match the version**: delete the tag, fix `__version__`, commit, then re-tag:
+- **Nothing was released after a merge**: the version wasn't bumped (the `version` job says
+  "already released"), or the `version` job failed because the new version is older than the
+  latest tag.
+- **The build failed after a merge**: fix it in a new PR with the same version; since no tag was
+  created, merging the fix releases it.
+- **Tag doesn't match the version** (hand-pushed tags only): delete the tag, fix `__version__`,
+  commit, then re-tag:
 
   ```powershell
   git tag -d v1.0.1

@@ -1,7 +1,12 @@
 name: Build and release
 
-# Push a tag like v1.0.1 to build and publish a release.
-# "Run workflow" on the Actions tab builds without publishing.
+# Releases come from __version__ in busyist.py:
+# - a push to main (a merged PR) whose version has no vX.Y.Z tag yet tests,
+#   builds, tags that commit and publishes it; any other push to main stops
+#   after the cheap "version" job, so a PR publishes only when it bumps the
+#   version;
+# - pushing a tag like v1.0.1 by hand still builds and publishes that tag;
+# - "Run workflow" on the Actions tab builds without publishing.
 #
 # What this publishes is what the in-app updater installs silently, so:
 # - every action is pinned by commit SHA (Dependabot keeps them current);
@@ -12,10 +17,16 @@ name: Build and release
 #   the build job produced.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions: {}
+
+# Two merges in a row release one after the other, never at the same time.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   # Inno Setup is installed from the official release and checked against this
@@ -25,14 +36,65 @@ env:
   INNO_SHA256: 9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732
 
 jobs:
-  # Lint and tests first (ci.yml): a tag with a failing test never publishes.
+  # Decides what this run does. Outputs: tag (vX.Y.Z), build and release
+  # ("true"/"false"). A push to main releases only a version that has no tag
+  # yet and is newer than every existing v* tag.
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.decide.outputs.tag }}
+      build: ${{ steps.decide.outputs.build }}
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(sed -nE 's/^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"$/\1/p' busyist.py)
+          [ -n "$version" ] || { echo "::error::no __version__ = \"x.y.z\" line in busyist.py"; exit 1; }
+          tag="v$version"
+          build=true release=false
+          if [ "$EVENT" = push ] && [[ "$REF" == refs/tags/v* ]]; then
+            tag="$REF_NAME"   # the build job checks it matches __version__
+            release=true
+          elif [ "$EVENT" = push ]; then   # main
+            tags=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+            if grep -qxF "$tag" <<<"$tags"; then
+              echo "$tag is already released; nothing to publish."
+              build=false
+            else
+              newest=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" | sort -V | tail -n1 || true)
+              if [ -n "$newest" ] && [ "$(printf '%s\n' "$newest" "$tag" | sort -V | tail -n1)" != "$tag" ]; then
+                echo "::error::busyist.py says $version, older than the latest release $newest"
+                exit 1
+              fi
+              echo "Releasing $tag (latest so far: ${newest:-none})."
+              release=true
+            fi
+          fi
+          { echo "tag=$tag"; echo "build=$build"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
+
+  # Lint and tests first (ci.yml): a version with a failing test never publishes.
   test:
+    needs: version
+    if: needs.version.outputs.build == 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
 
   build:
-    needs: test
+    needs: [version, test]
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
@@ -98,9 +160,10 @@ jobs:
             dist/SHA256SUMS.txt.minisig
 
   # Only uploads what the build job produced: no checkout, no repo code.
+  # On a push to main it also creates the tag, on the commit that was built.
   publish:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -121,6 +184,8 @@ jobs:
       - name: Publish the release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/*.exe
             dist/*.zip
