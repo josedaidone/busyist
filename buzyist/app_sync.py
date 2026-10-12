@@ -97,9 +97,11 @@ class SyncMixin:
     # carries `at`, when it was last edited, and the newer copy of a rule
     # wins; a removed rule leaves a tombstone (`deleted`: id -> when) that
     # beats any older copy, kept TOMBSTONE_DAYS. The on/off switch is one
-    # more value with its own `at`. The first time this PC meets the shared
-    # copy (`joined` is the owner it last merged through), its rules for the
-    # same websites as a shared rule are taken to be that rule and dropped.
+    # more value with its own `at` (`on_at`; on the same stamp, "on" wins).
+    # The first time this PC meets the shared copy (`joined` is the owner it
+    # last merged through), its rules for the same websites as a shared rule
+    # are taken to be that rule and dropped, and the switch is on if either
+    # is on.
     # Time never conflicts: each PC writes only its own and adds up everybody
     # else's (SiteUsage.remote).
 
@@ -253,23 +255,23 @@ class SyncMixin:
         merged = merged[:MAX_SITE_LIMITS]
         on = bool(self.cfg.get("site_limits_on"))
         try:
-            their_on_at = int(remote.get("on_at") or 0)
-        except (TypeError, ValueError):
-            their_on_at = 0
-        if first:
-            # On if either is on. The stamp must go with the value chosen, or
-            # two PCs could hold the same on_at with different values and
-            # neither would ever give in: when ours wins over a shared "off",
-            # stamp it just past theirs so the other PCs take it.
-            their = bool(remote.get("on"))
-            if on and not their:
-                sh["on_at"] = max(sh["on_at"], their_on_at) + 1
-            elif their and not on:
-                on, sh["on_at"] = True, their_on_at
-            else:
-                sh["on_at"] = max(sh["on_at"], their_on_at)
-        elif their_on_at > sh["on_at"]:
-            on, sh["on_at"] = bool(remote.get("on")), their_on_at
+            their_on_at = int(remote["on_at"])  # the extension always sends it
+        except (KeyError, TypeError, ValueError):
+            their_on_at = None  # no usable stamp: the copy says nothing about the switch
+        their = bool(remote.get("on"))
+        if their_on_at is None:
+            pass
+        elif first:
+            # On if either is on, stamped with the newer of both stamps. That
+            # copy is never older than either (same stamp: "on" wins the tie,
+            # below), so the PCs still converge. No stamp is made up: a "+1"
+            # here could equal another PC's real later stamp holding the
+            # other value, a tie that nothing would ever break.
+            on, sh["on_at"] = on or their, max(sh["on_at"], their_on_at)
+        elif (their_on_at, their) > (sh["on_at"], on):
+            # Last writer wins; the same stamp with both values: "on" wins,
+            # on every PC alike, so they can't keep rewriting each other.
+            on, sh["on_at"] = their, their_on_at
         sh["deleted"] = deleted
         sh["rule_at"] = {r["id"]: stamps[r["id"]] for r in merged}
         return merged, on

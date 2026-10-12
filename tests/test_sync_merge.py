@@ -450,6 +450,24 @@ def test_first_meeting_with_switches_flipped_on_both_pcs_settles(make_pc, cloud)
     assert a.on == b.on
 
 
+def test_a_first_meeting_stamp_cannot_tie_with_a_later_switch(make_pc, cloud):
+    """
+    B shares (off) and switches on; A switches on; B switches off a moment
+    later. A meets the copy B shared before its toggles: "on if either is on"
+    must not make up a stamp (it used to be theirs + 1, here exactly B's real
+    "off" stamp), or the two would hold the same on_at with different values
+    and rewrite Chrome sync forever. Same stamps go to "on" everywhere.
+    """
+    a, b = make_pc("A"), make_pc("B")
+    sync_through(b, cloud)
+    b.switch(True)
+    a.switch(True)
+    b.switch(False)
+    settle([a, b], cloud)
+    assert a.state() == b.state()
+    assert a.app.shared["on_at"] == b.app.shared["on_at"]
+
+
 def test_first_meeting_does_not_switch_off(make_pc, cloud):
     a, b = make_pc("A"), make_pc("B")
     a.switch(True)
