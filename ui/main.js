@@ -990,12 +990,26 @@ function renderBlockedApps() {
   $("blockedAppsFields").classList.toggle("muted", !$("s_block_apps").checked);
 }
 
+// Programs the blocker never closes: PROTECTED_EXES in busyist.py, which
+// has the last word when Settings are saved.
+const PROTECTED_EXES = new Set([
+  "explorer", "svchost", "csrss", "wininit", "winlogon", "lsass", "services", "smss",
+  "dwm", "fontdrvhost", "sihost", "taskhostw", "ctfmon", "runtimebroker", "searchhost",
+  "startmenuexperiencehost", "shellexperiencehost", "textinputhost", "taskmgr",
+  "conhost", "dllhost", "audiodg", "spoolsv", "msmpeng", "securityhealthservice",
+  "buzyist", "busyist", "python", "pythonw", "py",
+  "chrome", "msedge", "msedgewebview2",
+]);
+
 function addBlockedApp() {
   const input = $("addBlockedApp");
   const name = input.value.trim();
   if (!name) return;
   if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
   const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
+  if (PROTECTED_EXES.has(key(name))) {
+    return toast(`buZyist won't close ${name}: Windows or your browser needs it.`, true);
+  }
   const known = blockedApps.find((a) => a.exes.some((e) => key(e) === key(name)));
   input.value = "";
   if (known) { known.on = true; return renderBlockedApps(); }  // already listed: just switch it on

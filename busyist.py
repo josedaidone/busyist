@@ -3296,6 +3296,51 @@ def app_key(name: str) -> str:
     return name[:-4] if name.endswith(".exe") else name
 
 
+# Programs the app blocker never closes (as app_key()s), even if added by
+# hand: ending them every 1.5 s would take the desktop, Windows itself, this
+# app, or the browser its extension runs in down with them. Mirrored in
+# ui/main.js (addBlockedApp).
+PROTECTED_EXES = frozenset(
+    {
+        # Windows
+        "explorer",
+        "svchost",
+        "csrss",
+        "wininit",
+        "winlogon",
+        "lsass",
+        "services",
+        "smss",
+        "dwm",
+        "fontdrvhost",
+        "sihost",
+        "taskhostw",
+        "ctfmon",
+        "runtimebroker",
+        "searchhost",
+        "startmenuexperiencehost",
+        "shellexperiencehost",
+        "textinputhost",
+        "taskmgr",
+        "conhost",
+        "dllhost",
+        "audiodg",
+        "spoolsv",
+        "msmpeng",
+        "securityhealthservice",
+        # buZyist itself (packaged, and from source) and the browsers its extension runs in
+        "buzyist",
+        "busyist",
+        "python",
+        "pythonw",
+        "py",
+        "chrome",
+        "msedge",
+        "msedgewebview2",
+    }
+)
+
+
 def normalize_blocked_apps(raw) -> list[dict]:
     """
     The app list as Settings shows it: every preset (in APP_PRESETS order,
@@ -3317,6 +3362,9 @@ def normalize_blocked_apps(raw) -> list[dict]:
         if item.get("custom"):
             exe = str((item.get("exes") or [""])[0]).strip()
             if not exe:
+                continue
+            if app_key(exe) in PROTECTED_EXES:
+                log.warning("dropped %s from the blocked apps: Windows, buZyist or the browser needs it", exe)
                 continue
             custom.append(
                 {
@@ -3364,6 +3412,8 @@ def clean_blocked_apps(values) -> list[dict]:
                 raise AppError("Type the program name, like Slack.exe.")
             if "/" in exe or "\\" in exe:
                 raise AppError("App names are just the program, like WhatsApp.exe.")
+            if app_key(exe) in PROTECTED_EXES:
+                raise AppError(f"buZyist won't close {exe}: Windows or your browser needs it.")
             hand += 1
     if hand > MAX_BLOCKED_APPS:
         raise AppError(f"Keep the added apps under {MAX_BLOCKED_APPS}.")
@@ -3969,8 +4019,11 @@ class AppBlocker:
     The thread sleeps on an Event outside focus, so it costs nothing when
     there is no session or the switch is off; App.notify_focus() and
     save_settings() poke it. During focus it looks every TICK seconds:
-    "close" apps are ended (only in this user's session), "hide" apps get
-    their windows closed to the tray so they stay online.
+    "close" apps are asked to close first (WM_CLOSE, like their X button)
+    and ended CLOSE_GRACE seconds later if they are still running, or at once
+    when they have no window to ask (only in this user's session); "hide"
+    apps get their windows closed to the tray so they stay online. Programs
+    in PROTECTED_EXES, and buZyist's own process, are never touched.
 
     A "blocked" toast only fires when the user opens a blocked app *during*
     focus (not for apps already running when focus began, which are swept away
@@ -3984,6 +4037,7 @@ class AppBlocker:
 
     TICK = 1.5
     TOAST_EVERY = 60  # seconds between toasts for the same app
+    CLOSE_GRACE = 3.0  # seconds a "close" app gets to close itself (and save) before it's ended
 
     def __init__(self, app: App):
         self.app = app
@@ -3991,6 +4045,9 @@ class AppBlocker:
         self._toasted: dict[str, float] = {}
         self._denied: set[int] = set()  # pids we couldn't end; logged once, not retried
         self._closed: dict[str, str] = {}  # app_key -> exe path, to reopen when focus ends
+        self._closing: dict[int, float] = {}  # pid -> monotonic deadline: asked to close, ended after it
+        # Never this process; from source, not the python.exe/launcher that started it either.
+        self._own_pids = {os.getpid()} | (set() if FROZEN else {os.getppid()})
         self._first_sweep = True  # the first enforce of a focus: existing apps, no toast
         self._preexisting: set[str] = set()  # apps already open when focus began: never popped
         self._session = process_session(os.getpid())
@@ -4018,6 +4075,7 @@ class AppBlocker:
                 self.reopen()  # focus ended (pause, break, stop, finish): put apps back
                 self._toasted.clear()
                 self._denied.clear()
+                self._closing.clear()
                 self._first_sweep = True
                 self._preexisting.clear()
                 self.wake.wait()  # idle until focus starts or settings change
@@ -4035,7 +4093,8 @@ class AppBlocker:
         for entry in self.app.cfg.get("blocked_apps") or []:
             if entry.get("on"):
                 for exe in entry["exes"]:
-                    wanted[app_key(exe)] = entry
+                    if app_key(exe) not in PROTECTED_EXES:  # also checked on save and load
+                        wanted[app_key(exe)] = entry
         if not wanted:
             return
         alive: set[int] = set()
@@ -4046,7 +4105,7 @@ class AppBlocker:
             alive.add(pid)
             key = app_key(image)
             entry = wanted.get(key)
-            if entry is None or pid in self._denied:
+            if entry is None or pid in self._denied or pid in self._own_pids:
                 continue
             alive_keys.add(key)
             if self._session is not None and process_session(pid) != self._session:
@@ -4060,26 +4119,48 @@ class AppBlocker:
         if self._first_sweep and found:
             shown = pids_with_windows({pid for pid, *_ in found})
             windowed = {key for pid, _, key, _ in found if pid in shown}
+        now = time.monotonic()
+        # Forget pids that are gone (or no longer blocked), so a reused pid starts over.
+        listed = {pid for pid, *_ in found}
+        self._closing = {pid: deadline for pid, deadline in self._closing.items() if pid in listed}
+        to_close: dict[str, list[tuple[int, str]]] = {}  # app_key -> processes to ask to close now
         for pid, image, key, entry in found:
-            target = relaunch_target(pid)  # how to start it again, grabbed before it's gone
+            if pid in self._closing:
+                if now >= self._closing[pid]:  # asked, and still running after the grace time
+                    del self._closing[pid]
+                    if self._end(pid, image):
+                        log.info("%s (pid %d) didn't close in %g s; ended it", image, pid, self.CLOSE_GRACE)
+                continue
+            target = relaunch_target(pid)  # how to start it again, grabbed before it's asked to close
             restore = bool(target) and key in windowed
             if entry["action"] == "hide":
                 if restore:
                     self._closed.setdefault(key, target)  # bring its window back later
                 to_hide[pid] = entry
                 continue
-            error = terminate_process(pid)
-            if error:
-                self._denied.add(pid)
-                log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
-                continue
-            log.info("closed %s (pid %d) during focus", image, pid)
             if restore:
                 self._closed.setdefault(key, target)  # reopen it when focus ends
+            to_close.setdefault(key, []).append((pid, image))
             if not self._first_sweep and key not in self._preexisting:
                 # The app wasn't open when the pomodoro started, so the user
                 # just tried to open it: that's when the "blocked" popup fits.
                 self._toast(entry, "blocked", focus)
+        if to_close:
+            # Ask first, like the X button, so the app can save a draft or its
+            # state; end it if it's still there after CLOSE_GRACE. An app's
+            # windowless helper processes wait with it. An app with no window
+            # at all (only in the tray) can't be asked, so it's ended now.
+            asked = close_windows({pid for procs in to_close.values() for pid, _ in procs})
+            for procs in to_close.values():
+                if any(pid in asked for pid, _ in procs):
+                    for pid, image in procs:
+                        self._closing[pid] = now + self.CLOSE_GRACE
+                        if pid in asked:
+                            log.info("asked %s (pid %d) to close during focus", image, pid)
+                else:
+                    for pid, image in procs:
+                        if self._end(pid, image):
+                            log.info("closed %s (pid %d) during focus", image, pid)
         if self._first_sweep:
             self._preexisting = alive_keys  # whatever was open at the start stays quiet
         else:
@@ -4091,6 +4172,15 @@ class AppBlocker:
             # its window back when focus ends (relaunch just activates it).
             for pid in close_windows(set(to_hide)):
                 log.info("hid %s (pid %d) to the tray during focus", to_hide[pid]["name"], pid)
+
+    def _end(self, pid: int, image: str) -> bool:
+        """TerminateProcess it; False (and never retried) if Windows says no."""
+        error = terminate_process(pid)
+        if error:
+            self._denied.add(pid)
+            log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
+            return False
+        return True
 
     def _toast(self, entry: dict, what: str, focus: dict) -> None:
         now = time.monotonic()
