@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 import busyist
+from conftest import patch_everywhere
 
 
 class FakeWindow:
@@ -28,11 +29,11 @@ class FakeWindow:
 def windows(app, monkeypatch, deferred_threads):
     main, mini = FakeWindow(shown=True), FakeWindow()
     app.main, app.mini = main, mini
-    monkeypatch.setattr(busyist, "hide_window", lambda w: setattr(w, "shown", False))
-    monkeypatch.setattr(busyist, "show_window", lambda w: setattr(w, "shown", True))
-    monkeypatch.setattr(busyist, "window_shown", lambda w: w.shown)
-    monkeypatch.setattr(busyist, "window_focused", lambda w: w.shown)
-    monkeypatch.setattr(busyist, "wake_window", lambda w: None)
+    patch_everywhere(monkeypatch, "hide_window", lambda w: setattr(w, "shown", False))
+    patch_everywhere(monkeypatch, "show_window", lambda w: setattr(w, "shown", True))
+    patch_everywhere(monkeypatch, "window_shown", lambda w: w.shown)
+    patch_everywhere(monkeypatch, "window_focused", lambda w: w.shown)
+    patch_everywhere(monkeypatch, "wake_window", lambda w: None)
     return main, mini
 
 
