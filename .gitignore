@@ -23,3 +23,10 @@ __pycache__/
 Thumbs.db
 desktop.ini
 buzyist-handoff/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/

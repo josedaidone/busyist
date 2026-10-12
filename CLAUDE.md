@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-buZyist (spelled with a capital Z in anything people read; called Busyist before 1.5.0) is a Windows-only tray app that runs Todoist pomodoros on a BUSY Bar (a hardware timer), or on the PC when there is no bar. Python backend (`busyist.py`) + pywebview/WebView2 UI (`ui/`). There is no test suite and no linter configured.
+buZyist (spelled with a capital Z in anything people read; called Busyist before 1.5.0) is a Windows-only tray app that runs Todoist pomodoros on a BUSY Bar (a hardware timer), or on the PC when there is no bar. Python backend (`busyist.py`) + pywebview/WebView2 UI (`ui/`).
 
 ## Commands
 
@@ -14,7 +14,16 @@ py -3.11 -m venv .venv
 
 # Build installer + portable zip + SHA256SUMS into dist\ (needs Inno Setup 6; -SkipInstaller to skip it)
 powershell -ExecutionPolicy Bypass -File build.ps1
+
+# Tests and lint (dev tools pinned in requirements-dev.txt; config in pyproject.toml)
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
+.\.venv\Scripts\python.exe -m ruff check .
+.\.venv\Scripts\python.exe -m ruff format .
 ```
+
+- Tests (`tests/`, pytest): `tests/conftest.py` isolates every run. Autouse fixtures point every path under `DATA_DIR` into `tmp_path` and allow only loopback sockets, and an audit hook refuses (and fails the test on) any write under the real `%APPDATA%\Busyist`. A new `*_PATH` under `DATA_DIR` is picked up automatically; add it to `EXPECTED_DATA_PATHS` there too. Opt-in fixtures: `clock` (fake time behind `busyist.time`/`datetime`/`date` and busylib's `timer_state`), `app`/`make_app` (an `App()` on the local clock with a `FakeTodoist`, nothing started; drive it with `app.engine_step()`), `deferred_threads` (run what busyist hands to threads with `run_pending()`), `focus_server` (`FocusServer(app, port=0)` plus a request helper), `side_effects` (beeps, URLs, processes recorded). Mark Win32-only tests `@pytest.mark.windows_only`.
+- Ruff: `ruff check .` and `ruff format --check .` must stay clean. Every ignored rule and every `# noqa` carries its reason. `.git-blame-ignore-revs` lists the formatting commit (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
 
 - Logs go to `%APPDATA%\Busyist\busyist.log` (only a console when run with `python`, not `pythonw`).
 - Release: bump `__version__` in `busyist.py`, commit, push a matching tag `vX.Y.Z`. CI (`.github/workflows/release.yml`) fails if the tag and `__version__` differ; `build.ps1`, the PyInstaller spec and the Inno script all read the version from that one line by regex, so keep its `__version__ = "x.y.z"` format.

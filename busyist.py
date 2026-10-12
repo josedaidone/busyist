@@ -1486,31 +1486,35 @@ class App:
     def engine(self) -> None:
         """Poll the bar, follow the session, keep the tray icon current."""
         while not self.quitting:
-            try:
-                snap = self.bar.snapshot()
-                with self.lock:
-                    self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
-            except AppError as err:
-                with self.lock:
-                    self.bar_ok, self.bar_error = False, str(err)
-                    self.bar_fails += 1
-            except Exception as err:  # never let the loop die
-                log.exception("bar poll")
-                with self.lock:
-                    self.bar_ok, self.bar_error = False, f"Unexpected: {err!r}"
-                    self.bar_fails += 1
-            try:
-                self.follow_session()
-                self.notify_focus()
-                self.pause_reminder()
-                self.update_tray()
-            except Exception:
-                log.exception("engine")
-            # Reading the local clock costs nothing, so follow it closely.
-            poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
-            poll = min(poll, self._until_early_end(poll))
+            poll = self.engine_step()
             self.wake.wait(poll)
             self.wake.clear()
+
+    def engine_step(self) -> float:
+        """One pass of the engine loop; returns the seconds to wait before the next."""
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
+        except AppError as err:
+            with self.lock:
+                self.bar_ok, self.bar_error = False, str(err)
+                self.bar_fails += 1
+        except Exception as err:  # never let the loop die
+            log.exception("bar poll")
+            with self.lock:
+                self.bar_ok, self.bar_error = False, f"Unexpected: {err!r}"
+                self.bar_fails += 1
+        try:
+            self.follow_session()
+            self.notify_focus()
+            self.pause_reminder()
+            self.update_tray()
+        except Exception:
+            log.exception("engine")
+        # Reading the local clock costs nothing, so follow it closely.
+        poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
+        return min(poll, self._until_early_end(poll))
 
     def pause_reminder(self) -> None:
         """Every PAUSE_REMIND_S of a pause, flash the mini timer and beep 3 times."""
@@ -3874,8 +3878,11 @@ class FocusServer:
     taken (another copy, say), leaving sites unblocked.
     """
 
-    def __init__(self, app: App):
+    def __init__(self, app: App, port: int = FOCUS_PORT):
         self.app = app
+        # The extension only knows FOCUS_PORT; tests pass 0 for a free port,
+        # and `port` holds the one actually bound once start() has run.
+        self.port = port
         self.httpd: http.server.ThreadingHTTPServer | None = None
 
     def start(self) -> None:
@@ -3969,13 +3976,14 @@ class FocusServer:
                 self.wfile.write(body)
 
         try:
-            self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", FOCUS_PORT), Handler)
+            self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
         except OSError as err:
-            log.warning("focus server couldn't bind 127.0.0.1:%d: %s", FOCUS_PORT, err)
+            log.warning("focus server couldn't bind 127.0.0.1:%d: %s", self.port, err)
             return
+        self.port = self.httpd.server_address[1]
         self.httpd.daemon_threads = True
         threading.Thread(target=self.httpd.serve_forever, daemon=True, name="focus-server").start()
-        log.info("focus server on 127.0.0.1:%d for extension %s", FOCUS_PORT, EXTENSION_ID)
+        log.info("focus server on 127.0.0.1:%d for extension %s", self.port, EXTENSION_ID)
 
     def stop(self) -> None:
         if self.httpd:

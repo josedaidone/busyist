@@ -20,5 +20,16 @@ ignore = [
   "E501",           # the formatter takes care of line length
 ]
 
+[tool.ruff.lint.isort]
+known-first-party = ["busyist", "conftest"]  # conftest: tests import its fakes and helpers
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]         # busyist.py lives at the repo root
+addopts = "-ra --strict-markers --timeout=30"
+markers = [
+  "windows_only: calls Win32 APIs (ctypes.windll, winreg, ...); skipped on other platforms",
+]
