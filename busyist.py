@@ -22,10 +22,12 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import copy
 import ctypes
 import ctypes.wintypes
 import hashlib
 import http.server
+import ipaddress
 import json
 import logging
 import msvcrt
@@ -44,11 +46,13 @@ import uuid
 import webbrowser
 import winreg
 import winsound
+from collections.abc import Iterator, Mapping
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Annotated, Literal
 
 import httpx2
 import pystray
@@ -56,6 +60,8 @@ import webview
 from busylib import BusyBar, exceptions, types
 from busylib.features import timer_state
 from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
+from pydantic_core import PydanticCustomError
 
 # APP names what Windows and the disk see from before the rename: the data
 # folder (%APPDATA%\Busyist, where Chrome loads the extension from), the
@@ -82,6 +88,7 @@ DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
 # and reinstalls; from source it is the repo's extension/ so edits are live.
 EXTENSION_DIR = DATA_DIR / "chrome-extension" if FROZEN else EXTENSION_SRC
 CONFIG_PATH = DATA_DIR / "config.json"
+CONFIG_BACKUP = DATA_DIR / "config.json.bak"  # the config as it was up to an hour before, see ConfigStore._save
 SESSION_PATH = DATA_DIR / "session.json"  # the running session, so a restart picks it up
 HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed tasks, for the "today" counts
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
@@ -141,8 +148,8 @@ SOLO_W, SOLO_H = 580, 740  # main window size without the task list
 DEFAULTS = {
     "use_todoist": True,  # off: sessions run without tasks, no API token needed
     "todoist_token": "",
-    "filters": [],  # [{"name": ..., "query": ...}], the task lists to pick from
-    "active_filter": "",
+    "filters": [{"name": "Today", "query": "today | overdue"}],  # the task lists to pick from
+    "active_filter": "Today",
     "use_busybar": False,  # off: the timer runs on this PC, no bar needed
     "busybar_ip": "",
     "busybar_pin": "",
@@ -211,6 +218,8 @@ APP_ACTIONS = ("close", "hide")
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
 CYCLES_MIN, CYCLES_MAX = 1, 35
+POLL_MIN, POLL_MAX = 2, 60  # seconds between two looks at the bar
+MAX_LABEL = 60  # the Todoist label a running task gets
 # The bar itself refuses fewer than 2 work phases, so a 1-tomato session runs
 # as 2 on the bar and the app stops it when the first break would begin.
 BAR_CYCLES_MIN = 2
@@ -250,17 +259,306 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def read_json(path: Path, default):
+def read_json(path: Path, default, backup: Path | None = None):
+    """
+    A JSON file, or `default` when it isn't there. A file that exists but
+    can't be parsed is not dropped in silence: it's logged and, in the data
+    folder, renamed to <name>.corrupt-<when> so the next write can't destroy
+    what may still be recovered; then `backup` (if given) is tried.
+    """
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
+        return default
+    except ValueError:  # bad JSON or not UTF-8 (UnicodeDecodeError is a ValueError)
+        log.error("%s is not valid JSON", path.name, exc_info=True)
+        quarantine(path)
+        if backup is not None and backup.exists():
+            log.warning("reading %s instead", backup.name)
+            return read_json(backup, default)
+        return default
+    except OSError:
+        log.warning("couldn't read %s", path.name, exc_info=True)
         return default
 
 
+def quarantine(path: Path) -> Path | None:
+    """Move a broken data file aside as <name>.corrupt-YYYYmmdd-HHMMSS (data folder only)."""
+    if not path.resolve().is_relative_to(DATA_DIR.resolve()):
+        return None  # a file we ship, not one we wrote: leave it
+    target = path.with_name(f"{path.name}.corrupt-{datetime.now():%Y%m%d-%H%M%S}")
+    try:
+        os.replace(path, target)
+    except OSError:
+        log.warning("couldn't move %s aside", path.name, exc_info=True)
+        return None
+    log.error("kept the unreadable %s as %s", path.name, target.name)
+    return target
+
+
+_write_locks: dict[Path, threading.Lock] = {}
+_write_locks_lock = threading.Lock()
+BACKUP_EVERY_S = 3600  # config.json.bak is refreshed at most this often
+REPLACE_TRIES = 5  # antivirus, the indexer or OneDrive can hold a file for a few ms
+replace_pause = time.sleep  # between tries; real time even when tests fake the clock
+
+
+def _write_lock(path: Path) -> threading.Lock:
+    key = Path(os.path.abspath(path))
+    with _write_locks_lock:
+        return _write_locks.setdefault(key, threading.Lock())
+
+
+def write_bytes_atomic(path: Path, data: bytes) -> None:
+    """
+    Replace `path` with `data` in one step: written to a temp file of its
+    own next to it, flushed to disk, then renamed over the target (retried
+    while Windows says the target is in use). Writes to the same path are
+    serialized; a failure leaves the old file and no temp file behind.
+    """
+    with _write_lock(path):
+        # A name of its own (not tempfile.mkstemp, which on Windows retries
+        # practically forever when the folder refuses the write).
+        tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex[:12]}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            for attempt in range(1, REPLACE_TRIES + 1):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == REPLACE_TRIES:
+                        raise
+                    replace_pause(0.05 * attempt)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(tmp)
+
+
 def write_json(path: Path, data) -> None:
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    # Serialized first, so a value that can't be written leaves nothing behind.
+    # Callers pass data no other thread is changing (see ConfigStore).
+    text = json.dumps(data, indent=2, ensure_ascii=False)
+    write_bytes_atomic(path, text.encode("utf-8"))
+
+
+# ----------------------------------------------------------------- secrets ---
+#
+# The Todoist token and the bar's PIN are kept in config.json encrypted with
+# DPAPI for the current Windows user ("dpapi:v1:<base64>"), so a copy of the
+# file is useless to anyone else or on another PC. They are plain text only
+# in memory (App.cfg), and never sent to the window (Api.get_settings). This
+# doesn't protect them from a program running as the same user.
+
+SECRET_KEYS = ("todoist_token", "busybar_pin")
+DPAPI_PREFIX = "dpapi:v1:"
+DPAPI_ENTROPY = b"buZyist/v1"
+CRYPTPROTECT_UI_FORBIDDEN = 0x1
+
+
+class _DataBlob(ctypes.Structure):
+    _fields_ = [("cbData", ctypes.wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(data: bytes, encrypt: bool) -> bytes:
+    """CryptProtectData / CryptUnprotectData for the current user."""
+    crypt32 = ctypes.WinDLL("crypt32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    fn = crypt32.CryptProtectData if encrypt else crypt32.CryptUnprotectData
+    fn.restype = ctypes.wintypes.BOOL
+    src_buf = ctypes.create_string_buffer(data, len(data))
+    ent_buf = ctypes.create_string_buffer(DPAPI_ENTROPY, len(DPAPI_ENTROPY))
+    src = _DataBlob(len(data), ctypes.cast(src_buf, ctypes.POINTER(ctypes.c_char)))
+    ent = _DataBlob(len(DPAPI_ENTROPY), ctypes.cast(ent_buf, ctypes.POINTER(ctypes.c_char)))
+    out = _DataBlob()
+    if not fn(ctypes.byref(src), None, ctypes.byref(ent), None, None, CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        kernel32.LocalFree(ctypes.cast(out.pbData, ctypes.c_void_p))
+
+
+def protect(text: str) -> str:
+    """Encrypt for this Windows user: 'dpapi:v1:<base64>'."""
+    return DPAPI_PREFIX + base64.b64encode(_dpapi(text.encode("utf-8"), True)).decode("ascii")
+
+
+def unprotect(blob: str) -> str:
+    """The text `protect` made; OSError/ValueError when this user can't read it."""
+    if not blob.startswith(DPAPI_PREFIX):
+        raise ValueError("not a DPAPI value")
+    raw = base64.b64decode(blob[len(DPAPI_PREFIX) :], validate=True)
+    return _dpapi(raw, False).decode("utf-8")
+
+
+def protect_secrets(cfg) -> dict:
+    """A copy of the settings as they go to disk: the secrets encrypted."""
+    out = dict(cfg)
+    for key in SECRET_KEYS:
+        if key not in out:
+            continue
+        value = str(out[key] or "")
+        if value.startswith(DPAPI_PREFIX):
+            continue  # already encrypted (a file being backed up)
+        if value:
+            try:
+                out[key] = protect(value)
+            except OSError:
+                raise AppError("Windows couldn't encrypt the saved token; try again.")
+        else:
+            out[key] = ""
+    return out
+
+
+def unprotect_secrets(cfg: dict) -> tuple[list[str], bool]:
+    """
+    Decrypt the secrets in `cfg` in place. Returns the keys that couldn't be
+    read (a config from another user or PC: they become "") and whether any
+    was still plain text (a config from before encryption, to save again).
+    """
+    lost, plain = [], False
+    for key in SECRET_KEYS:
+        if key not in cfg:
+            continue
+        value = cfg[key]
+        if isinstance(value, int) and not isinstance(value, bool):
+            value = cfg[key] = str(value)  # a PIN typed into an old config by hand
+        if not isinstance(value, str):
+            cfg[key] = ""
+        elif value.startswith(DPAPI_PREFIX):
+            try:
+                cfg[key] = unprotect(value)
+            except (OSError, ValueError):
+                log.warning("config: the saved %s can't be read by this Windows user; it has to be entered again", key)
+                cfg[key] = ""
+                lost.append(key)
+        elif value:
+            plain = True
+    return lost, plain
+
+
+# ------------------------------------------------------------------ config ---
+
+
+class ConfigStore(Mapping):
+    """
+    The settings, shared by every thread (App, Todoist, Bar, the HTTP server).
+
+    Copy-on-write: the current dict is never changed in place. A change is a
+    transaction, `with cfg.edit() as c: c[...] = ...`, on a deep copy that
+    replaces the whole dict when the block ends (an exception inside discards
+    it) and is saved to config.json; edits are serialized by one lock. With
+    `validate` (App passes Config.check) the draft must pass it to be kept.
+    Readers need no lock: `cfg.get(key)` / `cfg[key]` read the current dict,
+    and `cfg.view()` is that dict itself, a consistent picture of all the
+    keys for a reader that looks at several. Never change what they return
+    (lists and dicts included); take `snapshot()` for a copy of your own.
+
+    Lock order: the store's lock before `App.sync_lock` (save_settings and
+    apply_sync hold an edit while they stamp the sync state), never the
+    other way round.
+    """
+
+    def __init__(self, path: Path, data: dict, backup: Path | None = None, validate=None):
+        self._lock = threading.RLock()
+        self._validate = validate  # draft -> the dict to keep (Config.check); raises AppError
+        self._data = data
+        self._path = path
+        self._backup = backup
+        self._backup_at: float | None = None  # time.time() of the last backup this run
+
+    def get(self, key, default=None):
+        return self._data.get(key, default)
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __iter__(self) -> Iterator:
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def view(self) -> dict:
+        """The current settings as one dict; read-only by convention."""
+        return self._data
+
+    def snapshot(self) -> dict:
+        """A deep copy of the current settings, free to change."""
+        return copy.deepcopy(self._data)
+
+    @contextlib.contextmanager
+    def edit(self, save: bool = True):
+        """A transaction on a copy of the settings; saved when it changed something."""
+        with self._lock:
+            draft = copy.deepcopy(self._data)
+            yield draft
+            if self._validate is not None:
+                draft = self._validate(draft)  # a draft that isn't valid isn't kept
+            if draft != self._data:
+                if save:
+                    self._save(draft)
+                self._data = draft
+
+    def __setitem__(self, key, value) -> None:
+        """One key as its own transaction (for tests and one-liners)."""
+        with self.edit() as c:
+            c[key] = value
+
+    def update(self, *args, **kwargs) -> None:
+        """Several keys as one transaction."""
+        with self.edit() as c:
+            c.update(*args, **kwargs)
+
+    def save(self) -> None:
+        """Write the current settings to disk, as they are."""
+        with self._lock:
+            self._save(self._data)
+
+    def _save(self, data: dict) -> None:
+        """
+        Write config.json with the secrets encrypted, first keeping the file
+        it replaces as the backup when that is over an hour old.
+        """
+        disk = protect_secrets(data)
+        if self._backup is not None and self._path.exists():
+            now, last = time.time(), self._backup_at
+            if last is None:
+                with contextlib.suppress(OSError):
+                    last = self._backup.stat().st_mtime
+            if last is None or not 0 <= now - last <= BACKUP_EVERY_S:
+                try:
+                    raw = self._path.read_bytes()
+                    try:
+                        old = json.loads(raw)
+                    except ValueError:
+                        old = None
+                    if isinstance(old, dict):
+                        write_json(self._backup, protect_secrets(old))  # a file from before 1.8 has them in plain text
+                    else:
+                        write_bytes_atomic(self._backup, raw)
+                    self._backup_at = now
+                except OSError:
+                    log.warning("couldn't back up %s", self._path.name, exc_info=True)
+        write_json(self._path, disk)
+
+
+def migrate_filters(cfg: dict) -> bool:
+    """Turn the old single `todoist_filter` into the first saved filter; True if it changed `cfg`."""
+    if cfg.get("filters"):
+        return False
+    legacy = (cfg.pop("todoist_filter", "") or "").strip()
+    first = {"name": "Today", "query": legacy} if legacy else dict(DEFAULT_FILTER)
+    cfg["filters"] = [first]
+    cfg["active_filter"] = first["name"]
+    return True
 
 
 # ----------------------------------------------------------------- Todoist ---
@@ -984,17 +1282,21 @@ def tray_image(view: dict | None) -> Image.Image:
 
 class App:
     def __init__(self):
-        self.cfg = dict(DEFAULTS)
-        saved = read_json(CONFIG_PATH, {})
-        self.cfg.update(saved)
-        self.cfg.pop("theme", None)  # there was a dark theme before 1.5.0
-        self.cfg["blocked_apps"] = normalize_blocked_apps(self.cfg.get("blocked_apps"))
-        # Copy the list so edits never reach into DEFAULTS; drop junk quietly.
-        self.cfg["blocked_sites"] = _sanitize_sites(self.cfg.get("blocked_sites"))
-        self.cfg["allowed_sites"] = _sanitize_sites(self.cfg.get("allowed_sites"))
-        if self.cfg.get("site_mode") not in SITE_MODES:
-            self.cfg["site_mode"] = "block"
-        self.cfg["site_limits"] = _sanitize_site_limits(self.cfg.get("site_limits"))
+        saved = read_json(CONFIG_PATH, {}, backup=CONFIG_BACKUP)
+        if not isinstance(saved, dict):
+            log.error("config.json doesn't hold settings (%s); starting from the defaults", type(saved).__name__)
+            saved = {}
+        saved = dict(saved)
+        # Secrets the config holds but this user can't decrypt (shown in Settings).
+        self.secret_lost, resave = unprotect_secrets(saved)
+        if saved:
+            resave = migrate_config(saved) or resave
+            resave = resave or not CONFIG_PATH.exists()  # read from the backup: put config.json back
+        else:
+            saved["config_version"] = CONFIG_VERSION  # a new install is current already
+        self.cfg = ConfigStore(CONFIG_PATH, Config.load(saved), backup=CONFIG_BACKUP, validate=Config.check)
+        if resave:
+            self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(USAGE_PATH)
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
@@ -1005,10 +1307,6 @@ class App:
         # bar's timer was last matched to (remote_session).
         self.remote_sessions: dict[str, dict] = {}
         self._remote_match: tuple[str, int] | None = None
-        if saved and "use_busybar" not in saved:
-            # Set up before the bar was optional, so set up for one.
-            self.cfg["use_busybar"] = True
-            write_json(CONFIG_PATH, self.cfg)
         self.todoist = Todoist(self.cfg)
         self.bar = Bar(self.cfg)
         self.lock = threading.RLock()  # guards everything below
@@ -1044,7 +1342,6 @@ class App:
         # Installing silently needs a Setup-installed copy this user can write
         # to; an all-users install would raise an admin prompt out of nowhere.
         self.can_auto_update = UPDATABLE and app_dir_writable()
-        self._migrate_filters()
         # Closes distracting apps during focus (issue #1); idle until a work
         # phase starts, so nothing runs when the feature is off.
         self.blocker = AppBlocker(self)
@@ -1057,33 +1354,23 @@ class App:
 
     # -------------------------------------------------------------- filters
 
-    def _migrate_filters(self) -> None:
-        """Turn the old single `todoist_filter` into the first saved filter."""
-        if self.cfg.get("filters"):
-            return
-        legacy = (self.cfg.pop("todoist_filter", "") or "").strip()
-        first = {"name": "Today", "query": legacy} if legacy else dict(DEFAULT_FILTER)
-        self.cfg["filters"] = [first]
-        self.cfg["active_filter"] = first["name"]
-        if CONFIG_PATH.exists():
-            write_json(CONFIG_PATH, self.cfg)
-
     @property
     def todoist_on(self) -> bool:
         """Todoist is switched on in Settings and has a token."""
         return bool(self.cfg.get("use_todoist")) and bool(self.cfg.get("todoist_token"))
 
     def active_filter(self) -> dict:
-        filters = self.cfg["filters"]
-        return next((f for f in filters if f["name"] == self.cfg["active_filter"]), filters[0])
+        cfg = self.cfg.view()
+        filters = cfg["filters"]
+        return next((f for f in filters if f["name"] == cfg["active_filter"]), filters[0])
 
     def task_list(self, name: str | None = None, tasks: list[dict] | None = None) -> dict:
         """Load (or take) the tasks of a saved filter, making it the active one."""
         if name is not None and name != self.cfg["active_filter"]:
-            if not any(f["name"] == name for f in self.cfg["filters"]):
-                raise AppError(f"There is no filter called {name!r}.")
-            self.cfg["active_filter"] = name
-            write_json(CONFIG_PATH, self.cfg)
+            with self.cfg.edit() as c:
+                if not any(f["name"] == name for f in c["filters"]):
+                    raise AppError(f"There is no filter called {name!r}.")
+                c["active_filter"] = name
         if not self.cfg.get("use_todoist"):
             raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
@@ -1111,41 +1398,45 @@ class App:
             raise AppError("Give the filter a name.")
         if len(name) > 40:
             raise AppError("Keep the name under 40 characters.")
-        filters = self.cfg["filters"]
-        if any(f["name"].lower() == name.lower() and f["name"] != old_name for f in filters):
-            raise AppError(f"There is already a filter called {name!r}.")
-        if old_name is None and len(filters) >= MAX_FILTERS:
-            raise AppError(f"That's {MAX_FILTERS} filters already; delete one first.")
-        tasks = self.check_query(query)
-        entry = {"name": name, "query": query}
-        index = next((i for i, f in enumerate(filters) if f["name"] == old_name), None)
-        if index is None:
-            filters.append(entry)
-        else:
-            filters[index] = entry
-        self.cfg["active_filter"] = name
-        write_json(CONFIG_PATH, self.cfg)
+
+        def check(filters):
+            if any(f["name"].lower() == name.lower() and f["name"] != old_name for f in filters):
+                raise AppError(f"There is already a filter called {name!r}.")
+            if old_name is None and len(filters) >= MAX_FILTERS:
+                raise AppError(f"That's {MAX_FILTERS} filters already; delete one first.")
+
+        check(self.cfg["filters"])
+        tasks = self.check_query(query)  # over the network: outside the edit
+        with self.cfg.edit() as c:
+            filters = c["filters"]
+            check(filters)  # again: the list may have changed meanwhile
+            entry = {"name": name, "query": query}
+            index = next((i for i, f in enumerate(filters) if f["name"] == old_name), None)
+            if index is None:
+                filters.append(entry)
+            else:
+                filters[index] = entry
+            c["active_filter"] = name
         return self.task_list(tasks=tasks)
 
     def delete_filter(self, name: str) -> dict:
-        filters = self.cfg["filters"]
-        if len(filters) <= 1:
-            raise AppError("Keep at least one filter.")
-        self.cfg["filters"] = [f for f in filters if f["name"] != name]
-        if self.cfg["active_filter"] == name:
-            self.cfg["active_filter"] = self.cfg["filters"][0]["name"]
-        write_json(CONFIG_PATH, self.cfg)
+        with self.cfg.edit() as c:
+            if len(c["filters"]) <= 1:
+                raise AppError("Keep at least one filter.")
+            c["filters"] = [f for f in c["filters"] if f["name"] != name]
+            if c["active_filter"] == name:
+                c["active_filter"] = c["filters"][0]["name"]
         return self.task_list()
 
     def move_filter(self, name: str, delta: int) -> dict:
-        filters = self.cfg["filters"]
-        i = next((i for i, f in enumerate(filters) if f["name"] == name), None)
-        if i is None:
-            raise AppError(f"There is no filter called {name!r}.")
-        j = max(0, min(len(filters) - 1, i + delta))
-        filters.insert(j, filters.pop(i))
-        write_json(CONFIG_PATH, self.cfg)
-        return {"filters": filters, "active": self.active_filter()["name"]}
+        with self.cfg.edit() as c:
+            filters = c["filters"]
+            i = next((i for i, f in enumerate(filters) if f["name"] == name), None)
+            if i is None:
+                raise AppError(f"There is no filter called {name!r}.")
+            j = max(0, min(len(filters) - 1, i + delta))
+            filters.insert(j, filters.pop(i))
+        return {"filters": self.cfg["filters"], "active": self.active_filter()["name"]}
 
     # ------------------------------------------------------------ timer view
 
@@ -1270,7 +1561,7 @@ class App:
 
     def blocks_view(self) -> dict:
         """What focus blocks are switched on, for the timer's "focus guard" line."""
-        cfg = self.cfg
+        cfg = self.cfg.view()
         apps = sum(1 for a in cfg.get("blocked_apps") or [] if a.get("on")) if cfg.get("block_apps") else 0
         mode = cfg.get("site_mode", "block")
         sites = (
@@ -1362,12 +1653,13 @@ class App:
         The browser profile that shares the limits with other PCs (`instance`
         is the sync owner) also gets `sync`, see sync_payload.
         """
-        on = bool(self.cfg.get("block_sites"))
-        limits_on = bool(self.cfg.get("site_limits_on"))
-        mode = self.cfg.get("site_mode", "block")
+        cfg = self.cfg.view()
+        on = bool(cfg.get("block_sites"))
+        limits_on = bool(cfg.get("site_limits_on"))
+        mode = cfg.get("site_mode", "block")
         focus = self.focus()
         active = on and focus["active"]
-        patterns = list(self.cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
+        patterns = list(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
         out = {
             "active": active,
             "task": focus["task"] if active else "",
@@ -1462,8 +1754,10 @@ class App:
                     del seen[iid]
                 self._save_shared()
         if trusted and self.sync_on() and not self.cfg.get("sync_owner"):
-            self.cfg["sync_owner"] = instance
-            write_json(CONFIG_PATH, self.cfg)
+            with self.cfg.edit() as c:
+                if c.get("sync_owner"):
+                    return  # another request took it meanwhile
+                c["sync_owner"] = instance
             log.info("sharing through browser profile %s (%s)", instance, account or "no account")
 
     def _save_shared(self) -> None:
@@ -1616,7 +1910,9 @@ class App:
         if not self.cfg.get("sync_limits"):
             return  # only the task is shared: leave the limits alone
         new_rules = new_on = None
-        with self.sync_lock:
+        # Config lock, then sync_lock (the order everywhere): no other edit can
+        # land between reading the rules in _merge_limits and saving the merge.
+        with self.cfg.edit() as c, self.sync_lock:
             sh = self.shared
             if "limits" in data and data["limits"] is None:
                 sh["joined"] = owner  # nothing shared yet: ours become the shared copy
@@ -1631,13 +1927,10 @@ class App:
                 self.usage.set_remote(sh["remote"])
             sh["last_sync"] = now_ms()
             self._save_shared()
-        if new_rules is not None and (
-            new_rules != self.cfg.get("site_limits") or new_on != bool(self.cfg.get("site_limits_on"))
-        ):
-            log.info("limits merged from Chrome sync: %d rules", len(new_rules))
-            self.cfg["site_limits"] = new_rules
-            self.cfg["site_limits_on"] = new_on
-            write_json(CONFIG_PATH, self.cfg)
+            if new_rules is not None and (new_rules != c.get("site_limits") or new_on != bool(c.get("site_limits_on"))):
+                log.info("limits merged from Chrome sync: %d rules", len(new_rules))
+                c["site_limits"] = new_rules
+                c["site_limits_on"] = new_on
 
     def sync_info(self) -> dict:
         """For Settings: the browser profiles seen, the other PCs and when we last synced."""
@@ -2130,9 +2423,19 @@ class App:
     # ----------------------------------------------------------- settings
 
     def save_settings(self, changes: dict) -> None:
-        clean = {}
+        changes, clean = dict(changes), {}
+        for key in SECRET_KEYS:
+            # The window never gets the secrets, so an empty field means "keep
+            # the saved one"; clear_<key> is its Remove button.
+            if key in changes and not str(changes[key] or "").strip():
+                del changes[key]
+            if changes.pop("clear_" + key, False) and key not in changes:
+                clean[key] = ""
+        # What the form sends, as the types Config expects (inputs give
+        # strings); Config.check does every other check. The filters have
+        # their own calls (save_filter, ...), so they aren't taken here.
         for key, value in changes.items():
-            if key not in DEFAULTS or isinstance(DEFAULTS[key], list):
+            if key not in DEFAULTS or key == "filters":
                 continue
             kind = type(DEFAULTS[key])
             if kind is bool:
@@ -2142,52 +2445,39 @@ class App:
                     value = int(value)
                 except (TypeError, ValueError):
                     raise AppError(f"{key.replace('_', ' ')} must be a number.")
-            else:
+            elif kind is not list:
                 value = str(value).strip()
             clean[key] = value
-        if "blocked_apps" in changes:
-            clean["blocked_apps"] = clean_blocked_apps(changes["blocked_apps"])
-        if "blocked_sites" in changes:
-            clean["blocked_sites"] = clean_blocked_sites(changes["blocked_sites"])
-        if "allowed_sites" in changes:
-            clean["allowed_sites"] = clean_blocked_sites(changes["allowed_sites"], "allowed")
-        if "site_limits" in changes:
-            clean["site_limits"] = clean_site_limits(changes["site_limits"])
-        if "sync_owner" in clean and not re.fullmatch(r"[a-z0-9]{0,32}", clean["sync_owner"]):
-            raise AppError("Pick the browser profile that shares the limits.")
-        if "site_mode" in clean and clean["site_mode"] not in SITE_MODES:
-            raise AppError("Pick whether to block the listed websites or allow only them.")
-        merged = dict(self.cfg, **clean)
-        for key in ("work_minutes", "rest_minutes"):
-            if not PHASE_MIN <= merged[key] <= PHASE_MAX:
-                raise AppError(f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.")
-        if not CYCLES_MIN <= merged["cycles"] <= CYCLES_MAX:
-            raise AppError(f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.")
-        old_hotkey = self.cfg["hotkey"]
-        bar_changed = any(
-            self.cfg.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
-        )
-        if merged["use_busybar"] != self.cfg["use_busybar"] and self.session:
-            raise AppError("Stop the running session before switching between the bar and this PC.")
-        if merged["hotkey"] != old_hotkey:
-            try:
-                self.bind_hotkey(merged["hotkey"])
-            except AppError:
-                self.bind_hotkey(old_hotkey)
-                raise
-        old_limits = self.cfg.get("site_limits") or []
-        on_changed = "site_limits_on" in clean and clean["site_limits_on"] != self.cfg.get("site_limits_on")
-        sync_off = self.cfg.get("sync_limits") and not merged.get("sync_limits")
+        # One transaction from the checks to the sync stamps, so an apply_sync
+        # can't slip in between (config lock, then sync_lock inside).
+        with self.cfg.edit() as c:
+            merged = Config.check({**c, **clean})  # AppError with the message Settings shows
+            clean = {k: merged[k] for k in clean}
+            old_hotkey = c["hotkey"]
+            bar_changed = any(
+                c.get(k) != merged.get(k) for k in ("use_busybar", "busybar_ip", "busybar_pin", "usb_fallback")
+            )
+            if merged["use_busybar"] != c["use_busybar"] and self.session:
+                raise AppError("Stop the running session before switching between the bar and this PC.")
+            if merged["hotkey"] != old_hotkey:
+                try:
+                    self.bind_hotkey(merged["hotkey"])
+                except AppError:
+                    self.bind_hotkey(old_hotkey)
+                    raise
+            old_limits = c.get("site_limits") or []
+            on_changed = "site_limits_on" in clean and clean["site_limits_on"] != c.get("site_limits_on")
+            sync_off = c.get("sync_limits") and not merged.get("sync_limits")
+            c.update(clean)
+            if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
+                self.note_limits_edit(old_limits, c["site_limits"], on_changed)
+            if sync_off:
+                with self.sync_lock:
+                    self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
+                    self._save_shared()
         if not merged.get("sync_session"):
             self.remote_sessions = {}
-        self.cfg.update(clean)
-        write_json(CONFIG_PATH, self.cfg)
-        if ("site_limits" in clean and clean["site_limits"] != old_limits) or on_changed:
-            self.note_limits_edit(old_limits, self.cfg["site_limits"], on_changed)
-        if sync_off:
-            with self.sync_lock:
-                self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
-                self._save_shared()
+        self.secret_lost = [k for k in self.secret_lost if k not in clean]
         self.apply_launch_at_login()
         if bar_changed:
             self.bar.reset()
@@ -2557,11 +2847,15 @@ class Api:
         )
 
     def get_settings(self):
-        cfg = self._app.cfg
+        cfg = self._app.cfg.view()
         # extension_connected: the Chrome extension called in the last ~2 min.
         connected = self._app.extension_connected()
         return dict(
             {k: cfg[k] for k in DEFAULTS},
+            # The secrets stay in Python: the page only learns whether there are any.
+            **{k: "" for k in SECRET_KEYS},
+            **{f"has_{k}": bool(cfg.get(k)) for k in SECRET_KEYS},
+            **{f"{k}_lost": k in self._app.secret_lost for k in SECRET_KEYS},
             version=__version__,
             data_dir=str(DATA_DIR),
             can_auto_update=self._app.can_auto_update,
@@ -3637,6 +3931,273 @@ def _sanitize_site_limits(values) -> list[dict]:
         except AppError:
             continue
     return out[:MAX_SITE_LIMITS]
+
+
+# ------------------------------------------------------------ config model ---
+#
+# Config is the settings' schema: types, bounds and the checks of every key,
+# reusing the clean_* functions Settings already relied on. DEFAULTS still
+# holds the default values (a key added there must be added here too; a test
+# checks they match). Two ways to validate:
+#
+# - Config.check(data): what an edit must pass (ConfigStore.edit, save_settings).
+#   The first problem becomes an AppError with the message Settings shows.
+# - Config.load(raw): for config.json at start-up. Lists are tidied first
+#   (unusable entries dropped, as before), then a key that still fails falls
+#   back to its default, with a log line, without touching the others.
+#
+# Files carry config_version; MIGRATIONS turn an older file into the current
+# shape before it is validated (see migrate_config).
+
+
+def _default(key: str):
+    return Field(default_factory=lambda: copy.deepcopy(DEFAULTS[key]))
+
+
+def _app_error(fn, *args):
+    """Run a clean_* check; its AppError becomes a validation error with the same message."""
+    try:
+        return fn(*args)
+    except AppError as err:
+        raise PydanticCustomError("app", "{message}", {"message": str(err)})
+
+
+def _loading(info: ValidationInfo, value=None) -> bool:
+    """Validating config.json at start-up (Config.load); there, a list key must hold a list."""
+    loading = bool(info.context and info.context.get("load"))
+    if loading and info.field_name in LIST_KEYS and not isinstance(value, list):
+        raise PydanticCustomError("app", "{message}", {"message": "not a list"})
+    return loading
+
+
+def clean_bar_address(raw) -> str:
+    """
+    The bar's Wi-Fi address: '' (none), an IPv4/IPv6 address or a host name,
+    optionally with :port. A pasted 'http://192.168.1.50/' is tidied to
+    '192.168.1.50'; paths and anything else are refused.
+    """
+    shown = str(raw).strip()
+    text = re.sub(r"^https?://", "", shown, flags=re.IGNORECASE).rstrip("/")
+    if not text:
+        return ""
+    bad = AppError(f"{shown!r} isn't the bar's address; type one like 192.168.1.50.")
+    bracketed = re.fullmatch(r"\[([0-9a-fA-F:.]+)\](?::(\d{1,5}))?", text)
+    try:
+        if bracketed:
+            ipaddress.IPv6Address(bracketed[1])
+            port = bracketed[2]
+        elif text.count(":") > 1:
+            ipaddress.IPv6Address(text)
+            port = None
+        else:
+            host, _, port = text.partition(":")
+            if not re.fullmatch(
+                r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*",
+                host,
+                re.IGNORECASE,
+            ):
+                raise bad
+            port = port or None
+    except ValueError:
+        raise bad
+    if port is not None and not (port.isdigit() and 1 <= int(port) <= 65535):
+        raise bad
+    return text
+
+
+class Filter(BaseModel):
+    """One saved task list: a name and a Todoist filter query."""
+
+    model_config = ConfigDict(extra="ignore")
+    name: Annotated[str, Field(min_length=1, max_length=40)]
+    query: str
+
+
+Minutes = Annotated[int, Field(ge=PHASE_MIN, le=PHASE_MAX)]
+
+
+class Config(BaseModel):
+    # validate_default: the defaults go through the same checks (a new install
+    # gets the app presets filled in, the default filter becomes a Filter).
+    model_config = ConfigDict(extra="ignore", validate_default=True)
+
+    config_version: int = 0  # set to CONFIG_VERSION by migrate_config
+    use_todoist: bool = _default("use_todoist")
+    todoist_token: str = _default("todoist_token")
+    filters: list[Filter] = _default("filters")
+    active_filter: str = _default("active_filter")
+    use_busybar: bool = _default("use_busybar")
+    busybar_ip: str = _default("busybar_ip")
+    busybar_pin: str = _default("busybar_pin")
+    usb_fallback: bool = _default("usb_fallback")
+    work_minutes: Minutes = _default("work_minutes")
+    rest_minutes: Minutes = _default("rest_minutes")
+    cycles: Annotated[int, Field(ge=CYCLES_MIN, le=CYCLES_MAX)] = _default("cycles")
+    autostart: bool = _default("autostart")
+    poll_seconds: Annotated[int, Field(ge=POLL_MIN, le=POLL_MAX)] = _default("poll_seconds")
+    hotkey: str = _default("hotkey")
+    focus_label: Annotated[str, Field(max_length=MAX_LABEL)] = _default("focus_label")
+    remove_label_on_end: bool = _default("remove_label_on_end")
+    log_comments: bool = _default("log_comments")
+    notifications: bool = _default("notifications")
+    launch_at_login: bool = _default("launch_at_login")
+    open_on_finish: bool = _default("open_on_finish")
+    auto_update: bool = _default("auto_update")
+    block_apps: bool = _default("block_apps")
+    blocked_apps: list[dict] = _default("blocked_apps")
+    block_sites: bool = _default("block_sites")
+    site_mode: Literal["block", "allow"] = _default("site_mode")
+    blocked_sites: list[str] = _default("blocked_sites")
+    allowed_sites: list[str] = _default("allowed_sites")
+    site_limits_on: bool = _default("site_limits_on")
+    site_limits: list[dict] = _default("site_limits")  # kept as dicts: clean_site_limit is the schema
+    sync_limits: bool = _default("sync_limits")
+    sync_owner: str = _default("sync_owner")
+    sync_session: bool = _default("sync_session")
+
+    @field_validator("filters", mode="before")
+    @classmethod
+    def _filters(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            kept = []
+            for item in value:
+                try:
+                    kept.append(Filter.model_validate(item).model_dump())
+                except ValidationError:
+                    log.warning("config: dropped the unusable filter %r", item)
+            value = kept
+        if isinstance(value, list) and not value:
+            raise PydanticCustomError("app", "{message}", {"message": "Keep at least one filter."})
+        return value
+
+    @field_validator("busybar_ip")
+    @classmethod
+    def _bar_address(cls, value: str) -> str:
+        return _app_error(clean_bar_address, value)
+
+    @field_validator("hotkey")
+    @classmethod
+    def _hotkey(cls, value: str) -> str:
+        value = value.strip()
+        if value:
+            _app_error(parse_hotkey, value)
+        return value
+
+    @field_validator("blocked_apps", mode="before")
+    @classmethod
+    def _apps(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = normalize_blocked_apps(value)  # also turns the oldest format (bare names) into entries
+        return _app_error(clean_blocked_apps, value)
+
+    @field_validator("blocked_sites", "allowed_sites", mode="before")
+    @classmethod
+    def _sites(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = _sanitize_sites(value)[:MAX_BLOCKED_SITES]
+        return _app_error(clean_blocked_sites, value, "allowed" if info.field_name == "allowed_sites" else "blocked")
+
+    @field_validator("site_limits", mode="before")
+    @classmethod
+    def _limits(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = _sanitize_site_limits(value)
+        return _app_error(clean_site_limits, value)
+
+    @field_validator("sync_owner")
+    @classmethod
+    def _owner(cls, value: str) -> str:
+        if not re.fullmatch(r"[a-z0-9]{0,32}", value):
+            raise PydanticCustomError("app", "{message}", {"message": FIELD_ERRORS["sync_owner"]})
+        return value
+
+    @classmethod
+    def check(cls, data) -> dict:
+        """`data` as a valid settings dict; AppError with Settings' message if it isn't."""
+        try:
+            return cls.model_validate(data).model_dump()
+        except ValidationError as err:
+            raise AppError(validation_message(err))
+
+    @classmethod
+    def load(cls, raw: dict) -> dict:
+        """config.json's settings, valid: a key that isn't falls back to its default (and is logged)."""
+        data = dict(raw)
+        for _ in range(len(cls.model_fields) + 1):
+            try:
+                return cls.model_validate(data, context={"load": True}).model_dump()
+            except ValidationError as err:
+                bad = {e["loc"][0] for e in err.errors() if e["loc"]}
+                if not bad:
+                    raise
+                for key in bad:
+                    log.warning("config: %s was invalid (%r); using the default", key, data.get(key))
+                    data.pop(key, None)
+        return cls.model_validate({}, context={"load": True}).model_dump()
+
+
+# What Settings says when a key is wrong, for checks that aren't clean_*
+# functions (those bring their own message). In the order save_settings
+# used to check them: with several problems, the first one is shown.
+FIELD_ERRORS = {
+    "sync_owner": "Pick the browser profile that shares the limits.",
+    "site_mode": "Pick whether to block the listed websites or allow only them.",
+    "work_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
+    "rest_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
+    "cycles": f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.",
+    "poll_seconds": f"Check the bar every {POLL_MIN} to {POLL_MAX} seconds.",
+    "focus_label": f"Keep the label to {MAX_LABEL} characters or fewer.",
+}
+LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits")
+ERROR_ORDER = ["blocked_apps", "blocked_sites", "allowed_sites", "site_limits", *FIELD_ERRORS]
+
+
+def validation_message(err: ValidationError) -> str:
+    def rank(e):
+        key = e["loc"][0] if e["loc"] else ""
+        return ERROR_ORDER.index(key) if key in ERROR_ORDER else len(ERROR_ORDER)
+
+    first = min(err.errors(), key=rank)
+    key = str(first["loc"][0]) if first["loc"] else ""
+    if first["type"] == "app":
+        return first["msg"]
+    return FIELD_ERRORS.get(key) or f"{key.replace('_', ' ') or 'A setting'} isn't valid."
+
+
+def migrate_pre_versioning(cfg: dict) -> None:
+    """Version 0 -> 1: the clean-ups of every version before config_version."""
+    cfg.pop("theme", None)  # there was a dark theme before 1.5.0
+    if "use_busybar" not in cfg:
+        cfg["use_busybar"] = True  # set up before the bar was optional, so set up for one
+    migrate_filters(cfg)  # the single todoist_filter of before 1.0
+    if isinstance(cfg.get("blocked_apps"), list):
+        cfg["blocked_apps"] = normalize_blocked_apps(cfg["blocked_apps"])  # bare program names at first
+    for rule in cfg.get("site_limits") if isinstance(cfg.get("site_limits"), list) else []:
+        if isinstance(rule, dict) and "patterns" not in rule and "pattern" in rule:
+            rule["patterns"] = [rule.pop("pattern")]  # one site per rule at first
+
+
+# version -> the function that brings a file of the version before up to it.
+MIGRATIONS = {
+    1: migrate_pre_versioning,
+}
+CONFIG_VERSION = max(MIGRATIONS)
+
+
+def migrate_config(cfg: dict) -> bool:
+    """Bring a saved config up to CONFIG_VERSION, in place; True if anything ran."""
+    try:
+        version = int(cfg.get("config_version") or 0)
+    except (TypeError, ValueError):
+        version = 0
+    ran = False
+    for target in sorted(MIGRATIONS):
+        if version < target:
+            log.info("config: migrating to version %d", target)
+            MIGRATIONS[target](cfg)
+            ran = True
+    cfg["config_version"] = max(version, CONFIG_VERSION)  # a newer copy's files keep their number
+    return ran
 
 
 def period_label(every: int, unit: str) -> str:

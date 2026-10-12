@@ -894,7 +894,8 @@ async function openSettings(tab) {
     else input.value = s[input.name] ?? "";
   }
   $("testResult").textContent = "";
-  blockedApps = (s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
+  showSecrets(s);
+  blockedApps =(s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
@@ -920,14 +921,50 @@ async function openSettings(tab) {
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
   $("updateResult").textContent = "";
   renderUpdate();
-  if (s.use_todoist && !s.todoist_token) tab = "todoist";
+  if (s.use_todoist && !s.has_todoist_token) tab = "todoist";
   showTab(typeof tab === "string" ? tab : settingsTab);
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
   setTimeout(() => {
-    if (s.use_todoist && !s.todoist_token) $("s_todoist_token").focus();
+    if (s.use_todoist && !s.has_todoist_token) $("s_todoist_token").focus();
     else document.querySelector("#settingsTabs .stab.on").focus();
   }, 220);
+}
+
+// The token and the PIN never come to the page (get_settings sends "" and
+// has_*). An empty field keeps the saved one; Remove asks Python to clear it.
+const SECRETS = {
+  todoist_token: { input: "s_todoist_token", saved: "tokenSaved", lost: "tokenLost", remove: "removeToken", empty: "Paste your API token" },
+  busybar_pin: { input: "s_busybar_pin", saved: "pinSaved", lost: "pinLost", remove: "removePin", empty: "" },
+};
+let secretsToClear = {};
+
+function showSecrets(s) {
+  secretsToClear = {};
+  for (const [key, x] of Object.entries(SECRETS)) {
+    const has = !!s["has_" + key];
+    $(x.input).value = "";
+    $(x.input).placeholder = has ? "•••••••• saved (type to replace)" : x.empty;
+    $(x.saved).classList.toggle("hidden", !has);
+    $(x.lost).classList.toggle("hidden", !s[key + "_lost"]);
+  }
+}
+
+// What a save sends for the secrets: Remove, unless a new one was typed.
+function secretClears() {
+  const out = {};
+  for (const [key, x] of Object.entries(SECRETS)) if (secretsToClear[key] && !$(x.input).value.trim()) out["clear_" + key] = true;
+  return out;
+}
+
+for (const [key, x] of Object.entries(SECRETS)) {
+  $(x.remove).onclick = () => {
+    secretsToClear[key] = true;
+    $(x.input).value = "";
+    $(x.input).placeholder = x.empty;
+    $(x.saved).classList.add("hidden");
+    $(x.input).focus();
+  };
 }
 
 // The token and label options only matter with Todoist.
@@ -1481,7 +1518,7 @@ $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
+  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
@@ -1492,7 +1529,8 @@ $("testBar").onclick = async () => {
   const out = $("testResult");
   out.className = "test-result";
   out.textContent = "Testing…";
-  const saved = await api.save_settings(formValues(["use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"]));
+  const { clear_busybar_pin } = secretClears();
+  const saved = await api.save_settings({ ...formValues(["use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"]), clear_busybar_pin });
   if (!saved.ok) { out.className = "test-result bad"; out.textContent = saved.error; return; }
   const result = await api.test_bar();
   out.className = "test-result " + (result.ok ? "ok" : "bad");

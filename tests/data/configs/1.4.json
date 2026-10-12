@@ -1,0 +1,40 @@
+{
+  "use_todoist": true,
+  "todoist_token": "tok-1-4",
+  "filters": [{"name": "Today", "query": "today | overdue"}],
+  "active_filter": "Today",
+  "use_busybar": false,
+  "busybar_ip": "",
+  "busybar_pin": "",
+  "usb_fallback": true,
+  "work_minutes": 30,
+  "rest_minutes": 5,
+  "cycles": 4,
+  "autostart": true,
+  "poll_seconds": 5,
+  "hotkey": "ctrl+shift+f9",
+  "focus_label": "focus",
+  "remove_label_on_end": true,
+  "log_comments": true,
+  "notifications": true,
+  "launch_at_login": false,
+  "open_on_finish": true,
+  "theme": "dark",
+  "auto_update": true,
+  "block_apps": true,
+  "blocked_apps": ["WhatsApp.exe", "Notion.exe"],
+  "block_sites": true,
+  "site_mode": "block",
+  "blocked_sites": ["youtube.com", "https://www.Reddit.com/", "not a site"],
+  "allowed_sites": [],
+  "site_limits_on": true,
+  "site_limits": [
+    {
+      "id": "a1b2c3d4",
+      "pattern": "instagram.com",
+      "enabled": true,
+      "budgets": [{"minutes": 15, "every": 1, "unit": "day"}],
+      "windows": []
+    }
+  ]
+}

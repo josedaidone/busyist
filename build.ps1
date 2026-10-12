@@ -45,7 +45,7 @@ Run $py @("tools\third_party_licenses.py", "dist\Buzyist\THIRD_PARTY_LICENSES.tx
 Copy-Item LICENSE dist\Buzyist\LICENSE.txt
 
 # Never ship anyone's settings: the app keeps them in %APPDATA%, but check.
-$leaks = Get-ChildItem dist\Buzyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") }
+$leaks = Get-ChildItem dist\Buzyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") -or $_.Name -like "*.bak" -or $_.Name -like "*.corrupt-*" }
 if ($leaks) { throw "Personal files ended up in the build: $($leaks.FullName -join ', ')" }
 
 # 3. Portable zip.
