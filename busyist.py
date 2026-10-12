@@ -107,6 +107,17 @@ from buzyist.storage import read_json, write_bytes_atomic, write_json
 from buzyist.sync import clean_remote_sessions, clean_remote_usage, load_shared
 from buzyist.todoist import Todoist
 from buzyist.usage import SiteUsage
+from buzyist.win32.windows import (
+    close_windows,
+    hide_window,
+    mini_position,
+    pids_with_windows,
+    show_window,
+    wake_window,
+    window_exe,
+    window_focused,
+    window_shown,
+)
 
 __version__ = "1.7.0"
 
@@ -2583,25 +2594,6 @@ def open_browser_page(exe: str, page: str) -> None:
     show_in_explorer(paths.EXTENSION_DIR)
 
 
-def window_exe(hwnd) -> str:
-    """Lower-case file name of the program that owns window `hwnd` ('' if unknown)."""
-    u32, k32 = ctypes.WinDLL("user32"), ctypes.WinDLL("kernel32")
-    k32.OpenProcess.restype = ctypes.wintypes.HANDLE
-    pid = ctypes.wintypes.DWORD()
-    u32.GetWindowThreadProcessId(ctypes.wintypes.HWND(hwnd), ctypes.byref(pid))
-    handle = k32.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
-    if not handle:
-        return ""
-    try:
-        buf = ctypes.create_unicode_buffer(1024)
-        size = ctypes.wintypes.DWORD(len(buf))
-        if not k32.QueryFullProcessImageNameW(ctypes.wintypes.HANDLE(handle), 0, buf, ctypes.byref(size)):
-            return ""
-        return Path(buf.value).name.lower()
-    finally:
-        k32.CloseHandle(ctypes.wintypes.HANDLE(handle))
-
-
 class _KEYBDINPUT(ctypes.Structure):
     _fields_ = [
         ("wVk", ctypes.wintypes.WORD),
@@ -2693,123 +2685,6 @@ def set_clipboard(text: str) -> bool:
         return True
     finally:
         u32.CloseClipboard()
-
-
-# The main window is shown and hidden with plain Win32 calls rather than
-# pywebview's show()/restore()/on_top:
-#  * restore() on a hidden, minimized form makes WinForms take the minimized
-#    position (-32000, -32000) and size as the normal one, so the window
-#    comes back off-screen with only a taskbar button. SW_RESTORE uses the
-#    position Windows remembered from before the minimize.
-#  * on_top sets a WinForms property from this thread while holding the
-#    GIL; the GUI thread then needs the GIL to answer, and both wait forever.
-#    ctypes calls release the GIL.
-
-
-def _hwnd(window: webview.Window):
-    try:
-        return ctypes.wintypes.HWND(window.native.Handle.ToInt64())
-    except Exception:
-        return None
-
-
-def hide_window(window: webview.Window) -> None:
-    hwnd = _hwnd(window)
-    if hwnd:
-        ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
-
-
-def window_shown(window: webview.Window) -> bool:
-    """On screen: visible and not minimized."""
-    hwnd = _hwnd(window)
-    user32 = ctypes.windll.user32
-    return bool(hwnd and user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd))
-
-
-def window_focused(window: webview.Window) -> bool:
-    hwnd = _hwnd(window)
-    user32 = ctypes.windll.user32
-    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND  # the default int truncates on 64-bit
-    return bool(hwnd and user32.GetForegroundWindow() == hwnd.value)
-
-
-def show_window(window: webview.Window) -> None:
-    """Show, un-minimize and focus a window, from any thread."""
-    hwnd = _hwnd(window)
-    if not hwnd:
-        window.show()
-        return
-    user32 = ctypes.windll.user32
-    user32.ShowWindow(hwnd, 9 if user32.IsIconic(hwnd) else 5)  # SW_RESTORE / SW_SHOW
-    user32.GetForegroundWindow.restype = ctypes.wintypes.HWND
-    user32.SetForegroundWindow(hwnd)
-    if window_focused(window):
-        return
-    # Windows refuses SetForegroundWindow from a process that isn't the
-    # foreground one (e.g. right after the mini timer, which we may just have
-    # hidden). Attach to the foreground thread's input queue to get around it.
-    kernel32 = ctypes.windll.kernel32
-    fg = user32.GetForegroundWindow()
-    fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
-    this_thread = kernel32.GetCurrentThreadId()
-    attached = bool(fg_thread and fg_thread != this_thread and user32.AttachThreadInput(this_thread, fg_thread, True))
-    try:
-        user32.keybd_event(0x12, 0, 0, 0)  # a synthetic Alt press lifts the foreground lock
-        user32.keybd_event(0x12, 0, 2, 0)
-        user32.BringWindowToTop(hwnd)
-        user32.SetForegroundWindow(hwnd)
-        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0003 | 0x0040)  # TOPMOST, no move/size, show
-        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0003 | 0x0040)  # back to NOTOPMOST
-    finally:
-        if attached:
-            user32.AttachThreadInput(this_thread, fg_thread, False)
-
-
-def wake_window(window: webview.Window) -> None:
-    """
-    Nudge the WebView2 inside a window that was just un-hidden. After a stay
-    in the tray its renderer can stay throttled (timers and repaints stalled)
-    until the first input event, so send it a harmless mouse move and force a
-    repaint.
-    """
-    hwnd = _hwnd(window)
-    if not hwnd:
-        return
-    user32 = ctypes.windll.user32
-    children = []
-    proc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)(
-        lambda h, _l: children.append(h) or True
-    )
-    user32.EnumChildWindows(hwnd, proc, 0)
-    for target in children or [hwnd]:
-        user32.PostMessageW(target, 0x0200, 0, 0x00010001)  # WM_MOUSEMOVE
-    if not user32.IsZoomed(hwnd) and not user32.IsIconic(hwnd):
-        # A one-pixel resize and back makes WebView2 update its bounds and
-        # visibility, which restarts rendering after a stay on the taskbar.
-        rect = ctypes.wintypes.RECT()
-        if user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            w, h = rect.right - rect.left, rect.bottom - rect.top
-            flags = 0x0002 | 0x0004 | 0x0010  # NOMOVE | NOZORDER | NOACTIVATE
-            user32.SetWindowPos(hwnd, None, 0, 0, w + 1, h, flags)
-            user32.SetWindowPos(hwnd, None, 0, 0, w, h, flags)
-    user32.RedrawWindow(
-        hwnd, None, None, 0x0001 | 0x0004 | 0x0080 | 0x0100 | 0x0400
-    )  # INVALIDATE|ERASE|ALLCHILDREN|UPDATENOW|FRAME
-
-
-def mini_position(width: int, height: int) -> tuple[int, int]:
-    """
-    Bottom-right of the primary work area, clear of the taskbar, in logical
-    pixels. Dividing by the system DPI gives logical pixels whether or not
-    the process is DPI aware yet, since both answers scale together.
-    """
-    try:
-        rect = ctypes.wintypes.RECT()
-        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(rect), 0)  # SPI_GETWORKAREA
-        scale = ctypes.windll.user32.GetDpiForSystem() / 96
-        return int(rect.right / scale) - width - 16, int(rect.bottom / scale) - height - 16
-    except Exception:
-        return 40, 40
 
 
 def launch_command() -> str:
@@ -3533,56 +3408,6 @@ def exe_label(image: str) -> str:
     """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
     stem = image[:-4] if image.lower().endswith(".exe") else image
     return stem.split(".")[0] or stem
-
-
-WM_CLOSE = 0x0010
-GW_OWNER = 4
-_ENUM_WINDOWS_PROC = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
-
-
-def pids_with_windows(pids: set[int]) -> set[int]:
-    """Those of these processes that have a visible (or minimized) top-level window."""
-    return _visit_windows(pids, close=False)
-
-
-def close_windows(pids: set[int]) -> set[int]:
-    """
-    Ask the visible top-level windows of these processes to close, as their
-    X button would. Apps that live in the tray (Slack, Discord) just hide and
-    stay signed in. Returns the pids that had a window to close.
-    """
-    return _visit_windows(pids, close=True)
-
-
-def _visit_windows(pids: set[int], close: bool) -> set[int]:
-    user32 = ctypes.windll.user32
-    user32.GetWindowThreadProcessId.argtypes = [ctypes.wintypes.HWND, ctypes.POINTER(ctypes.wintypes.DWORD)]
-    user32.IsWindowVisible.argtypes = [ctypes.wintypes.HWND]
-    user32.GetWindow.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
-    user32.GetWindow.restype = ctypes.wintypes.HWND
-    user32.PostMessageW.argtypes = [
-        ctypes.wintypes.HWND,
-        ctypes.wintypes.UINT,
-        ctypes.wintypes.WPARAM,
-        ctypes.wintypes.LPARAM,
-    ]
-    user32.EnumWindows.argtypes = [_ENUM_WINDOWS_PROC, ctypes.wintypes.LPARAM]
-    closed: set[int] = set()
-
-    def visit(hwnd, _):
-        pid = ctypes.wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if (
-            pid.value in pids
-            and user32.IsWindowVisible(hwnd)
-            and not user32.GetWindow(hwnd, GW_OWNER)
-            and (not close or user32.PostMessageW(hwnd, WM_CLOSE, 0, 0))
-        ):
-            closed.add(pid.value)
-        return True
-
-    user32.EnumWindows(_ENUM_WINDOWS_PROC(visit), 0)
-    return closed
 
 
 class AppBlocker:
