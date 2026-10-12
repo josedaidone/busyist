@@ -20,6 +20,7 @@ all be changed from the window. Packaged builds are made with build.ps1.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import ctypes
 import ctypes.wintypes
@@ -27,6 +28,7 @@ import hashlib
 import http.server
 import json
 import logging
+import msvcrt
 import os
 import re
 import shutil
@@ -636,6 +638,149 @@ def github_open(url: str, timeout: float = 20, api: bool = False):
         raise AppError(f"Can't reach GitHub ({getattr(err, 'reason', err)}).")
 
 
+# Release signing (#022): SHA256SUMS.txt is signed with minisign (Ed25519,
+# prehashed "ED" mode) and published as SHA256SUMS.txt.minisig. These are
+# the public keys an update may be signed with: the base64 line of a
+# minisign .pub file ("RW..."), the current key first and the next one
+# (for a rotation) after it. See docs/RELEASING.md.
+#
+# While the list is EMPTY, signatures are not checked: the app logs a
+# warning and trusts SHA256SUMS.txt alone, as before. Once it holds a key,
+# a release without a valid signature by one of these keys is never
+# installed (no fallback).
+UPDATE_PUBKEYS: list[str] = []
+UPDATE_SIG_ASSET = "SHA256SUMS.txt.minisig"
+UNSIGNED_UPDATE = "The update isn't signed by buZyist; not installing it."
+# Every download of an update must come from this repository's releases.
+RELEASE_DOWNLOAD_PATH = urllib.parse.urlsplit(REPO_URL).path.rstrip("/") + "/releases/download/"
+
+# Ed25519 signature verification, after the reference code in RFC 8032
+# (section 6). Not constant time, which doesn't matter for checking a public
+# signature; slow, which doesn't matter for one check per update.
+_ED_P = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+_ED_D = -121665 * pow(121666, _ED_P - 2, _ED_P) % _ED_P
+_ED_SQRT_M1 = pow(2, (_ED_P - 1) // 4, _ED_P)
+
+
+def _ed_add(a: tuple, b: tuple) -> tuple:
+    p = _ED_P
+    k1 = (a[1] - a[0]) * (b[1] - b[0]) % p
+    k2 = (a[1] + a[0]) * (b[1] + b[0]) % p
+    k3 = 2 * a[3] * b[3] * _ED_D % p
+    k4 = 2 * a[2] * b[2] % p
+    e, f, g, h = k2 - k1, k4 - k3, k4 + k3, k2 + k1
+    return e * f % p, g * h % p, f * g % p, e * h % p
+
+
+def _ed_mul(n: int, point: tuple) -> tuple:
+    result = (0, 1, 1, 0)
+    while n > 0:
+        if n & 1:
+            result = _ed_add(result, point)
+        point = _ed_add(point, point)
+        n >>= 1
+    return result
+
+
+def _ed_decode(data: bytes) -> tuple | None:
+    """A compressed point, or None if it isn't one."""
+    p = _ED_P
+    y = int.from_bytes(data, "little")
+    sign, y = y >> 255, y & ((1 << 255) - 1)
+    if y >= p:
+        return None
+    x2 = (y * y - 1) * pow(_ED_D * y * y + 1, p - 2, p) % p
+    if x2 == 0:
+        if sign:
+            return None
+        x = 0
+    else:
+        x = pow(x2, (p + 3) // 8, p)
+        if (x * x - x2) % p:
+            x = x * _ED_SQRT_M1 % p
+        if (x * x - x2) % p:
+            return None
+        if (x & 1) != sign:
+            x = p - x
+    return x, y, 1, x * y % p
+
+
+_ED_BASE = _ed_decode((4 * pow(5, _ED_P - 2, _ED_P) % _ED_P).to_bytes(32, "little"))
+
+
+def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    """Whether signature is a valid Ed25519 signature of message by public_key (RFC 8032)."""
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a, r = _ed_decode(public_key), _ed_decode(signature[:32])
+    s = int.from_bytes(signature[32:], "little")
+    if a is None or r is None or s >= _ED_L:
+        return False
+    h = int.from_bytes(hashlib.sha512(signature[:32] + public_key + message).digest(), "little") % _ED_L
+    left, right = _ed_mul(s, _ED_BASE), _ed_add(r, _ed_mul(h, a))
+    p = _ED_P
+    return (left[0] * right[2] - right[0] * left[2]) % p == 0 and (left[1] * right[2] - right[1] * left[2]) % p == 0
+
+
+def minisign_key(text: str) -> tuple[bytes, bytes]:
+    """A minisign public key (the "RW..." line) -> (key id, Ed25519 key); ValueError if it isn't one."""
+    raw = base64.b64decode(text.strip(), validate=True)
+    if len(raw) != 42 or raw[:2] != b"Ed":
+        raise ValueError("not a minisign Ed25519 public key")
+    return raw[2:10], raw[10:]
+
+
+def minisign_verify(message: bytes, signature: str, public_keys: list[str]) -> str:
+    """
+    Check a minisign signature (the text of a .minisig file) of message
+    against the given public keys. Returns the trusted comment; raises
+    ValueError saying what's wrong. Only the prehashed "ED" mode (minisign's
+    default) is accepted, and the global signature over the trusted comment
+    must hold too, as minisign -V requires.
+    """
+    lines = signature.splitlines()
+    if len(lines) < 4 or not lines[0].startswith("untrusted comment:"):
+        raise ValueError("not a minisign signature")
+    if not lines[2].startswith("trusted comment: "):
+        raise ValueError("the signature has no trusted comment")
+    try:
+        raw = base64.b64decode(lines[1].strip(), validate=True)
+        global_sig = base64.b64decode(lines[3].strip(), validate=True)
+    except ValueError:
+        raise ValueError("the signature isn't valid base64")
+    if len(raw) != 74 or len(global_sig) != 64:
+        raise ValueError("the signature has the wrong size")
+    if raw[:2] != b"ED":
+        raise ValueError("the signature isn't in minisign's prehashed (ED) mode")
+    key_id, sig = raw[2:10], raw[10:]
+    keys = dict(minisign_key(k) for k in public_keys)
+    if key_id not in keys:
+        raise ValueError(f"signed with an unknown key ({key_id[::-1].hex().upper()})")
+    public = keys[key_id]
+    if not ed25519_verify(public, hashlib.blake2b(message, digest_size=64).digest(), sig):
+        raise ValueError("the signature doesn't match the file")
+    trusted = lines[2][len("trusted comment: ") :]
+    if not ed25519_verify(public, sig + trusted.encode("utf-8"), global_sig):
+        raise ValueError("the trusted comment doesn't match its signature")
+    return trusted
+
+
+def check_release_url(url: str) -> None:
+    """Refuse to download an update from anywhere but this repository's GitHub releases."""
+    parts = urllib.parse.urlsplit(str(url or ""))
+    segments = parts.path.split("/")
+    if (
+        parts.scheme != "https"
+        or parts.netloc.lower() != "github.com"
+        or not parts.path.lower().startswith(RELEASE_DOWNLOAD_PATH.lower())
+        or ".." in segments
+        or "." in segments
+    ):
+        log.error("refused an update download from %s", url)
+        raise AppError("The update doesn't come from buZyist's GitHub releases; not installing it.")
+
+
 def latest_release() -> dict | None:
     """The newest published release if it is newer than this copy, else None."""
     try:
@@ -652,24 +797,52 @@ def latest_release() -> dict | None:
     # from before the rename (which look for Busyist-Setup) still update.
     setup = assets.get(f"Buzyist-Setup-{version}.exe") or assets.get(f"Busyist-Setup-{version}.exe")
     sums = assets.get("SHA256SUMS.txt")
+    sig = assets.get(UPDATE_SIG_ASSET)
     return {
         "version": version,
         "url": release.get("html_url") or REPO_URL + "/releases/latest",
         "setup": setup and {"name": setup["name"], "url": setup["browser_download_url"]},
         "sums": sums and sums["browser_download_url"],
+        "sig": sig and sig["browser_download_url"],
     }
 
 
-def download_setup(release: dict) -> Path:
-    """Download a release's installer and check it against its SHA256SUMS."""
+def download_setup(release: dict) -> tuple[Path, str]:
+    """
+    Download a release's installer and check it against its SHA256SUMS,
+    after checking SHA256SUMS' signature (when this build has UPDATE_PUBKEYS).
+    Returns the file and its SHA-256 (hex), which install_update checks again
+    through a locked handle right before running it.
+    """
     setup = release["setup"]
     if not setup or not release["sums"]:
         raise AppError(f"Release {release['version']} has no installer to update with.")
+    for url in (setup["url"], release["sums"], release.get("sig")):
+        if url:
+            check_release_url(url)
     try:
         with github_open(release["sums"]) as response:
-            sums = response.read().decode("ascii", "replace")
+            raw_sums = response.read()
     except OSError as err:
         raise AppError(f"Couldn't download the release checksums ({err}).")
+    if UPDATE_PUBKEYS:
+        if not release.get("sig"):
+            log.error("release %s has no %s; not installing it", release["version"], UPDATE_SIG_ASSET)
+            raise AppError(UNSIGNED_UPDATE)
+        try:
+            with github_open(release["sig"]) as response:
+                signature = response.read().decode("utf-8", "replace")
+        except OSError as err:
+            raise AppError(f"Couldn't download the release signature ({err}).")
+        try:
+            trusted = minisign_verify(raw_sums, signature, UPDATE_PUBKEYS)
+        except ValueError as err:
+            log.error("release %s: bad signature on SHA256SUMS.txt (%s); not installing it", release["version"], err)
+            raise AppError(UNSIGNED_UPDATE)
+        log.info("release %s: SHA256SUMS.txt is signed (%s)", release["version"], trusted)
+    else:
+        log.warning("this build has no update signing key; trusting SHA256SUMS.txt without a signature")
+    sums = raw_sums.decode("ascii", "replace")
     expected = next(
         (parts[0].lower() for parts in map(str.split, sums.splitlines()) if parts[1:] == [setup["name"]]), None
     )
@@ -691,7 +864,64 @@ def download_setup(release: dict) -> Path:
         part.unlink(missing_ok=True)
         raise AppError("The downloaded installer doesn't match the release's checksum; not installing it.")
     part.replace(path)
-    return path
+    return path, expected
+
+
+# CreateFileW, for open_locked.
+GENERIC_READ = 0x80000000
+FILE_SHARE_READ = 0x1
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x80
+LOCK_ATTEMPTS = 3  # an antivirus scanning the new file can hold it for a moment
+
+
+def open_locked(path: Path, attempts: int = LOCK_ATTEMPTS, delay: float = 0.5):
+    """
+    Open a file for reading so that nobody can write, rename or delete it
+    while it stays open (share mode FILE_SHARE_READ only). Returns (handle,
+    file object); closing the file object closes the handle. Running the file
+    with CreateProcess still works, since that only reads it.
+
+    Retries a few times (antivirus scans hold new files briefly), then raises
+    AppError: the caller must never fall back to an unlocked file.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private handle: own argtypes
+    kernel32.CreateFileW.argtypes = [
+        ctypes.wintypes.LPCWSTR,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+    invalid = ctypes.wintypes.HANDLE(-1).value
+    error = 0
+    for attempt in range(attempts):
+        handle = kernel32.CreateFileW(
+            str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None
+        )
+        if handle and handle != invalid:
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+            except OSError:
+                kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+                raise
+            return handle, os.fdopen(fd, "rb")
+        error = ctypes.get_last_error()
+        log.info("couldn't lock %s (Windows error %s), attempt %d", path, error, attempt + 1)
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise AppError(f"Couldn't lock the downloaded installer (Windows error {error}); not installing it.")
+
+
+def stream_sha256(stream) -> str:
+    """SHA-256 (hex) of what's left to read in a binary file object."""
+    digest = hashlib.sha256()
+    while chunk := stream.read(1 << 16):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def app_dir_writable() -> bool:
@@ -1728,8 +1958,19 @@ class App:
             if self.updating:
                 raise AppError("The update is already on its way.")
             self.updating, self.update_error = True, ""
+        locked = None
         try:
-            path = download_setup(release)
+            path, expected = download_setup(release)
+            # Another process of this user could swap the checked file before
+            # it runs (and an all-users Setup runs elevated), so lock it, check
+            # it again through the lock and start it while the lock is held.
+            _, locked = open_locked(path)
+            if stream_sha256(locked) != expected:
+                locked.close()
+                locked = None
+                log.error("the installer %s changed after it was checked; deleting it", path)
+                path.unlink(missing_ok=True)
+                raise AppError("The installer changed after it was checked; not installing it.")
             write_json(UPDATE_MARK, {"from": __version__, "to": release["version"]})
             log.info("installing buZyist %s from %s", release["version"], path)
             # /RELAUNCH=1 makes Setup start buZyist again when it is done,
@@ -1739,7 +1980,11 @@ class App:
                 close_fds=True,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
+            # Setup has opened (and Windows mapped) its image by then.
+            threading.Timer(2.0, locked.close).start()
         except (AppError, OSError) as err:
+            if locked:
+                locked.close()
             UPDATE_MARK.unlink(missing_ok=True)
             message = str(err) if isinstance(err, AppError) else f"Couldn't start the installer ({err})."
             with self.lock:
@@ -1821,8 +2066,7 @@ class App:
             pass
         self.notify_focus()
         # Out of the way for the focus block; the mini timer takes over.
-        if self.main:
-            hide_window(self.main)
+        self.hide_main()
         self.show_mini()
         return {"via": self.bar.via}
 
@@ -1987,7 +2231,7 @@ class App:
             if not window_focused(self.main):
                 self.show_main(focus_search=True)
                 return
-            hide_window(self.main)
+            self.hide_main()
             self.show_mini()
         elif self.mini_shown:
             self.hide_mini()
@@ -1998,7 +2242,7 @@ class App:
         if self.mini:
             self.mini_shown = True
             self.mini.show()
-            self._js(self.mini, "Mini.refresh()")
+            self._js(self.mini, "Mini.setVisible ? Mini.setVisible(true) : Mini.refresh()")
             if self.tray:
                 self.tray.update_menu()
 
@@ -2006,8 +2250,37 @@ class App:
         if self.mini:
             self.mini_shown = False
             self.mini.hide()
+            self.tell_visible("mini")
             if self.tray:
                 self.tray.update_menu()
+
+    def hide_main(self) -> None:
+        """Send the main window to the tray (every path that hides it comes here)."""
+        if self.main:
+            hide_window(self.main)
+            self.tell_visible("main")
+
+    def tell_visible(self, which: str) -> None:
+        """
+        Tell a page whether its window is on screen, so a hidden one polls
+        get_state every 15 s instead of every second. Python hides windows
+        with SW_HIDE, which the page's document.hidden doesn't reliably see.
+        Sent from a thread: evaluate_js waits for the GUI thread, which may be
+        the one calling (the closing/minimized events), and the state is read
+        when it's sent, so a show right after a hide can't be overtaken.
+        """
+
+        def push():
+            if self.quitting:
+                return
+            if which == "main":
+                window, name, shown = self.main, "App", bool(self.main and window_shown(self.main))
+            else:
+                window, name, shown = self.mini, "Mini", self.mini_shown
+            if window:
+                self._js(window, f"window.{name} && {name}.setVisible && {name}.setVisible({json.dumps(shown)})")
+
+        threading.Thread(target=push, daemon=True, name="tell-visible").start()
 
     @staticmethod
     def _js(window, script: str) -> None:
@@ -2020,12 +2293,12 @@ class App:
     def on_minimized(self) -> None:
         # Minimize to the tray, not the taskbar: hide it as it is, still
         # minimized, so show_window() can restore it to where it was.
-        hide_window(self.main)
+        self.hide_main()
 
     def on_closing(self) -> bool:
         if self.quitting:
             return True
-        hide_window(self.main)
+        self.hide_main()
         return False
 
     def quit(self) -> None:
@@ -2206,6 +2479,11 @@ class App:
                 show_window(self.main)
             if self.session:
                 self.show_mini()
+            # The pages start out polling as if on screen; tell the ones that
+            # start hidden (the tray start, the mini timer) once they're loaded.
+            for which, window in (("main", self.main), ("mini", self.mini)):
+                if window.events.loaded.wait(30):
+                    self.tell_visible(which)
 
         webview.start(
             ready,
@@ -2367,7 +2645,7 @@ class Api:
         self._app.show_main()
 
     def hide_main(self):
-        hide_window(self._app.main)
+        self._app.hide_main()
 
     def set_solo(self, solo):
         """Narrow window without the task list (Todoist off), or the full one."""
@@ -3054,6 +3332,51 @@ def app_key(name: str) -> str:
     return name[:-4] if name.endswith(".exe") else name
 
 
+# Programs the app blocker never closes (as app_key()s), even if added by
+# hand: ending them every 1.5 s would take the desktop, Windows itself, this
+# app, or the browser its extension runs in down with them. Mirrored in
+# ui/main.js (addBlockedApp).
+PROTECTED_EXES = frozenset(
+    {
+        # Windows
+        "explorer",
+        "svchost",
+        "csrss",
+        "wininit",
+        "winlogon",
+        "lsass",
+        "services",
+        "smss",
+        "dwm",
+        "fontdrvhost",
+        "sihost",
+        "taskhostw",
+        "ctfmon",
+        "runtimebroker",
+        "searchhost",
+        "startmenuexperiencehost",
+        "shellexperiencehost",
+        "textinputhost",
+        "taskmgr",
+        "conhost",
+        "dllhost",
+        "audiodg",
+        "spoolsv",
+        "msmpeng",
+        "securityhealthservice",
+        # buZyist itself (packaged, and from source) and the browsers its extension runs in
+        "buzyist",
+        "busyist",
+        "python",
+        "pythonw",
+        "py",
+        "chrome",
+        "msedge",
+        "msedgewebview2",
+    }
+)
+
+
 def normalize_blocked_apps(raw) -> list[dict]:
     """
     The app list as Settings shows it: every preset (in APP_PRESETS order,
@@ -3075,6 +3398,9 @@ def normalize_blocked_apps(raw) -> list[dict]:
         if item.get("custom"):
             exe = str((item.get("exes") or [""])[0]).strip()
             if not exe:
+                continue
+            if app_key(exe) in PROTECTED_EXES:
+                log.warning("dropped %s from the blocked apps: Windows, buZyist or the browser needs it", exe)
                 continue
             custom.append(
                 {
@@ -3122,6 +3448,8 @@ def clean_blocked_apps(values) -> list[dict]:
                 raise AppError("Type the program name, like Slack.exe.")
             if "/" in exe or "\\" in exe:
                 raise AppError("App names are just the program, like WhatsApp.exe.")
+            if app_key(exe) in PROTECTED_EXES:
+                raise AppError(f"buZyist won't close {exe}: Windows or your browser needs it.")
             hand += 1
     if hand > MAX_BLOCKED_APPS:
         raise AppError(f"Keep the added apps under {MAX_BLOCKED_APPS}.")
@@ -3727,8 +4055,11 @@ class AppBlocker:
     The thread sleeps on an Event outside focus, so it costs nothing when
     there is no session or the switch is off; App.notify_focus() and
     save_settings() poke it. During focus it looks every TICK seconds:
-    "close" apps are ended (only in this user's session), "hide" apps get
-    their windows closed to the tray so they stay online.
+    "close" apps are asked to close first (WM_CLOSE, like their X button)
+    and ended CLOSE_GRACE seconds later if they are still running, or at once
+    when they have no window to ask (only in this user's session); "hide"
+    apps get their windows closed to the tray so they stay online. Programs
+    in PROTECTED_EXES, and buZyist's own process, are never touched.
 
     A "blocked" toast only fires when the user opens a blocked app *during*
     focus (not for apps already running when focus began, which are swept away
@@ -3742,6 +4073,7 @@ class AppBlocker:
 
     TICK = 1.5
     TOAST_EVERY = 60  # seconds between toasts for the same app
+    CLOSE_GRACE = 3.0  # seconds a "close" app gets to close itself (and save) before it's ended
 
     def __init__(self, app: App):
         self.app = app
@@ -3749,6 +4081,9 @@ class AppBlocker:
         self._toasted: dict[str, float] = {}
         self._denied: set[int] = set()  # pids we couldn't end; logged once, not retried
         self._closed: dict[str, str] = {}  # app_key -> exe path, to reopen when focus ends
+        self._closing: dict[int, float] = {}  # pid -> monotonic deadline: asked to close, ended after it
+        # Never this process; from source, not the python.exe/launcher that started it either.
+        self._own_pids = {os.getpid()} | (set() if FROZEN else {os.getppid()})
         self._first_sweep = True  # the first enforce of a focus: existing apps, no toast
         self._preexisting: set[str] = set()  # apps already open when focus began: never popped
         self._session = process_session(os.getpid())
@@ -3776,6 +4111,7 @@ class AppBlocker:
                 self.reopen()  # focus ended (pause, break, stop, finish): put apps back
                 self._toasted.clear()
                 self._denied.clear()
+                self._closing.clear()
                 self._first_sweep = True
                 self._preexisting.clear()
                 self.wake.wait()  # idle until focus starts or settings change
@@ -3793,7 +4129,8 @@ class AppBlocker:
         for entry in self.app.cfg.get("blocked_apps") or []:
             if entry.get("on"):
                 for exe in entry["exes"]:
-                    wanted[app_key(exe)] = entry
+                    if app_key(exe) not in PROTECTED_EXES:  # also checked on save and load
+                        wanted[app_key(exe)] = entry
         if not wanted:
             return
         alive: set[int] = set()
@@ -3804,7 +4141,7 @@ class AppBlocker:
             alive.add(pid)
             key = app_key(image)
             entry = wanted.get(key)
-            if entry is None or pid in self._denied:
+            if entry is None or pid in self._denied or pid in self._own_pids:
                 continue
             alive_keys.add(key)
             if self._session is not None and process_session(pid) != self._session:
@@ -3818,26 +4155,48 @@ class AppBlocker:
         if self._first_sweep and found:
             shown = pids_with_windows({pid for pid, *_ in found})
             windowed = {key for pid, _, key, _ in found if pid in shown}
+        now = time.monotonic()
+        # Forget pids that are gone (or no longer blocked), so a reused pid starts over.
+        listed = {pid for pid, *_ in found}
+        self._closing = {pid: deadline for pid, deadline in self._closing.items() if pid in listed}
+        to_close: dict[str, list[tuple[int, str]]] = {}  # app_key -> processes to ask to close now
         for pid, image, key, entry in found:
-            target = relaunch_target(pid)  # how to start it again, grabbed before it's gone
+            if pid in self._closing:
+                if now >= self._closing[pid]:  # asked, and still running after the grace time
+                    del self._closing[pid]
+                    if self._end(pid, image):
+                        log.info("%s (pid %d) didn't close in %g s; ended it", image, pid, self.CLOSE_GRACE)
+                continue
+            target = relaunch_target(pid)  # how to start it again, grabbed before it's asked to close
             restore = bool(target) and key in windowed
             if entry["action"] == "hide":
                 if restore:
                     self._closed.setdefault(key, target)  # bring its window back later
                 to_hide[pid] = entry
                 continue
-            error = terminate_process(pid)
-            if error:
-                self._denied.add(pid)
-                log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
-                continue
-            log.info("closed %s (pid %d) during focus", image, pid)
             if restore:
                 self._closed.setdefault(key, target)  # reopen it when focus ends
+            to_close.setdefault(key, []).append((pid, image))
             if not self._first_sweep and key not in self._preexisting:
                 # The app wasn't open when the pomodoro started, so the user
                 # just tried to open it: that's when the "blocked" popup fits.
                 self._toast(entry, "blocked", focus)
+        if to_close:
+            # Ask first, like the X button, so the app can save a draft or its
+            # state; end it if it's still there after CLOSE_GRACE. An app's
+            # windowless helper processes wait with it. An app with no window
+            # at all (only in the tray) can't be asked, so it's ended now.
+            asked = close_windows({pid for procs in to_close.values() for pid, _ in procs})
+            for procs in to_close.values():
+                if any(pid in asked for pid, _ in procs):
+                    for pid, image in procs:
+                        self._closing[pid] = now + self.CLOSE_GRACE
+                        if pid in asked:
+                            log.info("asked %s (pid %d) to close during focus", image, pid)
+                else:
+                    for pid, image in procs:
+                        if self._end(pid, image):
+                            log.info("closed %s (pid %d) during focus", image, pid)
         if self._first_sweep:
             self._preexisting = alive_keys  # whatever was open at the start stays quiet
         else:
@@ -3849,6 +4208,15 @@ class AppBlocker:
             # its window back when focus ends (relaunch just activates it).
             for pid in close_windows(set(to_hide)):
                 log.info("hid %s (pid %d) to the tray during focus", to_hide[pid]["name"], pid)
+
+    def _end(self, pid: int, image: str) -> bool:
+        """TerminateProcess it; False (and never retried) if Windows says no."""
+        error = terminate_process(pid)
+        if error:
+            self._denied.add(pid)
+            log.warning("couldn't close %s (pid %d): Win32 error %d", image, pid, error)
+            return False
+        return True
 
     def _toast(self, entry: dict, what: str, focus: dict) -> None:
         now = time.monotonic()

@@ -8,7 +8,12 @@
 #   dist\Busyist-Setup-<version>.exe  (the same installer, for copies from before the rename)
 #   dist\Buzyist-<version>-portable.zip
 #   dist\SHA256SUMS.txt
-param([switch]$SkipInstaller)
+#   dist\SHA256SUMS.txt.minisig      (only with -SigningKey, see docs\RELEASING.md)
+#
+# -SigningKey <minisign .key file> (or $env:BUZYIST_SIGNING_KEY) signs
+# SHA256SUMS.txt for the in-app updater; the password comes from
+# $env:MINISIGN_PASSWORD or is asked for. CI signs in its own step instead.
+param([switch]$SkipInstaller, [string]$SigningKey = $env:BUZYIST_SIGNING_KEY)
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -72,6 +77,13 @@ if (-not $SkipInstaller) {
 Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe", ".zip" } | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 } | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+
+# 6. Sign the checksums (#022): installed copies with UPDATE_PUBKEYS refuse an unsigned update.
+if ($SigningKey) {
+    Run $py @("tools\minisign.py", "sign", "-s", $SigningKey, "-m", "dist\SHA256SUMS.txt", "--app", "busyist.py")
+} else {
+    Write-Warning "SHA256SUMS.txt is not signed here (pass -SigningKey; CI signs in its own step)."
+}
 
 Write-Host "`nDone:" -ForegroundColor Green
 Get-ChildItem dist -File | ForEach-Object { "  {0,-40} {1,8:N1} MB" -f $_.Name, ($_.Length / 1MB) }
