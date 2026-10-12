@@ -10,4 +10,4 @@ pillow==12.3.0
 # them in: a busylib that switched HTTP client would otherwise break the import.
 httpx2==2.13.1     # `import httpx2` (Bar._client's transport)
 pydantic==2.13.5   # busylib's snapshot types are pydantic models built and edited in Bar
-pythonnet==3.1.0   # `clr`, a hiddenimport in packaging/busyist.spec (pywebview's WinForms/WebView2 backend)
+pythonnet==3.2.1   # `clr`, a hiddenimport in packaging/busyist.spec (pywebview's WinForms/WebView2 backend)
