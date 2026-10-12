@@ -133,13 +133,6 @@ def test_the_name_is_cut_to_60(clock):
     assert out[PC]["name"] == "N" * 60
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason="BUG: clean_remote_usage checks day keys with the regex \\d{4}-\\d{2}-\\d{2} only, so "
-    "'2026-13-45' passes and SiteUsage.used() then raises in strptime on every /focus answer "
-    "(another PC, or anything that can write to Chrome sync, can break this PC's limits).",
-)
 def test_an_impossible_date_from_another_pc_does_not_break_used(clock):
     remote = clean_remote_usage({PC: device(clock.ms, {RID: {"b": 0, "m": {}, "d": {"2026-13-45": 60}}})}, ME)
     usage = SiteUsage(busyist.USAGE_PATH)

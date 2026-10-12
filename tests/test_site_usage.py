@@ -272,13 +272,6 @@ def test_a_good_file_loads(data_dir):
     assert usage.passes == {RID: 5}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=ValueError,
-    reason="BUG: a day key that isn't a real date in usage.json (or from another PC, see "
-    "test_remote_clean) is loaded as is and makes SiteUsage.used() raise in strptime, "
-    "which breaks site_limits_status() and so every /focus answer.",
-)
 def test_a_bad_day_key_does_not_break_used(data_dir):
     path = data_dir / "usage.json"
     path.write_text(json.dumps({"days": {RID: {"yesterday": 30}}}), encoding="utf-8")

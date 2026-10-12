@@ -4321,6 +4321,25 @@ def site_limit_status(rule: dict, usage: SiteUsage, now: datetime) -> dict:
     }
 
 
+def is_day_key(key) -> bool:
+    """A real date written YYYY-MM-DD, as usage.json and Chrome sync key days."""
+    if not isinstance(key, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", key):
+        return False
+    try:
+        datetime.strptime(key, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def _day_ms(day: str) -> int | None:
+    """Local midnight of a day key, or None for one that isn't a date."""
+    try:
+        return _ms(datetime.strptime(day, "%Y-%m-%d"))
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 class SiteUsage:
     """
     Seconds spent on each limited website, kept in usage.json. The last two
@@ -4345,7 +4364,7 @@ class SiteUsage:
             for rid, per in (data.get("minutes") or {}).items():
                 self.minutes[rid] = {int(m): float(s) for m, s in per.items()}
             for rid, per in (data.get("days") or {}).items():
-                self.days[rid] = {str(d): float(s) for d, s in per.items()}
+                self.days[rid] = {str(d): float(s) for d, s in per.items() if is_day_key(str(d))}
             self.passes = {rid: int(t) for rid, t in (data.get("passes") or {}).items()}
         except (AttributeError, TypeError, ValueError):
             log.warning("usage.json was unreadable; starting the totals over")
@@ -4360,7 +4379,11 @@ class SiteUsage:
     def used(self, rid: str, start_ms: int, end_ms: int) -> float:
         """Seconds on this rule from start_ms up to end_ms."""
         first, last = start_ms // 60000, end_ms // 60000
-        in_span = lambda day: start_ms <= _ms(datetime.strptime(day, "%Y-%m-%d")) < end_ms  # noqa: E731 - a one-line predicate reads better than a nested def here
+
+        def in_span(day) -> bool:
+            when = _day_ms(day)  # a bad key counts for nothing rather than break every /focus answer
+            return when is not None and start_ms <= when < end_ms
+
         with self.lock:
             total = sum(s for m, s in self.minutes.get(rid, {}).items() if first <= m <= last)
             total += sum(s for day, s in self.days.get(rid, {}).items() if in_span(day))
@@ -4486,7 +4509,7 @@ def clean_remote_usage(raw, own_device: str) -> dict:
                 rules[rid] = {
                     "b": int(u.get("b") or 0),
                     "m": {k: v for k, v in minutes.items() if 0 <= k < 2880 and 0 < v <= 3600},
-                    "d": {k: v for k, v in days.items() if re.fullmatch(r"\d{4}-\d{2}-\d{2}", k) and 0 < v <= 86400},
+                    "d": {k: v for k, v in days.items() if is_day_key(k) and 0 < v <= 86400},
                 }
             except (AttributeError, TypeError, ValueError):
                 continue
