@@ -1547,8 +1547,20 @@ $("refresh").onclick = () => loadTasks();
 
 // ------------------------------------------------------------- startup
 
+// Polling: every second while the window is on screen, every 15 s while it
+// sits in the tray. Python says which through App.setVisible on every hide
+// and show (it hides windows with SW_HIDE, which document.hidden doesn't
+// always notice), and onShown means visible too.
+let visible = true;
+const onScreen = () => visible && !document.hidden;
+
 window.App = {
+  setVisible(v) {
+    visible = !!v;
+    if (visible) poll();
+  },
   onShown(focusSearch) {
+    visible = true;
     if (Date.now() - lastTaskLoad > 30000) loadTasks(true);
     poll();
     // A window that was hidden in the tray can still be throttled for a
@@ -1565,7 +1577,7 @@ window.App = {
 
 // Re-sync as soon as the window is restored or focused.
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
-window.addEventListener("focus", () => poll());
+window.addEventListener("focus", () => { visible = true; poll(); });  // focused means on screen
 window.addEventListener("resize", () => poll());
 
 async function boot() {
@@ -1578,8 +1590,9 @@ async function boot() {
   } else if (state.todoist) {
     loadTasks();
   }
-  setInterval(poll, 1000);
-  setInterval(renderTimer, 250);
+  setInterval(() => { if (onScreen()) poll(); }, 1000);
+  setInterval(() => { if (!onScreen()) poll(); }, 15000);  // hidden: a slow safety net
+  setInterval(() => { if (onScreen()) renderTimer(); }, 250);
   // keep the list fresh while the window stays open
   setInterval(() => { if (!document.hidden && Date.now() - lastTaskLoad > 300000) loadTasks(true); }, 60000);
 }

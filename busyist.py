@@ -2063,8 +2063,7 @@ class App:
             pass
         self.notify_focus()
         # Out of the way for the focus block; the mini timer takes over.
-        if self.main:
-            hide_window(self.main)
+        self.hide_main()
         self.show_mini()
         return {"via": self.bar.via}
 
@@ -2229,7 +2228,7 @@ class App:
             if not window_focused(self.main):
                 self.show_main(focus_search=True)
                 return
-            hide_window(self.main)
+            self.hide_main()
             self.show_mini()
         elif self.mini_shown:
             self.hide_mini()
@@ -2240,7 +2239,7 @@ class App:
         if self.mini:
             self.mini_shown = True
             self.mini.show()
-            self._js(self.mini, "Mini.refresh()")
+            self._js(self.mini, "Mini.setVisible ? Mini.setVisible(true) : Mini.refresh()")
             if self.tray:
                 self.tray.update_menu()
 
@@ -2248,8 +2247,37 @@ class App:
         if self.mini:
             self.mini_shown = False
             self.mini.hide()
+            self.tell_visible("mini")
             if self.tray:
                 self.tray.update_menu()
+
+    def hide_main(self) -> None:
+        """Send the main window to the tray (every path that hides it comes here)."""
+        if self.main:
+            hide_window(self.main)
+            self.tell_visible("main")
+
+    def tell_visible(self, which: str) -> None:
+        """
+        Tell a page whether its window is on screen, so a hidden one polls
+        get_state every 15 s instead of every second. Python hides windows
+        with SW_HIDE, which the page's document.hidden doesn't reliably see.
+        Sent from a thread: evaluate_js waits for the GUI thread, which may be
+        the one calling (the closing/minimized events), and the state is read
+        when it's sent, so a show right after a hide can't be overtaken.
+        """
+
+        def push():
+            if self.quitting:
+                return
+            if which == "main":
+                window, name, shown = self.main, "App", bool(self.main and window_shown(self.main))
+            else:
+                window, name, shown = self.mini, "Mini", self.mini_shown
+            if window:
+                self._js(window, f"window.{name} && {name}.setVisible && {name}.setVisible({json.dumps(shown)})")
+
+        threading.Thread(target=push, daemon=True, name="tell-visible").start()
 
     @staticmethod
     def _js(window, script: str) -> None:
@@ -2262,12 +2290,12 @@ class App:
     def on_minimized(self) -> None:
         # Minimize to the tray, not the taskbar: hide it as it is, still
         # minimized, so show_window() can restore it to where it was.
-        hide_window(self.main)
+        self.hide_main()
 
     def on_closing(self) -> bool:
         if self.quitting:
             return True
-        hide_window(self.main)
+        self.hide_main()
         return False
 
     def quit(self) -> None:
@@ -2448,6 +2476,11 @@ class App:
                 show_window(self.main)
             if self.session:
                 self.show_mini()
+            # The pages start out polling as if on screen; tell the ones that
+            # start hidden (the tray start, the mini timer) once they're loaded.
+            for which, window in (("main", self.main), ("mini", self.mini)):
+                if window.events.loaded.wait(30):
+                    self.tell_visible(which)
 
         webview.start(
             ready,
@@ -2609,7 +2642,7 @@ class Api:
         self._app.show_main()
 
     def hide_main(self):
-        hide_window(self._app.main)
+        self._app.hide_main()
 
     def set_solo(self, solo):
         """Narrow window without the task list (Todoist off), or the full one."""
