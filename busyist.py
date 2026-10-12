@@ -2482,7 +2482,10 @@ class App:
                 self.note_limits_edit(old_limits, c["site_limits"], on_changed)
             if sync_off:
                 with self.sync_lock:
-                    self.shared["joined"] = ""  # meet the shared copy afresh if it's turned back on
+                    # Meet the shared copy afresh if it's turned back on. rev_seen goes too:
+                    # the extension only posts a shared copy whose rev differs from it.
+                    self.shared["joined"] = ""
+                    self.shared["rev_seen"] = ""
                     self._save_shared()
         if not merged.get("sync_session"):
             self.remote_sessions = {}

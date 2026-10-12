@@ -518,19 +518,13 @@ def test_hostile_usage_and_sessions_are_ignored(pair):
 # ------------------------------------------------- turning sharing off and on
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: turning sync_limits off clears `joined` but not `rev_seen`. When it is turned back on "
-    "and the shared copy hasn't changed meanwhile, the extension sees rev == rev_seen and doesn't post "
-    "it (shareSync), and it only writes limits once joined, so the PC never merges again, and doesn't "
-    "share its own edits, until another PC writes a new rev.",
-)
 def test_sharing_off_and_on_meets_the_shared_copy_afresh(pair, cloud):
     a, b = pair
     a.edit(X, patterns=["a.com"])
     settle([a, b], cloud)
     b.save(sync_limits=False)
     assert b.app.shared["joined"] == ""
+    assert b.app.shared["rev_seen"] == ""
     assert not b.owns() or "doc" not in b.payload()
     b.edit(Y, patterns=["a.com"])  # the same site, made while not sharing
     b.save(sync_limits=True)
