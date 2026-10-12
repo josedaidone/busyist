@@ -56,7 +56,7 @@ from PIL import Image, ImageDraw, ImageFont
 # sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
 APP_NAME = "buZyist"
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 REPO_URL = "https://github.com/josedaidone/buzyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
