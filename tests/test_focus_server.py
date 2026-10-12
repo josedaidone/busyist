@@ -22,6 +22,7 @@ RULE = {
 }
 
 WEB = "https://evil.example"
+TRUSTED = {"X-Buzyist": "1"}  # what extension 1.7.0+ adds to every request (#012)
 
 
 @pytest.fixture
@@ -119,11 +120,15 @@ def test_preflight_from_extension(focus_server):
     assert "GET" in r.headers["Access-Control-Allow-Methods"]
     assert "POST" in r.headers["Access-Control-Allow-Methods"]
     assert "Content-Type" in r.headers["Access-Control-Allow-Headers"]
+    assert "X-Buzyist" in r.headers["Access-Control-Allow-Headers"]
     assert r.headers["Access-Control-Allow-Private-Network"] == "true"
 
 
 def test_preflight_from_web_is_refused(focus_server):
     assert focus_server.request("OPTIONS", "/focus", origin=WEB).status == 403
+    # The preflight a page needs before it can send our header.
+    asks = {"Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "x-buzyist"}
+    assert focus_server.request("OPTIONS", "/focus", origin=WEB, headers=asks).status == 403
 
 
 def test_post_from_web_is_refused(focus_server, limits):
@@ -217,7 +222,6 @@ def test_current_extension_version_is_not_flagged(focus_server, app):
     assert not app.extension_outdated()
 
 
-@pytest.mark.xfail(strict=True, reason="any GET registers a profile and takes sync_owner until #012")
 def test_plain_get_cannot_take_sync_owner(focus_server, app):
     # What an <img src="http://127.0.0.1:47616/focus?i=..."> on any web page sends.
     app.cfg["sync_limits"] = True
@@ -226,6 +230,82 @@ def test_plain_get_cannot_take_sync_owner(focus_server, app):
     assert r.status == 200
     assert app.cfg["sync_owner"] == ""
     assert "abcdef123" not in app.shared["instances"]
+    assert "sync" not in r.json
+
+
+@pytest.mark.parametrize("origin", [None, busyist.EXTENSION_ORIGIN])
+def test_trusted_get_registers_the_profile_and_takes_sync_owner(focus_server, app, origin):
+    app.cfg["sync_limits"] = True
+    app.cfg["sync_owner"] = ""
+    r = focus_server.get("/focus?v=1.7.0&i=abcdef123&a=me@x.com", origin=origin, headers=TRUSTED)
+    assert r.status == 200
+    assert app.shared["instances"]["abcdef123"]["email"] == "me@x.com"
+    assert app.cfg["sync_owner"] == "abcdef123"
+    assert busyist.read_json(busyist.CONFIG_PATH, {})["sync_owner"] == "abcdef123"
+    assert "sync" in r.json  # the owner's answers carry what to share
+
+
+def test_untrusted_get_from_the_owner_gets_no_sync(focus_server, app):
+    # An extension from before the header (<= 1.6.0) that is the sync owner
+    # keeps blocking but stops sharing until it is reloaded.
+    app.cfg["sync_limits"] = True
+    app.cfg["sync_owner"] = "abcdef123"
+    r = focus_server.get("/focus?v=1.6.0&i=abcdef123&a=me@x.com", origin=None)
+    assert r.status == 200
+    assert "sync" not in r.json
+    assert "patterns" in r.json and "limits" in r.json
+    assert "abcdef123" not in app.shared["instances"]
+    assert focus_server.get("/focus?v=1.7.0&i=abcdef123", headers=TRUSTED).json.get("sync")
+
+
+def test_untrusted_get_still_counts_as_the_extension(focus_server, app):
+    # Product decision (#012): requests without the header still record the
+    # version and the call, so extensions <= 1.6.0 get the "Reload" notice.
+    # A page can fake that much (one toast, "connected"), nothing more.
+    focus_server.get("/focus?v=1.6.0", origin=None)
+    assert app.extension_connected()
+    assert app.extension_version == "1.6.0"
+    assert app.extension_outdated()
+    assert app._ext_warned == busyist.EXTENSION_VERSION
+
+
+def test_untrusted_post_records_usage_but_not_the_profile(focus_server, limits):
+    limits.cfg["sync_limits"] = True
+    limits.cfg["sync_owner"] = ""
+    minute = minute_now()
+    body = {"usage": {"abc123": {str(minute): 20}}, "instance": "abcdef123", "account": "me@x.com", "version": "1.6.0"}
+    r = focus_server.post("/usage", body)
+    assert r.status == 200
+    assert limits.usage.minutes["abc123"] == {minute: 20.0}
+    assert limits.cfg["sync_owner"] == ""
+    assert "abcdef123" not in limits.shared["instances"]
+    assert "sync" not in r.json
+    assert focus_server.post("/grant", {"id": "abc123", "instance": "abcdef123"}).status == 200
+    assert limits.usage.pass_until("abc123") > busyist.now_ms()
+
+    r = focus_server.post("/usage", body, headers=TRUSTED)
+    assert limits.cfg["sync_owner"] == "abcdef123"
+    assert "sync" in r.json
+
+
+def test_post_sync_needs_the_header(focus_server, app):
+    app.cfg["sync_limits"] = True
+    app.cfg["sync_owner"] = "abcdef123"
+    shared = {"instance": "abcdef123", "limits": None}  # nothing shared yet
+    assert focus_server.post("/sync", shared).status == 200
+    assert app.shared["joined"] != "abcdef123"
+    assert focus_server.post("/sync", shared, headers=TRUSTED).status == 200
+    assert app.shared["joined"] == "abcdef123"
+
+
+def test_note_extension_is_untrusted_by_default(app):
+    app.cfg["sync_limits"] = True
+    app.note_extension("1.7.0", "abcdef123", "me@x.com")
+    assert "abcdef123" not in app.shared["instances"]
+    assert app.cfg["sync_owner"] == ""
+    app.note_instance("abcdef123", "me@x.com")  # registers, but doesn't take the owner
+    assert "abcdef123" in app.shared["instances"]
+    assert app.cfg["sync_owner"] == ""
 
 
 def test_post_sync_from_non_owner_changes_nothing(focus_server, limits):
@@ -242,7 +322,7 @@ def test_post_sync_from_non_owner_changes_nothing(focus_server, limits):
             "deleted": {"abc123": busyist.now_ms()},
         },
     }
-    r = focus_server.post("/sync", shared)
+    r = focus_server.post("/sync", shared, headers=TRUSTED)
     assert r.status == 200
     assert "sync" not in r.json
     assert limits.cfg["site_limits"] == before
