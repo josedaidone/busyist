@@ -86,6 +86,13 @@ menu, and starts it.
     couple more minutes.
   - The extension keeps enforcing limits while buZyist is closed and reports the time it measured
     the next time buZyist runs.
+  - **Share limits and time with my other PCs** (off by default): the limits, and the time spent on
+    them, follow you between PCs through Chrome sync, so 20 minutes of Instagram at work count at
+    home too. On each PC, load the extension in a Chrome profile signed in to the same Google
+    account, with sync on, and turn the switch on. If a PC has several Chrome profiles with the
+    extension, pick the one that shares (the first to connect does, until you pick); the others
+    still enforce the limits. Edits made on different PCs are merged rule by rule. Changes reach
+    the other PCs within a minute or so of the extension seeing them.
 - **The extension's toolbar button**: its badge shows the time left on the current site's limit
   (otherwise the pomodoro minutes left). Click it to see the current pomodoro and your limits.
 - **Installing the extension**: in **Settings → Websites**, click **Open Chrome's extensions
@@ -107,6 +114,10 @@ menu, and starts it.
   PC only). It only replies to the buZyist extension itself, so web pages can't read what you're
   working on. The extension reports only the time spent on the sites you set limits for, and only
   to buZyist on your PC. It doesn't send your browsing anywhere else.
+- Only if you turn on **Share limits and time with my other PCs**: your website limits and the
+  time spent on each (per minute today, per day before that), plus your PC's name, are stored in
+  Chrome sync, that is with your Google account. Nothing else goes there: not the Todoist token,
+  the bar PIN or your other settings.
 - Your settings live in `%APPDATA%\Busyist`: `config.json` (including your Todoist token and bar
   PIN, unencrypted), the session, your history, the time spent on limited sites (`usage.json`)
   and a log. **Settings → About → Open data folder**
