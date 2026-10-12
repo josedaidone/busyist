@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import busyist
+from buzyist import api
 from conftest import patch_everywhere
 
 
@@ -62,7 +62,7 @@ def test_closing_or_minimizing_the_window_tells_the_page(app, windows, deferred_
 
 def test_api_hide_main_goes_through_the_app(app, windows, deferred_threads):
     main, _ = windows
-    busyist.Api(app).hide_main()
+    api.Api(app).hide_main()
     deferred_threads.run_pending()
     assert not main.shown
     assert visibility(main)[-1].endswith("setVisible(false)")

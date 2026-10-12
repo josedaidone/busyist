@@ -8,6 +8,7 @@ import urllib.request
 import pytest
 
 import busyist
+from buzyist import api as api_mod
 from buzyist import constants, paths, secrets_dpapi, todoist
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
@@ -56,18 +57,18 @@ def test_a_config_from_another_user_asks_for_the_token_again(make_app, caplog):
     assert app.cfg["todoist_token"] == ""
     assert app.secret_lost == ["todoist_token"]
     assert app.state()["needs_setup"]
-    settings = busyist.Api(app).get_settings()
+    settings = api_mod.Api(app).get_settings()
     assert settings["todoist_token_lost"] and not settings["has_todoist_token"]
     assert "can't be read by this Windows user" in caplog.text
     app.save_settings({"todoist_token": TOKEN})
     assert app.secret_lost == []
-    assert busyist.Api(app).get_settings()["has_todoist_token"]
+    assert api_mod.Api(app).get_settings()["has_todoist_token"]
 
 
 @pytest.mark.windows_only
 def test_get_settings_never_holds_the_secrets(make_app):
     app = make_app({"todoist_token": TOKEN, "busybar_pin": "4321"})
-    settings = busyist.Api(app).get_settings()
+    settings = api_mod.Api(app).get_settings()
     assert settings["todoist_token"] == "" and settings["busybar_pin"] == ""
     assert settings["has_todoist_token"] and settings["has_busybar_pin"]
     dumped = json.dumps(settings)
@@ -95,7 +96,7 @@ def test_empty_field_keeps_the_secret_and_clear_removes_it(make_app):
 def test_bar_test_with_an_empty_pin_uses_the_saved_one(make_app):
     app = make_app({"busybar_pin": "4321", "busybar_ip": "192.168.1.50"})
     seen = {}
-    api = busyist.Api(app)
+    api = api_mod.Api(app)
 
     def fake_run(fn):
         seen["routes"] = app.bar.routes()
