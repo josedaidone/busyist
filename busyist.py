@@ -57,7 +57,7 @@ from PIL import Image, ImageDraw, ImageFont
 # sign-in Run entry and the log. APP_NAME is what people see.
 APP = "Busyist"
 APP_NAME = "buZyist"
-__version__ = "1.6.1"
+__version__ = "1.6.2"
 REPO_URL = "https://github.com/josedaidone/buzyist"
 RELEASES_API = "https://api.github.com/repos/josedaidone/buzyist/releases/latest"
 
@@ -193,7 +193,10 @@ APP_ACTIONS = ("close", "hide")
 
 # What the bar accepts (busylib checks the same bounds).
 PHASE_MIN, PHASE_MAX = 5, 480
-CYCLES_MIN, CYCLES_MAX = 2, 35
+CYCLES_MIN, CYCLES_MAX = 1, 35
+# The bar itself refuses fewer than 2 work phases, so a 1-tomato session runs
+# as 2 on the bar and the app stops it when the first break would begin.
+BAR_CYCLES_MIN = 2
 
 DEFAULT_FILTER = {"name": "Today", "query": "today | overdue"}
 MAX_FILTERS = 20
@@ -468,6 +471,7 @@ class Bar:
         """Start the busy card's standard interval timer; returns its stamp."""
 
         def go(bar: BusyBar) -> int:
+            count = cycles if isinstance(bar, LocalClock) else max(cycles, BAR_CYCLES_MIN)
             profile = bar.busy_profile("busy")
             live = bar.busy_snapshot()
             variant = types.BusySnapshotInterval(
@@ -481,7 +485,7 @@ class Bar:
                     type="INTERVAL",
                     interval_work_ms=work_ms,
                     interval_rest_ms=rest_ms,
-                    interval_work_cycles_count=cycles,
+                    interval_work_cycles_count=count,
                     is_autostart_enabled=autostart,
                 ),
                 busy_bar_settings=profile.busy_bar_settings,
@@ -883,10 +887,18 @@ class App:
             "fraction": left / total if total else 0,
             "minutes": -(-left // 60000),  # rounded up, like the bar
             "round": (state.interval or 0) // 2 + 1,
-            "rounds": settings.interval_work_cycles_count,
+            "rounds": self._rounds(snap),
             "work_ms": settings.interval_work_ms,
             "rest_ms": settings.interval_rest_ms,
         }
+
+    def _rounds(self, snap) -> int:
+        """Work phases in the running session: ours may be fewer than the bar's (BAR_CYCLES_MIN)."""
+        count = snap.snapshot.interval_settings.interval_work_cycles_count
+        session = self.session
+        if session and session.get("rounds") and snap.snapshot_timestamp_ms >= session["stamp"]:
+            return min(count, int(session["rounds"]))
+        return count
 
     def today_stats(self) -> dict:
         today = date.today().isoformat()
@@ -1329,6 +1341,7 @@ class App:
                 log.exception("engine")
             # Reading the local clock costs nothing, so follow it closely.
             poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
+            poll = min(poll, self._until_early_end(poll))
             self.wake.wait(poll)
             self.wake.clear()
 
@@ -1362,8 +1375,19 @@ class App:
 
         threading.Thread(target=beep, daemon=True).start()
 
+    def _until_early_end(self, poll: float) -> float:
+        """Seconds to the end of a session that is shorter than what the bar runs, if that's sooner than a poll."""
+        with self.lock:
+            view = self.timer_view() if self.session else None
+        if not view or view["paused"] or view["phase"] != "work" or view["round"] < view["rounds"]:
+            return poll
+        if view["rounds"] >= BAR_CYCLES_MIN or self.bar.is_local:
+            return poll  # the bar (or clock) ends this one by itself
+        return max(0.3, view["left_ms"] / 1000 + 0.3)
+
     def follow_session(self) -> None:
         notify = None
+        stop_bar = False
         with self.lock:
             session, snap = self.session, self.snap
             if not session or snap is None or not self.bar_ok:
@@ -1383,7 +1407,12 @@ class App:
                 # fully behind us are the even indices below the current one.
                 interval = state.interval or 0
                 session["done"] = max(session["done"], (interval + 1) // 2)
-                if interval != session.get("interval", 0):
+                rounds = session.get("rounds")
+                if rounds and interval >= rounds * 2 - 1:
+                    # Fewer rounds than the bar runs: our session ends here.
+                    reason, stop_bar = "finished", True
+                    session["done"] = rounds
+                elif interval != session.get("interval", 0):
                     session["interval"] = interval
                     write_json(SESSION_PATH, session)
                     rounds = inner.interval_settings.interval_work_cycles_count
@@ -1398,6 +1427,12 @@ class App:
                 silent = self.recovering
                 threading.Thread(target=self.finish, args=(session, reason, silent), daemon=True).start()
             self.recovering = False
+        if stop_bar:
+            try:
+                self.bar.stop()
+                self.wake.set()  # read the stopped bar back now
+            except AppError as err:
+                log.warning("couldn't stop the bar after the last round: %s", err)
         if notify:
             self.notify(*notify)
 
@@ -1584,6 +1619,7 @@ class App:
                     "label": self.cfg["focus_label"].strip(),
                     "label_added": False,
                     "local": self.bar.is_local,
+                    "rounds": cycles,  # the bar may run more (BAR_CYCLES_MIN)
                 }
                 write_json(SESSION_PATH, self.session)
                 self.recovering = False

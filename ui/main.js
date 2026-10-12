@@ -139,11 +139,12 @@ function renderTimer() {
     if (rounds <= 12) {
       for (let n = 1; n <= rounds; n++) dots.append(tomato(n <= done ? "done" : n === now ? "now" : "plan"));
     }
-    dots.setAttribute("aria-label", t ? `Tomato ${Math.min(t.round, rounds)} of ${rounds}` : `${rounds} tomatoes`);
+    dots.setAttribute("aria-label", t ? `Tomato ${Math.min(t.round, rounds)} of ${rounds}` : `${rounds} tomato${rounds === 1 ? "" : "es"}`);
   }
   const restMin = Math.round((t ? t.rest_ms : p.rest_minutes * 60000) / 60000);
   let line;
-  if (!t) line = `${p.cycles} tomatoes of ${p.work_minutes} min, ${p.rest_minutes} min breaks`;
+  if (!t) line = p.cycles === 1 ? `1 tomato of ${p.work_minutes} min, no break`
+    : `${p.cycles} tomatoes of ${p.work_minutes} min, ${p.rest_minutes} min breaks`;
   else if (t.phase === "rest") line = `Break · tomato ${t.round + 1} of ${t.rounds} next`;
   else if (t.round >= t.rounds) line = `Tomato ${t.round} of ${t.rounds} · the last one`;
   else line = `Tomato ${t.round} of ${t.rounds} · ${restMin} min break after`;
