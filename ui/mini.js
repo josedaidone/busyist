@@ -65,13 +65,24 @@ function alertPause() {
   poll();
 }
 
-window.Mini = { refresh: poll, alert: alertPause };
+// Polling: every second while the mini timer is on screen, every 15 s while
+// it's hidden. Python calls Mini.setVisible on every show and hide.
+let visible = true;
+const onScreen = () => visible && !document.hidden;
+
+function setVisible(v) {
+  visible = !!v;
+  if (visible) poll();
+}
+
+window.Mini = { refresh: poll, alert: alertPause, setVisible };
 
 function boot() {
   api = window.pywebview.api;
   poll();
-  setInterval(poll, 1000);
-  setInterval(render, 250);
+  setInterval(() => { if (onScreen()) poll(); }, 1000);
+  setInterval(() => { if (!onScreen()) poll(); }, 15000);  // hidden: a slow safety net
+  setInterval(() => { if (onScreen()) render(); }, 250);
 }
 
 if (window.pywebview && window.pywebview.api) boot();

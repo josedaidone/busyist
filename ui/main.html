@@ -175,6 +175,8 @@
           <input class="input" id="s_todoist_token" name="todoist_token" type="password" spellcheck="false">
           <button type="button" class="icon-btn" id="revealToken" title="Show"><svg><use href="#i-eye"/></svg></button>
         </div>
+        <div class="help hidden" id="tokenLost">Re-enter your Todoist token (it can't be read on this PC).</div>
+        <div class="help hidden" id="tokenSaved">A token is saved. <button type="button" class="link" id="removeToken">Remove</button></div>
         <div class="help">Todoist → Settings → Integrations → Developer → API token.</div>
       </div>
       <div class="field">
@@ -202,6 +204,8 @@
           <div class="field">
             <label for="s_busybar_pin">HTTP API PIN</label>
             <input class="input" id="s_busybar_pin" name="busybar_pin" type="password">
+            <div class="help hidden" id="pinLost">Re-enter the PIN (it can't be read on this PC).</div>
+            <div class="help hidden" id="pinSaved">A PIN is saved. <button type="button" class="link" id="removePin">Remove</button></div>
           </div>
         </div>
         <div class="field">

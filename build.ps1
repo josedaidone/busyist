@@ -8,7 +8,12 @@
 #   dist\Busyist-Setup-<version>.exe  (the same installer, for copies from before the rename)
 #   dist\Buzyist-<version>-portable.zip
 #   dist\SHA256SUMS.txt
-param([switch]$SkipInstaller)
+#   dist\SHA256SUMS.txt.minisig      (only with -SigningKey, see docs\RELEASING.md)
+#
+# -SigningKey <minisign .key file> (or $env:BUZYIST_SIGNING_KEY) signs
+# SHA256SUMS.txt for the in-app updater; the password comes from
+# $env:MINISIGN_PASSWORD or is asked for. CI signs in its own step instead.
+param([switch]$SkipInstaller, [string]$SigningKey = $env:BUZYIST_SIGNING_KEY)
 
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -28,8 +33,10 @@ if (-not (Test-Path $py)) {
     if ($env:BUILD_PYTHON) { Run $env:BUILD_PYTHON @("-m", "venv", ".venv-build") }
     else { Run "py" @("-3.11", "-m", "venv", ".venv-build") }
 }
-Run $py @("-m", "pip", "install", "--quiet", "--upgrade", "pip")
-Run $py @("-m", "pip", "install", "--quiet", "-r", "requirements.txt", "-r", "requirements-build.txt")
+# Both files are hash-locked (pip-tools, see CLAUDE.md): pip refuses any package
+# whose version or hash isn't in them. pip itself is not upgraded, since that
+# would be an install outside the lock.
+Run $py @("-m", "pip", "install", "--quiet", "--require-hashes", "-r", "requirements.txt", "-r", "requirements-build.txt")
 
 # 2. The app folder.
 Remove-Item build, dist -Recurse -Force -ErrorAction SilentlyContinue
@@ -38,7 +45,7 @@ Run $py @("tools\third_party_licenses.py", "dist\Buzyist\THIRD_PARTY_LICENSES.tx
 Copy-Item LICENSE dist\Buzyist\LICENSE.txt
 
 # Never ship anyone's settings: the app keeps them in %APPDATA%, but check.
-$leaks = Get-ChildItem dist\Buzyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") }
+$leaks = Get-ChildItem dist\Buzyist -Recurse -File | Where-Object { $_.Name -in @("config.json", "session.json", "history.json", "busybar_todoist.json") -or $_.Name -like "*.bak" -or $_.Name -like "*.corrupt-*" }
 if ($leaks) { throw "Personal files ended up in the build: $($leaks.FullName -join ', ')" }
 
 # 3. Portable zip.
@@ -72,6 +79,13 @@ if (-not $SkipInstaller) {
 Get-ChildItem dist -File | Where-Object { $_.Extension -in ".exe", ".zip" } | ForEach-Object {
     "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
 } | Set-Content dist\SHA256SUMS.txt -Encoding ascii
+
+# 6. Sign the checksums (#022): installed copies with UPDATE_PUBKEYS refuse an unsigned update.
+if ($SigningKey) {
+    Run $py @("tools\minisign.py", "sign", "-s", $SigningKey, "-m", "dist\SHA256SUMS.txt", "--app", "busyist.py")
+} else {
+    Write-Warning "SHA256SUMS.txt is not signed here (pass -SigningKey; CI signs in its own step)."
+}
 
 Write-Host "`nDone:" -ForegroundColor Green
 Get-ChildItem dist -File | ForEach-Object { "  {0,-40} {1,8:N1} MB" -f $_.Name, ($_.Length / 1MB) }

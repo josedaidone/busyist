@@ -1,0 +1,2 @@
+# Signature test vectors: the exact bytes matter.
+tests/data/** -text

@@ -6,13 +6,21 @@ Write the licenses of everything bundled into the packaged app.
 Run with the build environment's Python: it lists that environment's
 packages, minus the build tools that are not shipped.
 """
+
 import importlib.metadata as md
 import sys
 from pathlib import Path
 
 NOT_SHIPPED = {
-    "pip", "setuptools", "wheel", "pyinstaller", "pyinstaller-hooks-contrib",
-    "altgraph", "pefile", "packaging", "pywin32-ctypes",
+    "pip",
+    "setuptools",
+    "wheel",
+    "pyinstaller",
+    "pyinstaller-hooks-contrib",
+    "altgraph",
+    "pefile",
+    "packaging",
+    "pywin32-ctypes",
 }
 
 
@@ -49,20 +57,37 @@ def main(out: str) -> None:
         key=lambda d: d.metadata["Name"].lower(),
     )
     python_license = Path(sys.base_prefix) / "LICENSE.txt"
-    sections = [("Python", ".".join(map(str, sys.version_info[:3])), "PSF-2.0", "https://www.python.org",
-                 [python_license.read_text(encoding="utf-8", errors="replace")] if python_license.exists() else [])]
+    sections = [
+        (
+            "Python",
+            ".".join(map(str, sys.version_info[:3])),
+            "PSF-2.0",
+            "https://www.python.org",
+            [python_license.read_text(encoding="utf-8", errors="replace")] if python_license.exists() else [],
+        )
+    ]
     for dist in dists:
         meta = dist.metadata
         home = meta.get("Home-page") or next(
-            (u.split(",", 1)[-1].strip() for u in meta.get_all("Project-URL") or []), "")
+            (u.split(",", 1)[-1].strip() for u in meta.get_all("Project-URL") or []), ""
+        )
         sections.append((meta["Name"], dist.version, license_name(meta), home, license_texts(dist)))
     # The fonts embedded in the UI and the browser extension.
     fonts = Path(__file__).resolve().parent.parent / "ui" / "fonts"
-    for name, home in (("Fredoka", "https://github.com/hafontia/Fredoka-One"),
-                       ("Figtree", "https://github.com/erikdkennedy/figtree")):
+    for name, home in (
+        ("Fredoka", "https://github.com/hafontia/Fredoka-One"),
+        ("Figtree", "https://github.com/erikdkennedy/figtree"),
+    ):
         text = fonts / f"LICENSE-{name}.txt"
-        sections.append((f"{name} (font)", "", "OFL-1.1", home,
-                         [text.read_text(encoding="utf-8", errors="replace")] if text.exists() else []))
+        sections.append(
+            (
+                f"{name} (font)",
+                "",
+                "OFL-1.1",
+                home,
+                [text.read_text(encoding="utf-8", errors="replace")] if text.exists() else [],
+            )
+        )
     for name, version, lic, home, texts in sections:
         lines += ["=" * 78, f"{name} {version}".strip(), f"License: {lic}"]
         if home:

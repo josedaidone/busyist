@@ -894,7 +894,8 @@ async function openSettings(tab) {
     else input.value = s[input.name] ?? "";
   }
   $("testResult").textContent = "";
-  blockedApps = (s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
+  showSecrets(s);
+  blockedApps =(s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
@@ -920,14 +921,50 @@ async function openSettings(tab) {
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
   $("updateResult").textContent = "";
   renderUpdate();
-  if (s.use_todoist && !s.todoist_token) tab = "todoist";
+  if (s.use_todoist && !s.has_todoist_token) tab = "todoist";
   showTab(typeof tab === "string" ? tab : settingsTab);
   $("drawer").classList.add("on");
   $("scrim").classList.add("on");
   setTimeout(() => {
-    if (s.use_todoist && !s.todoist_token) $("s_todoist_token").focus();
+    if (s.use_todoist && !s.has_todoist_token) $("s_todoist_token").focus();
     else document.querySelector("#settingsTabs .stab.on").focus();
   }, 220);
+}
+
+// The token and the PIN never come to the page (get_settings sends "" and
+// has_*). An empty field keeps the saved one; Remove asks Python to clear it.
+const SECRETS = {
+  todoist_token: { input: "s_todoist_token", saved: "tokenSaved", lost: "tokenLost", remove: "removeToken", empty: "Paste your API token" },
+  busybar_pin: { input: "s_busybar_pin", saved: "pinSaved", lost: "pinLost", remove: "removePin", empty: "" },
+};
+let secretsToClear = {};
+
+function showSecrets(s) {
+  secretsToClear = {};
+  for (const [key, x] of Object.entries(SECRETS)) {
+    const has = !!s["has_" + key];
+    $(x.input).value = "";
+    $(x.input).placeholder = has ? "•••••••• saved (type to replace)" : x.empty;
+    $(x.saved).classList.toggle("hidden", !has);
+    $(x.lost).classList.toggle("hidden", !s[key + "_lost"]);
+  }
+}
+
+// What a save sends for the secrets: Remove, unless a new one was typed.
+function secretClears() {
+  const out = {};
+  for (const [key, x] of Object.entries(SECRETS)) if (secretsToClear[key] && !$(x.input).value.trim()) out["clear_" + key] = true;
+  return out;
+}
+
+for (const [key, x] of Object.entries(SECRETS)) {
+  $(x.remove).onclick = () => {
+    secretsToClear[key] = true;
+    $(x.input).value = "";
+    $(x.input).placeholder = x.empty;
+    $(x.saved).classList.add("hidden");
+    $(x.input).focus();
+  };
 }
 
 // The token and label options only matter with Todoist.
@@ -990,12 +1027,26 @@ function renderBlockedApps() {
   $("blockedAppsFields").classList.toggle("muted", !$("s_block_apps").checked);
 }
 
+// Programs the blocker never closes: PROTECTED_EXES in buzyist/blocker.py, which
+// has the last word when Settings are saved.
+const PROTECTED_EXES = new Set([
+  "explorer", "svchost", "csrss", "wininit", "winlogon", "lsass", "services", "smss",
+  "dwm", "fontdrvhost", "sihost", "taskhostw", "ctfmon", "runtimebroker", "searchhost",
+  "startmenuexperiencehost", "shellexperiencehost", "textinputhost", "taskmgr",
+  "conhost", "dllhost", "audiodg", "spoolsv", "msmpeng", "securityhealthservice",
+  "buzyist", "busyist", "python", "pythonw", "py",
+  "chrome", "msedge", "msedgewebview2",
+]);
+
 function addBlockedApp() {
   const input = $("addBlockedApp");
   const name = input.value.trim();
   if (!name) return;
   if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
   const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
+  if (PROTECTED_EXES.has(key(name))) {
+    return toast(`buZyist won't close ${name}: Windows or your browser needs it.`, true);
+  }
   const known = blockedApps.find((a) => a.exes.some((e) => key(e) === key(name)));
   input.value = "";
   if (known) { known.on = true; return renderBlockedApps(); }  // already listed: just switch it on
@@ -1074,7 +1125,7 @@ function addBlockedSite() {
   sites.push(site);
   renderBlockedSites();
 }
-// Mirrors clean_site_pattern in busyist.py, which has the final say on save.
+// Mirrors clean_site_pattern in buzyist/site_rules.py, which has the final say on save.
 // "" for nothing typed, null for something that isn't a website.
 function cleanSitePattern(raw) {
   let text = String(raw).trim().toLowerCase();
@@ -1179,7 +1230,7 @@ setInterval(async () => {
 }, 5000);
 
 // Sharing limits with other PCs through Chrome sync: one browser profile per
-// PC does it (busyist.py, "sharing across PCs"). The profiles come from the
+// PC does it (buzyist/app_sync.py, "sharing across PCs"). The profiles come from the
 // extensions that have called buZyist; the first one is picked by itself.
 let syncOwner = "";  // as picked here, saved with the rest
 
@@ -1467,7 +1518,7 @@ $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
+  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
@@ -1478,7 +1529,8 @@ $("testBar").onclick = async () => {
   const out = $("testResult");
   out.className = "test-result";
   out.textContent = "Testing…";
-  const saved = await api.save_settings(formValues(["use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"]));
+  const { clear_busybar_pin } = secretClears();
+  const saved = await api.save_settings({ ...formValues(["use_busybar", "busybar_ip", "busybar_pin", "usb_fallback"]), clear_busybar_pin });
   if (!saved.ok) { out.className = "test-result bad"; out.textContent = saved.error; return; }
   const result = await api.test_bar();
   out.className = "test-result " + (result.ok ? "ok" : "bad");
@@ -1533,8 +1585,20 @@ $("refresh").onclick = () => loadTasks();
 
 // ------------------------------------------------------------- startup
 
+// Polling: every second while the window is on screen, every 15 s while it
+// sits in the tray. Python says which through App.setVisible on every hide
+// and show (it hides windows with SW_HIDE, which document.hidden doesn't
+// always notice), and onShown means visible too.
+let visible = true;
+const onScreen = () => visible && !document.hidden;
+
 window.App = {
+  setVisible(v) {
+    visible = !!v;
+    if (visible) poll();
+  },
   onShown(focusSearch) {
+    visible = true;
     if (Date.now() - lastTaskLoad > 30000) loadTasks(true);
     poll();
     // A window that was hidden in the tray can still be throttled for a
@@ -1551,7 +1615,7 @@ window.App = {
 
 // Re-sync as soon as the window is restored or focused.
 document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
-window.addEventListener("focus", () => poll());
+window.addEventListener("focus", () => { visible = true; poll(); });  // focused means on screen
 window.addEventListener("resize", () => poll());
 
 async function boot() {
@@ -1564,8 +1628,9 @@ async function boot() {
   } else if (state.todoist) {
     loadTasks();
   }
-  setInterval(poll, 1000);
-  setInterval(renderTimer, 250);
+  setInterval(() => { if (onScreen()) poll(); }, 1000);
+  setInterval(() => { if (!onScreen()) poll(); }, 15000);  // hidden: a slow safety net
+  setInterval(() => { if (onScreen()) renderTimer(); }, 250);
   // keep the list fresh while the window stays open
   setInterval(() => { if (!document.hidden && Date.now() - lastTaskLoad > 300000) loadTasks(true); }, 60000);
 }

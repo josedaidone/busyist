@@ -26,6 +26,10 @@ const FOCUS_URL = BASE + "/focus?v=" + VERSION;
 const USAGE_URL = BASE + "/usage";
 const GRANT_URL = BASE + "/grant";
 const SYNC_URL = BASE + "/sync";
+// Web pages can make plain GETs to 127.0.0.1 too (an <img>, say), but can't add
+// a header of their own without a preflight, which buZyist refuses. Only
+// requests with this header may register this profile or get `sync`.
+const HEADERS = { "X-Buzyist": "1" };
 const BLOCKED = chrome.runtime.getURL("blocked.html");
 // Higher wins. Limits beat the allow rules, so a limited site stays blocked in
 // allow mode; focus blocks in "block" mode beat limits, so the focus page shows.
@@ -81,7 +85,17 @@ function profileEmail() {
 const who = () => ({ version: VERSION, instance: me.id, account: me.account });
 const focusUrl = () => FOCUS_URL + "&i=" + me.id + "&a=" + encodeURIComponent(me.account);
 
-const saveState = () => chrome.storage.local.set({ lastGood, pending, passes });
+// Written only when something changed: most ticks change nothing.
+let savedSig = null;
+function saveState() {
+  const sig = canon({ lastGood, pending, passes });
+  if (sig === savedSig) return Promise.resolve();
+  savedSig = sig;
+  return chrome.storage.local.set({ lastGood, pending, passes }).catch((e) => {
+    savedSig = null; // try again next time
+    throw e;
+  });
+}
 
 // ------------------------------------------------------------- patterns
 //
@@ -110,8 +124,22 @@ function patternRegex(pattern) {
   return "^(https?://" + hostRe + "(?::\\d+)?" + pathRe + ")$";
 }
 
+// Every tab is tested against every pattern on each pass, so each pattern is
+// compiled once. Without the g flag a RegExp keeps no state between tests.
+const regexCache = new Map(); // pattern -> RegExp, or null when it doesn't compile
+function compiled(pattern) {
+  let re = regexCache.get(pattern);
+  if (re === undefined) {
+    try { re = new RegExp(patternRegex(pattern), "i"); } catch (e) { re = null; }
+    if (regexCache.size > 2000) regexCache.clear(); // patterns come and go with Settings edits
+    regexCache.set(pattern, re);
+  }
+  return re;
+}
+
 function matches(pattern, url) {
-  try { return new RegExp(patternRegex(pattern), "i").test(url); } catch (e) { return false; }
+  const re = compiled(pattern);
+  return !!re && re.test(url);
 }
 
 // buZyist versions before allowlists only send `sites` (domains to block).
@@ -208,7 +236,7 @@ async function currentIds(focus, now, url) {
 async function post(url, body) {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: Object.assign({ "Content-Type": "application/json" }, HEADERS),
     body: JSON.stringify(body),
     cache: "no-store",
   });
@@ -237,7 +265,7 @@ async function fetchState(force) {
         if (pending[id] && !Object.keys(pending[id]).length) delete pending[id];
       }
     } else {
-      const res = await fetch(focusUrl(), { cache: "no-store" }); // an older buZyist
+      const res = await fetch(focusUrl(), { cache: "no-store", headers: HEADERS }); // an older buZyist
       data = res.ok ? await res.json() : null;
     }
   } catch (e) {
@@ -479,9 +507,10 @@ function redirectRule(id, priority, regexFilter, limitId) {
   };
 }
 
-async function setRules(focus, now) {
-  const existing = await chrome.declarativeNetRequest.getDynamicRules();
-  const removeRuleIds = existing.map((r) => r.id);
+// The declarativeNetRequest rules for this answer. Pure: the same answer (and
+// the same pending time and passes) always gives the same list, with ids in
+// the order of the patterns, so setRules can tell when nothing changed.
+function buildRules(focus, now) {
   const addRules = [];
   const { mode, patterns } = rulesOf(focus);
   if (focus.active && mode === "allow") {
@@ -502,6 +531,21 @@ async function setRules(focus, now) {
       addRules.push(redirectRule(next++, LIMIT_PRIORITY, patternRegex(p), rule.id));
     }
   }
+  return addRules;
+}
+
+// The rules last written, as canon() text. In memory only: a restarted worker
+// starts from null and writes them once.
+let appliedSig = null;
+
+// Write the rules when they differ from the last ones written; true if it did.
+// Most ticks change nothing, and rewriting every rule each time is costly.
+async function setRules(focus, now) {
+  const addRules = buildRules(focus, now);
+  const sig = canon(addRules);
+  if (sig === appliedSig) return false;
+  const existing = await chrome.declarativeNetRequest.getDynamicRules();
+  const removeRuleIds = existing.map((r) => r.id);
   try {
     await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds, addRules });
   } catch (e) {
@@ -516,20 +560,37 @@ async function setRules(focus, now) {
       }
     }
   }
+  // Also after a rule was skipped: retrying it every tick wouldn't help.
+  appliedSig = sig;
+  return true;
 }
 
+// Where a tab on this page should go instead, or null if it isn't blocked.
+function blockTarget(url, focus, now) {
+  if (focusBlocks(url, focus)) return BLOCKED + "?u=" + url;
+  const rule = limitBlocks(url, focus, now);
+  return rule ? BLOCKED + "?l=" + rule.id + "&u=" + url : null;
+}
+
+// Tabs already sitting on a site when it becomes blocked: send them over too.
+// New navigations are the rules' job; this runs when the rules change.
 async function sweepTabs(focus, now) {
-  // Tabs already sitting on a blocked site when it becomes blocked: send them over too.
   const tabs = await chrome.tabs.query({ url: ["http://*/*", "https://*/*"] });
   for (const tab of tabs) {
     if (!tab.id || !tab.url) continue;
-    if (focusBlocks(tab.url, focus)) {
-      chrome.tabs.update(tab.id, { url: BLOCKED + "?u=" + tab.url });
-    } else {
-      const rule = limitBlocks(tab.url, focus, now);
-      if (rule) chrome.tabs.update(tab.id, { url: BLOCKED + "?l=" + rule.id + "&u=" + tab.url });
-    }
+    const target = blockTarget(tab.url, focus, now);
+    if (target) chrome.tabs.update(tab.id, { url: target });
   }
+}
+
+// One tab moved to a new URL. The rules catch real navigations, but not a
+// page that changes its own URL (youtube.com to youtube.com/shorts/...), so
+// check it against the last answer.
+function checkTab(tabId, url) {
+  const focus = cache.data;
+  if (!focus || !tabId || !url) return;
+  const target = blockTarget(url, focus, Date.now());
+  if (target) chrome.tabs.update(tabId, { url: target });
 }
 
 // 45s, 12m, 3h: short enough for the badge.
@@ -594,8 +655,7 @@ async function tick(force) {
   }
   const focus = await fetchState(force);
   const now = Date.now();
-  await setRules(focus, now);
-  await sweepTabs(focus, now);
+  if (await setRules(focus, now)) await sweepTabs(focus, now);
   // Counted from the start of this tick, so the time spent talking to buZyist isn't lost.
   counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: started };
   updateBadge(focus, Date.now(), await activeUrl(false));
@@ -612,10 +672,21 @@ function ensureAlarm() {
 chrome.runtime.onInstalled.addListener(() => { ensureAlarm(); sync(true); });
 chrome.runtime.onStartup.addListener(() => { ensureAlarm(); sync(true); });
 chrome.alarms.onAlarm.addListener((a) => { if (a.name === ALARM) sync(true); });
-chrome.tabs.onUpdated.addListener((_id, info) => { if (info.status === "loading" || info.url) sync(false); });
-chrome.tabs.onActivated.addListener(() => sync(false));
-chrome.tabs.onRemoved.addListener(() => sync(false));
-chrome.windows.onFocusChanged.addListener(() => sync(false));
+// Tab and window events come in bursts (onUpdated fires several times per
+// page load): one exchange 250 ms after the first of them covers the lot.
+let localSoon = null;
+function syncSoonLocal() {
+  if (localSoon) return;
+  localSoon = setTimeout(() => { localSoon = null; sync(false); }, 250);
+}
+
+chrome.tabs.onUpdated.addListener((tabId, info) => {
+  if (info.url) checkTab(tabId, info.url);
+  if (info.status === "loading" || info.url) syncSoonLocal();
+});
+chrome.tabs.onActivated.addListener(syncSoonLocal);
+chrome.tabs.onRemoved.addListener(syncSoonLocal);
+chrome.windows.onFocusChanged.addListener(syncSoonLocal);
 chrome.idle.setDetectionInterval(IDLE_SECONDS);
 chrome.idle.onStateChanged.addListener(() => sync(false));
 

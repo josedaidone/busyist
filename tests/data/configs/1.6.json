@@ -1,0 +1,41 @@
+{
+  "use_todoist": true,
+  "todoist_token": "tok-1-6",
+  "filters": [{"name": "Today", "query": "today | overdue"}, {"name": "P1", "query": "p1"}],
+  "active_filter": "P1",
+  "use_busybar": false,
+  "busybar_ip": "",
+  "busybar_pin": "",
+  "usb_fallback": true,
+  "work_minutes": 25,
+  "rest_minutes": 5,
+  "cycles": 4,
+  "autostart": true,
+  "poll_seconds": 5,
+  "hotkey": "ctrl+alt+p",
+  "focus_label": "pomodoro",
+  "remove_label_on_end": false,
+  "log_comments": true,
+  "notifications": true,
+  "launch_at_login": true,
+  "open_on_finish": true,
+  "auto_update": true,
+  "block_apps": false,
+  "blocked_apps": [{"id": "whatsapp", "on": true, "action": "close"}],
+  "block_sites": true,
+  "site_mode": "block",
+  "blocked_sites": ["youtube.com/shorts/*", "x.com"],
+  "allowed_sites": [],
+  "site_limits_on": false,
+  "site_limits": [
+    {
+      "id": "0badcafe",
+      "patterns": ["news.ycombinator.com"],
+      "enabled": false,
+      "budgets": [{"minutes": 10, "every": 2, "unit": "hour"}],
+      "windows": []
+    }
+  ],
+  "sync_limits": true,
+  "sync_owner": "k3j4h5g6"
+}

@@ -1,0 +1,100 @@
+name: CI
+
+# Lint, tests and extension checks on every push and pull request.
+# release.yml calls this workflow (workflow_call) before it builds, so a tag
+# with a failing test never publishes a release.
+on:
+  push:
+    branches: ["**"]  # branches only: tag pushes go through release.yml, which calls this
+  pull_request:
+  workflow_call:
+
+permissions: {}  # each job asks for what it needs
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Pull requests need the base commit for the manifest check below.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: "requirements*.txt"
+
+      - name: Install the dev requirements (hash-locked)
+        run: python -m pip install --require-hashes -r requirements-dev.txt
+
+      - name: Audit the locked dependencies (pip-audit)
+        run: python -m pip_audit --disable-pip --progress-spinner off -r requirements.txt -r requirements-build.txt -r requirements-dev.txt
+
+      - name: Ruff (lint)
+        run: python -m ruff check --output-format=github .
+
+      - name: Ruff (format)
+        run: python -m ruff format --check .
+
+      - name: Pytest
+        run: python -m pytest --cov=busyist --cov-report=term-missing
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+
+      - name: Syntax check of the JS files
+        run: |
+          foreach ($f in Get-ChildItem extension/*.js, ui/*.js) {
+            node --check $f.FullName
+            if ($LASTEXITCODE -ne 0) { throw "node --check failed: $($f.Name)" }
+          }
+
+      - name: JS tests
+        if: hashFiles('tests/js/**') != ''
+        run: |
+          node --test "tests/js/**/*.test.{js,mjs,cjs}"
+          if ($LASTEXITCODE -ne 0) { throw "node --test failed" }
+
+      - name: Extension manifest is valid and has a version
+        run: |
+          $m = Get-Content extension/manifest.json -Raw | ConvertFrom-Json
+          if ($m.version -notmatch '^\d+(\.\d+){0,3}$') { throw "extension/manifest.json: bad or missing version '$($m.version)'" }
+          Write-Host "Extension version $($m.version)"
+
+      # Chrome doesn't reload an unpacked extension after its files change, and
+      # buZyist only offers the "Reload extension" prompt when the manifest
+      # version is newer than the one loaded (see CLAUDE.md), so every change
+      # under extension/ needs a version bump.
+      - name: Extension changed without a manifest version bump
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # The checkout is shallow (one commit), so fetch the base to diff against.
+          git fetch --no-tags --depth=1 origin "$env:BASE_SHA"
+          if ($LASTEXITCODE -ne 0) { throw "git fetch of the base commit failed" }
+          $changed = git diff --name-only "$env:BASE_SHA" HEAD -- extension/
+          if ($LASTEXITCODE -ne 0) { throw "git diff failed" }
+          $changed = @($changed | Where-Object { $_ })
+          if (-not $changed) { Write-Host "extension/ unchanged"; exit 0 }
+          $old = (git show "${env:BASE_SHA}:extension/manifest.json" | Out-String | ConvertFrom-Json).version
+          $new = (Get-Content extension/manifest.json -Raw | ConvertFrom-Json).version
+          if ($old -eq $new) {
+            Write-Host "::error file=extension/manifest.json::extension/ changed ($($changed -join ', ')) but the manifest version is still $new. Bump `"version`" in extension/manifest.json: Chrome doesn't reload an unpacked extension on its own, and buZyist only asks people to reload it when that version is newer."
+            exit 1
+          }
+          Write-Host "Extension version $old -> $new"

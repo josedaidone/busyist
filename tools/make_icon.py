@@ -7,6 +7,7 @@ The handoff's square app icon (Nata background, no corners) is meant for
 systems that mask icons themselves; Windows doesn't, so the .ico is the
 symbol on a transparent background.
 """
+
 from pathlib import Path
 
 from PIL import Image, ImageDraw

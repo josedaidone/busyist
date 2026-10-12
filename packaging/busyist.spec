@@ -42,6 +42,7 @@ a = Analysis(
     ],
     hiddenimports=[
         *collect_submodules("busylib"),
+        *collect_submodules("buzyist"),  # the app package; busyist.py imports it, this makes sure nothing is missed
         "webview.platforms.winforms",
         "webview.platforms.edgechromium",
         "clr",

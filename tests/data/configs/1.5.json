@@ -1,0 +1,43 @@
+{
+  "use_todoist": false,
+  "todoist_token": "tok-1-5",
+  "filters": [{"name": "Today", "query": "today | overdue"}],
+  "active_filter": "Today",
+  "use_busybar": true,
+  "busybar_ip": "busybar.local",
+  "busybar_pin": "",
+  "usb_fallback": false,
+  "work_minutes": 25,
+  "rest_minutes": 5,
+  "cycles": 1,
+  "autostart": false,
+  "poll_seconds": 10,
+  "hotkey": "ctrl+alt+p",
+  "focus_label": "pomodoro",
+  "remove_label_on_end": false,
+  "log_comments": true,
+  "notifications": false,
+  "launch_at_login": true,
+  "open_on_finish": true,
+  "auto_update": false,
+  "block_apps": true,
+  "blocked_apps": [
+    {"id": "whatsapp", "on": false, "action": "close"},
+    {"id": "slack", "on": true, "action": "hide"},
+    {"id": "custom:notion", "name": "Notion", "exes": ["Notion.exe"], "on": true, "action": "close", "custom": true}
+  ],
+  "block_sites": false,
+  "site_mode": "allow",
+  "blocked_sites": ["youtube.com"],
+  "allowed_sites": ["*.google.com", "github.com/josedaidone/*"],
+  "site_limits_on": true,
+  "site_limits": [
+    {
+      "id": "deadbeef",
+      "patterns": ["instagram.com", "facebook.com"],
+      "enabled": true,
+      "budgets": [{"minutes": 30, "every": 1, "unit": "day", "days": [0, 1, 2, 3, 4]}],
+      "windows": [{"days": [0, 1, 2, 3, 4], "from": "09:00", "to": "17:00"}]
+    }
+  ]
+}

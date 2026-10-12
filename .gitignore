@@ -3,9 +3,14 @@ config.json
 session.json
 history.json
 busybar_todoist.json
+*.bak
+*.corrupt-*
 *.log
 .webview/
 old/
+# Release signing keys (#022): keep them offline. The tests' throwaway key is the exception.
+*.key
+!tests/data/test-minisign.key
 
 # Environments and build output
 .venv/
@@ -23,3 +28,10 @@ __pycache__/
 Thumbs.db
 desktop.ini
 buzyist-handoff/
+
+# Test and lint caches
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/

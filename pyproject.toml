@@ -1,0 +1,36 @@
+# Tool configuration only: buZyist is not packaged as a Python distribution
+# (PyInstaller builds it, see packaging/busyist.spec).
+
+[tool.ruff]
+line-length = 120          # the code uses long lines; 120 covers most of them
+target-version = "py311"
+extend-exclude = ["old", "build", "dist", ".venv*", "buzyist-handoff", "tickets"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "I", "S", "PL", "RUF"]
+ignore = [
+  "S603", "S607",   # subprocess: the calls are deliberate (explorer, Setup, browser)
+  "S606",           # os.startfile: deliberate (open the data folder, a file, a blocked app again)
+  "S310",           # urllib.urlopen: only fixed https URLs
+  "PLR0912", "PLR0913", "PLR0915", "PLR0917", "PLR2004",  # complexity and magic numbers: handled in #024
+  "B904",           # raise AppError(...) inside except: implicit chaining already keeps the cause in
+                    # tracebacks, and the message is what the user sees
+  "PLW2901",        # reassigning the loop variable to its cleaned-up value (`value = value.strip()`)
+                    # is a deliberate idiom in the config/sync cleaners
+  "E501",           # the formatter takes care of line length
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["busyist", "buzyist", "conftest"]  # conftest: tests import its fakes and helpers
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]         # busyist.py lives at the repo root
+addopts = "-ra --strict-markers --timeout=30"
+markers = [
+  "windows_only: calls Win32 APIs (ctypes.windll, winreg, ...); skipped on other platforms",
+  "registry_writes: lifts the conftest guard that refuses Windows registry writes (on purpose only)",
+]

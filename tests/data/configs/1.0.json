@@ -1,0 +1,23 @@
+{
+  "todoist_token": "tok-1-0",
+  "filters": [
+    {"name": "Today", "query": "today | overdue"},
+    {"name": "Work", "query": "#Work & !no date"}
+  ],
+  "active_filter": "Work",
+  "busybar_ip": "http://192.168.1.50/",
+  "busybar_pin": 4321,
+  "usb_fallback": true,
+  "work_minutes": 25,
+  "rest_minutes": 5,
+  "cycles": 4,
+  "autostart": true,
+  "poll_seconds": 5,
+  "hotkey": "ctrl+alt+p",
+  "focus_label": "pomodoro",
+  "remove_label_on_end": false,
+  "log_comments": true,
+  "notifications": true,
+  "launch_at_login": true,
+  "open_on_finish": true
+}
