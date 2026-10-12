@@ -7,7 +7,7 @@ import urllib.error
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, todoist
 
 TOKEN = "0123456789abcdef0123456789abcdef01234567"  # noqa: S105 - a made-up token
 
@@ -115,7 +115,7 @@ def test_backup_is_encrypted_too(make_app):
 
 
 def test_todoist_errors_dont_include_the_token(monkeypatch, caplog):
-    client = busyist.Todoist({"todoist_token": TOKEN})
+    client = todoist.Todoist({"todoist_token": TOKEN})
 
     def refuse(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 500, "boom", {}, io.BytesIO(b'{"error": "bad"}'))

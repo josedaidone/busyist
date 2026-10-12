@@ -668,7 +668,7 @@ def side_effects(monkeypatch) -> SideEffects:
 
 class FakeTodoist:
     """
-    Stands in for ``busyist.Todoist`` (same methods, same ``AppError`` when
+    Stands in for ``todoist.Todoist`` (same methods, same ``AppError`` when
     there is no token). Every call is appended to ``calls`` as
     ``(method, args)``; data comes from what the test put in.
 
@@ -768,7 +768,7 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
       config at all, i.e. a first start with DEFAULTS),
     - optionally pre-seeds session.json / history.json / timer.json (a dict,
       list, or for ``timer`` a ``BusySnapshot`` or its JSON dict),
-    - builds ``App()`` with ``busyist.Todoist`` replaced by ``FakeTodoist``
+    - builds ``App()`` with ``todoist.Todoist`` replaced by ``FakeTodoist``
       (``app.todoist``).
 
     Nothing is started: no engine/updater/blocker thread, no FocusServer,

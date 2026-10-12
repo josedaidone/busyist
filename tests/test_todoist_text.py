@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
-from busyist import due_parts, plain_text
+from buzyist.todoist import due_parts, plain_text
 
 # ---------------------------------------------------------------- due_parts
 
