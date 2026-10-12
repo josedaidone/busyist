@@ -107,6 +107,7 @@ from buzyist.storage import read_json, write_bytes_atomic, write_json
 from buzyist.sync import clean_remote_sessions, clean_remote_usage, load_shared
 from buzyist.todoist import Todoist
 from buzyist.usage import SiteUsage
+from buzyist.win32.clipboard import set_clipboard
 from buzyist.win32.processes import list_processes, process_session, relaunch_app, relaunch_target, terminate_process
 from buzyist.win32.windows import (
     close_windows,
@@ -2652,40 +2653,6 @@ def show_in_explorer(path: Path) -> None:
         subprocess.Popen(f'explorer.exe /select,"{path}"')
     except OSError:
         os.startfile(path)
-
-
-def set_clipboard(text: str) -> bool:
-    """Put text on the Windows clipboard (private DLL handles: no shared argtypes)."""
-    k32, u32 = ctypes.WinDLL("kernel32"), ctypes.WinDLL("user32")
-    k32.GlobalAlloc.argtypes = [ctypes.wintypes.UINT, ctypes.c_size_t]
-    k32.GlobalAlloc.restype = ctypes.c_void_p
-    k32.GlobalLock.argtypes = [ctypes.c_void_p]
-    k32.GlobalLock.restype = ctypes.c_void_p
-    k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-    k32.GlobalFree.argtypes = [ctypes.c_void_p]
-    u32.OpenClipboard.argtypes = [ctypes.wintypes.HWND]
-    u32.SetClipboardData.argtypes = [ctypes.wintypes.UINT, ctypes.c_void_p]
-    u32.SetClipboardData.restype = ctypes.c_void_p
-    data = text.encode("utf-16-le") + b"\0\0"
-    for _ in range(10):  # another program may hold the clipboard for a moment
-        if u32.OpenClipboard(None):
-            break
-        time.sleep(0.05)
-    else:
-        return False
-    try:
-        u32.EmptyClipboard()
-        handle = k32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
-        if not handle:
-            return False
-        ctypes.memmove(k32.GlobalLock(handle), data, len(data))
-        k32.GlobalUnlock(handle)
-        if not u32.SetClipboardData(13, handle):  # CF_UNICODETEXT; on success the clipboard owns it
-            k32.GlobalFree(handle)
-            return False
-        return True
-    finally:
-        u32.CloseClipboard()
 
 
 def launch_command() -> str:
