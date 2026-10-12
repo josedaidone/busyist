@@ -7,13 +7,13 @@ import threading
 import pytest
 
 import busyist
-from buzyist import constants, paths, site_rules
+from buzyist import config, constants, paths, site_rules
 from conftest import app_source
 
 
 @pytest.fixture
 def store(data_dir):
-    return busyist.ConfigStore(paths.CONFIG_PATH, {"a": 1, "items": [1, 2]}, backup=paths.CONFIG_BACKUP)
+    return config.ConfigStore(paths.CONFIG_PATH, {"a": 1, "items": [1, 2]}, backup=paths.CONFIG_BACKUP)
 
 
 def on_disk():

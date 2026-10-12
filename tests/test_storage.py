@@ -7,7 +7,7 @@ import threading
 import pytest
 
 import busyist
-from buzyist import paths, storage
+from buzyist import config, paths, storage
 from conftest import app_source
 
 
@@ -149,7 +149,7 @@ def test_save_config_keeps_an_hourly_backup(make_app, clock):
     def read(path):
         return json.loads(path.read_text(encoding="utf-8"))
 
-    app = make_app({"todoist_token": "", "config_version": busyist.CONFIG_VERSION})
+    app = make_app({"todoist_token": "", "config_version": config.CONFIG_VERSION})
     assert not paths.CONFIG_BACKUP.exists()  # nothing to migrate: nothing written yet
     first = read(paths.CONFIG_PATH)
     app.save_settings({"work_minutes": 30})

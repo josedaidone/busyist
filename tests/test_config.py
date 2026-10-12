@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import blocker, constants, paths
+from buzyist import blocker, config, constants, paths
 
 CONFIGS = Path(__file__).parent / "data" / "configs"
 
@@ -32,9 +32,9 @@ def preset(cfg, pid):
 
 
 def test_defaults_and_model_agree():
-    assert set(busyist.Config.model_fields) - {"config_version"} == set(busyist.DEFAULTS)
-    model = busyist.Config.load({})
-    for key, value in busyist.DEFAULTS.items():
+    assert set(config.Config.model_fields) - {"config_version"} == set(config.DEFAULTS)
+    model = config.Config.load({})
+    for key, value in config.DEFAULTS.items():
         if key != "blocked_apps":  # the presets are filled in
             assert model[key] == value, key
     assert [a["id"] for a in model["blocked_apps"]] == [p[0] for p in blocker.APP_PRESETS]
@@ -42,7 +42,7 @@ def test_defaults_and_model_agree():
 
 def test_a_new_install_starts_current(start):
     app = start()
-    assert app.cfg["config_version"] == busyist.CONFIG_VERSION
+    assert app.cfg["config_version"] == config.CONFIG_VERSION
     assert app.cfg["filters"] == [constants.DEFAULT_FILTER]
     assert app.bar.is_local
     assert not paths.CONFIG_PATH.exists()  # nothing written until something changes
@@ -113,12 +113,12 @@ def test_old_configs_migrate_without_losing_anything(start, version, caplog):
     cfg = app.cfg
     for key, value in EXPECTED[version].items():
         assert cfg[key] == value, key
-    assert cfg["config_version"] == busyist.CONFIG_VERSION
+    assert cfg["config_version"] == config.CONFIG_VERSION
     saved = json.loads(paths.CONFIG_PATH.read_text(encoding="utf-8"))
-    assert saved["config_version"] == busyist.CONFIG_VERSION
+    assert saved["config_version"] == config.CONFIG_VERSION
     assert "theme" not in saved and "todoist_filter" not in saved
     assert saved["todoist_token"].startswith("dpapi:v1:")
-    assert set(busyist.DEFAULTS) <= set(saved)
+    assert set(config.DEFAULTS) <= set(saved)
     assert "was invalid" not in caplog.text
     # A second start finds nothing to do and the same settings.
     again = start()
@@ -147,9 +147,9 @@ def test_old_app_lists_and_limits_carry_over(start):
 
 
 def test_a_newer_config_keeps_its_version(start):
-    put({"config_version": busyist.CONFIG_VERSION + 5, "use_busybar": False, "work_minutes": 40})
+    put({"config_version": config.CONFIG_VERSION + 5, "use_busybar": False, "work_minutes": 40})
     app = start()
-    assert app.cfg["config_version"] == busyist.CONFIG_VERSION + 5
+    assert app.cfg["config_version"] == config.CONFIG_VERSION + 5
     assert app.cfg["work_minutes"] == 40
 
 
@@ -174,9 +174,9 @@ def test_a_newer_config_keeps_its_version(start):
     ],
 )
 def test_an_invalid_key_falls_back_to_its_default(start, caplog, key, bad):
-    put({"config_version": busyist.CONFIG_VERSION, "use_busybar": False, "work_minutes": 40, key: bad})
+    put({"config_version": config.CONFIG_VERSION, "use_busybar": False, "work_minutes": 40, key: bad})
     app = start()
-    expected = busyist.Config.load({})[key]
+    expected = config.Config.load({})[key]
     assert app.cfg[key] == expected
     if key != "work_minutes":
         assert app.cfg["work_minutes"] == 40  # the rest is kept
@@ -186,7 +186,7 @@ def test_an_invalid_key_falls_back_to_its_default(start, caplog, key, bad):
 def test_a_broken_filter_is_dropped_the_others_kept(start):
     put(
         {
-            "config_version": busyist.CONFIG_VERSION,
+            "config_version": config.CONFIG_VERSION,
             "filters": [{"name": "Work", "query": "#Work"}, {"name": ""}, "junk", {"name": "Home", "query": "#Home"}],
         }
     )
@@ -197,7 +197,7 @@ def test_a_broken_filter_is_dropped_the_others_kept(start):
 def test_a_config_that_isnt_an_object_gives_the_defaults(start, caplog, content):
     put(content)
     app = start()
-    assert app.cfg["work_minutes"] == busyist.DEFAULTS["work_minutes"]
+    assert app.cfg["work_minutes"] == config.DEFAULTS["work_minutes"]
     if content != "null":
         assert "doesn't hold settings" in caplog.text
 
@@ -283,7 +283,7 @@ def test_an_edit_that_breaks_the_schema_is_refused(app):
     ],
 )
 def test_bar_addresses_accepted(raw, clean):
-    assert busyist.clean_bar_address(raw) == clean
+    assert config.clean_bar_address(raw) == clean
 
 
 @pytest.mark.parametrize(
@@ -291,17 +291,17 @@ def test_bar_addresses_accepted(raw, clean):
 )
 def test_bar_addresses_refused(raw):
     with pytest.raises(constants.AppError):
-        busyist.clean_bar_address(raw)
+        config.clean_bar_address(raw)
 
 
 def test_migrations_are_numbered_and_run_in_order(monkeypatch):
     ran = []
-    monkeypatch.setattr(busyist, "MIGRATIONS", {1: lambda c: ran.append(1), 2: lambda c: ran.append(2)})
-    monkeypatch.setattr(busyist, "CONFIG_VERSION", 2)
+    monkeypatch.setattr(config, "MIGRATIONS", {1: lambda c: ran.append(1), 2: lambda c: ran.append(2)})
+    monkeypatch.setattr(config, "CONFIG_VERSION", 2)
     cfg = {"config_version": 1}
-    assert busyist.migrate_config(cfg)
+    assert config.migrate_config(cfg)
     assert ran == [2] and cfg["config_version"] == 2
-    assert not busyist.migrate_config(cfg)
+    assert not config.migrate_config(cfg)
     cfg = {}
-    busyist.migrate_config(cfg)
+    config.migrate_config(cfg)
     assert ran == [2, 1, 2]
