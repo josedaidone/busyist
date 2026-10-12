@@ -6,10 +6,10 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from busyist import SiteUsage
 from buzyist import site_rules
 from buzyist.constants import MAX_LIMIT_SITES, MAX_SITE_LIMITS, SITE_ANCHOR, AppError
 from buzyist.site_rules import budget_bounds, clean_site_limit, clean_site_limits, site_limit_status, window_spans
+from buzyist.usage import SiteUsage
 
 ALL_DAYS = list(range(7))
 MONDAY = datetime(2026, 1, 5, 9, 37)  # what the tests call "now" unless they say otherwise

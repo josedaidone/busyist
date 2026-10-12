@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 import pytest
 
-import busyist
-from busyist import SiteUsage
+from buzyist import usage as usage_mod
 from buzyist.constants import SYNC_DAYS
+from buzyist.usage import SiteUsage
 
 RID = "abcdef01"
 OTHER = "abcdef02"
@@ -173,7 +173,7 @@ def test_a_failed_write_keeps_the_app_going(usage, monkeypatch):
     def refuse(path, data):
         raise OSError("disk full")
 
-    monkeypatch.setattr(busyist, "write_json", refuse)
+    monkeypatch.setattr(usage_mod, "write_json", refuse)
     usage.add(RID, minute_of(datetime(2026, 1, 5, 9)), 10)
     usage.flush(force=True)  # logged, not raised
 

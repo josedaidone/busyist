@@ -5,9 +5,10 @@ import re
 
 import pytest
 
-from busyist import SiteUsage, clean_remote_sessions, clean_remote_usage, load_shared
+from busyist import clean_remote_sessions, clean_remote_usage, load_shared
 from buzyist import paths
 from buzyist.constants import MAX_SITE_LIMITS, SYNC_STALE_DAYS
+from buzyist.usage import SiteUsage
 
 ME = "mydevice01"
 PC = "otherpc001"
