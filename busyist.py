@@ -27,6 +27,7 @@ import hashlib
 import http.server
 import json
 import logging
+import msvcrt
 import os
 import re
 import shutil
@@ -660,8 +661,12 @@ def latest_release() -> dict | None:
     }
 
 
-def download_setup(release: dict) -> Path:
-    """Download a release's installer and check it against its SHA256SUMS."""
+def download_setup(release: dict) -> tuple[Path, str]:
+    """
+    Download a release's installer and check it against its SHA256SUMS.
+    Returns the file and its SHA-256 (hex), which install_update checks again
+    through a locked handle right before running it.
+    """
     setup = release["setup"]
     if not setup or not release["sums"]:
         raise AppError(f"Release {release['version']} has no installer to update with.")
@@ -691,7 +696,64 @@ def download_setup(release: dict) -> Path:
         part.unlink(missing_ok=True)
         raise AppError("The downloaded installer doesn't match the release's checksum; not installing it.")
     part.replace(path)
-    return path
+    return path, expected
+
+
+# CreateFileW, for open_locked.
+GENERIC_READ = 0x80000000
+FILE_SHARE_READ = 0x1
+OPEN_EXISTING = 3
+FILE_ATTRIBUTE_NORMAL = 0x80
+LOCK_ATTEMPTS = 3  # an antivirus scanning the new file can hold it for a moment
+
+
+def open_locked(path: Path, attempts: int = LOCK_ATTEMPTS, delay: float = 0.5):
+    """
+    Open a file for reading so that nobody can write, rename or delete it
+    while it stays open (share mode FILE_SHARE_READ only). Returns (handle,
+    file object); closing the file object closes the handle. Running the file
+    with CreateProcess still works, since that only reads it.
+
+    Retries a few times (antivirus scans hold new files briefly), then raises
+    AppError: the caller must never fall back to an unlocked file.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # private handle: own argtypes
+    kernel32.CreateFileW.argtypes = [
+        ctypes.wintypes.LPCWSTR,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = ctypes.wintypes.HANDLE
+    invalid = ctypes.wintypes.HANDLE(-1).value
+    error = 0
+    for attempt in range(attempts):
+        handle = kernel32.CreateFileW(
+            str(path), GENERIC_READ, FILE_SHARE_READ, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None
+        )
+        if handle and handle != invalid:
+            try:
+                fd = msvcrt.open_osfhandle(handle, os.O_RDONLY)
+            except OSError:
+                kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+                raise
+            return handle, os.fdopen(fd, "rb")
+        error = ctypes.get_last_error()
+        log.info("couldn't lock %s (Windows error %s), attempt %d", path, error, attempt + 1)
+        if attempt + 1 < attempts:
+            time.sleep(delay)
+    raise AppError(f"Couldn't lock the downloaded installer (Windows error {error}); not installing it.")
+
+
+def stream_sha256(stream) -> str:
+    """SHA-256 (hex) of what's left to read in a binary file object."""
+    digest = hashlib.sha256()
+    while chunk := stream.read(1 << 16):
+        digest.update(chunk)
+    return digest.hexdigest()
 
 
 def app_dir_writable() -> bool:
@@ -1725,8 +1787,19 @@ class App:
             if self.updating:
                 raise AppError("The update is already on its way.")
             self.updating, self.update_error = True, ""
+        locked = None
         try:
-            path = download_setup(release)
+            path, expected = download_setup(release)
+            # Another process of this user could swap the checked file before
+            # it runs (and an all-users Setup runs elevated), so lock it, check
+            # it again through the lock and start it while the lock is held.
+            _, locked = open_locked(path)
+            if stream_sha256(locked) != expected:
+                locked.close()
+                locked = None
+                log.error("the installer %s changed after it was checked; deleting it", path)
+                path.unlink(missing_ok=True)
+                raise AppError("The installer changed after it was checked; not installing it.")
             write_json(UPDATE_MARK, {"from": __version__, "to": release["version"]})
             log.info("installing buZyist %s from %s", release["version"], path)
             # /RELAUNCH=1 makes Setup start buZyist again when it is done,
@@ -1736,7 +1809,11 @@ class App:
                 close_fds=True,
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
             )
+            # Setup has opened (and Windows mapped) its image by then.
+            threading.Timer(2.0, locked.close).start()
         except (AppError, OSError) as err:
+            if locked:
+                locked.close()
             UPDATE_MARK.unlink(missing_ok=True)
             message = str(err) if isinstance(err, AppError) else f"Couldn't start the installer ({err})."
             with self.lock:
