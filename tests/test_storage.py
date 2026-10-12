@@ -7,7 +7,7 @@ import threading
 import pytest
 
 import busyist
-from buzyist import paths
+from buzyist import paths, storage
 from conftest import app_source
 
 
@@ -17,8 +17,8 @@ def leftovers(folder):
 
 def test_write_json_round_trip(data_dir):
     path = data_dir / "thing.json"
-    busyist.write_json(path, {"a": [1, 2], "é": "ü"})
-    assert busyist.read_json(path, None) == {"a": [1, 2], "é": "ü"}
+    storage.write_json(path, {"a": [1, 2], "é": "ü"})
+    assert storage.read_json(path, None) == {"a": [1, 2], "é": "ü"}
     assert leftovers(data_dir) == []
 
 
@@ -30,7 +30,7 @@ def test_concurrent_writers_leave_a_valid_file(data_dir, monkeypatch):
     def writer(n):
         try:
             for i in range(200):
-                busyist.write_json(path, {"writer": n, "i": i, "pad": "x" * (n * 50)})
+                storage.write_json(path, {"writer": n, "i": i, "pad": "x" * (n * 50)})
         except Exception as err:  # pragma: no cover - the assertion below reports it
             errors.append(err)
 
@@ -48,9 +48,9 @@ def test_concurrent_writers_leave_a_valid_file(data_dir, monkeypatch):
 
 def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch):
     pauses = []
-    monkeypatch.setattr(busyist, "replace_pause", pauses.append)
+    monkeypatch.setattr(storage, "replace_pause", pauses.append)
     path = data_dir / "config.json"
-    busyist.write_json(path, {"old": True})
+    storage.write_json(path, {"old": True})
     real_replace = os.replace
     calls = []
 
@@ -61,39 +61,39 @@ def test_replace_retries_while_the_target_is_held(data_dir, monkeypatch):
         return real_replace(src, dst)
 
     monkeypatch.setattr(busyist.os, "replace", flaky)
-    busyist.write_json(path, {"new": True})
+    storage.write_json(path, {"new": True})
     assert len(calls) == 3
-    assert busyist.read_json(path, None) == {"new": True}
+    assert storage.read_json(path, None) == {"new": True}
     assert pauses == [0.05, 0.1]
     assert leftovers(data_dir) == []
 
 
 def test_replace_that_keeps_failing_raises_and_cleans_up(data_dir, monkeypatch):
-    monkeypatch.setattr(busyist, "replace_pause", lambda s: None)
+    monkeypatch.setattr(storage, "replace_pause", lambda s: None)
     path = data_dir / "config.json"
-    busyist.write_json(path, {"old": True})
+    storage.write_json(path, {"old": True})
 
     def stuck(src, dst):
         raise PermissionError("in use")
 
     monkeypatch.setattr(busyist.os, "replace", stuck)
     with pytest.raises(PermissionError):
-        busyist.write_json(path, {"new": True})
-    assert busyist.read_json(path, None) == {"old": True}
+        storage.write_json(path, {"new": True})
+    assert storage.read_json(path, None) == {"old": True}
     assert leftovers(data_dir) == []
 
 
 def test_unserializable_data_writes_nothing(data_dir):
     path = data_dir / "config.json"
-    busyist.write_json(path, {"old": True})
+    storage.write_json(path, {"old": True})
     with pytest.raises(TypeError):
-        busyist.write_json(path, {"bad": object()})
-    assert busyist.read_json(path, None) == {"old": True}
+        storage.write_json(path, {"bad": object()})
+    assert storage.read_json(path, None) == {"old": True}
     assert leftovers(data_dir) == []
 
 
 def test_missing_file_gives_the_default(data_dir):
-    assert busyist.read_json(data_dir / "nope.json", {"d": 1}) == {"d": 1}
+    assert storage.read_json(data_dir / "nope.json", {"d": 1}) == {"d": 1}
     assert list(data_dir.iterdir()) == []
 
 
@@ -101,7 +101,7 @@ def test_missing_file_gives_the_default(data_dir):
 def test_corrupt_file_is_kept_aside_and_logged(data_dir, caplog, content):
     path = data_dir / "history.json"
     path.write_bytes(content)
-    assert busyist.read_json(path, []) == []
+    assert storage.read_json(path, []) == []
     assert not path.exists()
     (kept,) = [p for p in data_dir.iterdir() if p.name.startswith("history.json.corrupt-")]
     assert kept.read_bytes() == content
@@ -112,14 +112,14 @@ def test_corrupt_file_falls_back_to_the_backup(data_dir):
     path, backup = data_dir / "config.json", data_dir / "config.json.bak"
     path.write_text("{broken", encoding="utf-8")
     backup.write_text('{"work_minutes": 40}', encoding="utf-8")
-    assert busyist.read_json(path, {}, backup=backup) == {"work_minutes": 40}
+    assert storage.read_json(path, {}, backup=backup) == {"work_minutes": 40}
     assert any(p.name.startswith("config.json.corrupt-") for p in data_dir.iterdir())
 
 
 def test_files_outside_the_data_folder_are_not_moved(tmp_path):
     shipped = tmp_path / "manifest.json"
     shipped.write_text("{oops", encoding="utf-8")
-    assert busyist.read_json(shipped, {}) == {}
+    assert storage.read_json(shipped, {}) == {}
     assert shipped.exists()
 
 

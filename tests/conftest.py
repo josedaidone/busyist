@@ -65,7 +65,7 @@ import busylib.features.timer as busylib_timer
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 
 # ---------------------------------------------------------------- modules ---
 
@@ -782,16 +782,16 @@ def make_app(data_dir, clock, side_effects, monkeypatch):
 
     def make(cfg: dict | None = None, *, fresh=False, session=None, history=None, timer=None) -> busyist.App:
         if not fresh:
-            busyist.write_json(paths.CONFIG_PATH, {**TEST_CONFIG, **(cfg or {})})
+            storage.write_json(paths.CONFIG_PATH, {**TEST_CONFIG, **(cfg or {})})
         elif cfg:
             raise TypeError("fresh=True means no config.json; set app.cfg after building instead")
         if session is not None:
-            busyist.write_json(paths.SESSION_PATH, session)
+            storage.write_json(paths.SESSION_PATH, session)
         if history is not None:
-            busyist.write_json(paths.HISTORY_PATH, history)
+            storage.write_json(paths.HISTORY_PATH, history)
         if timer is not None:
             dump = timer.model_dump(mode="json") if hasattr(timer, "model_dump") else timer
-            busyist.write_json(paths.TIMER_PATH, dump)
+            storage.write_json(paths.TIMER_PATH, dump)
         app = busyist.App()
         built.append(app)
         return app

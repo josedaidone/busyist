@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 from tools import minisign as tool
 
 DATA = Path(__file__).parent / "data"
@@ -348,7 +348,7 @@ def test_a_signed_update_installs_end_to_end(github, signing_on, make_app, side_
     app.install_update()
     [(args, _)] = side_effects.processes
     assert args[0] == str(paths.UPDATES_DIR / SETUP_NAME)
-    assert busyist.read_json(paths.UPDATE_MARK, None)["to"] == VERSION
+    assert storage.read_json(paths.UPDATE_MARK, None)["to"] == VERSION
     next(t for t in deferred_threads.timers if t.interval == 2.0).run()  # releases the lock
 
 

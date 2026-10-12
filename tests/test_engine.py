@@ -19,7 +19,7 @@ import pytest
 from busylib import exceptions, types
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 
 WIFI = "10.0.0.9"
 PIN = "1234"
@@ -216,7 +216,7 @@ def test_full_session_two_cycles(engine, deferred_threads, notes, clock):
     (entry,) = app.history
     assert entry["task_id"] == "t1"
     assert (entry["pomodoros"], entry["minutes"], entry["reason"]) == (2, 50, "finished")
-    assert busyist.read_json(paths.HISTORY_PATH, []) == app.history
+    assert storage.read_json(paths.HISTORY_PATH, []) == app.history
     (comment,) = app.todoist.comments
     assert comment[0] == "t1"
     assert comment[1] == f"🍅 × 2 (50 min focus), ended {clock.now():%Y-%m-%d %H:%M}"  # noqa: RUF001
@@ -390,7 +390,7 @@ def restart(engine, first, cfg=None):
     """A new App() over what the first one left on disk (session.json, timer.json)."""
     return engine(
         cfg,
-        session=busyist.read_json(paths.SESSION_PATH, None),
+        session=storage.read_json(paths.SESSION_PATH, None),
         timer=first.bar.local.busy_snapshot(),
     )
 
@@ -462,7 +462,7 @@ def test_a_todoist_failure_is_reported_and_the_history_kept(engine, deferred_thr
     app.step(minutes=26)
     assert app.ended["problems"] == ["Couldn't log the pomodoros: Todoist answered 500"]
     assert app.history[0]["pomodoros"] == 1
-    assert busyist.read_json(paths.HISTORY_PATH, [])[0]["reason"] == "finished"
+    assert storage.read_json(paths.HISTORY_PATH, [])[0]["reason"] == "finished"
 
 
 def test_the_focus_label_is_added_and_removed(engine, deferred_threads):
@@ -470,7 +470,7 @@ def test_the_focus_label_is_added_and_removed(engine, deferred_threads):
     start(app, deferred_threads, "t1")
     assert app.session["label_added"] is True
     assert app.todoist.labels["t1"] == ["pomodoro"]
-    assert busyist.read_json(paths.SESSION_PATH, {})["label_added"] is True
+    assert storage.read_json(paths.SESSION_PATH, {})["label_added"] is True
     app.step(minutes=26)
     assert app.todoist.labels["t1"] == []
     assert ("set_label", ("t1", "pomodoro", False)) in app.todoist.calls

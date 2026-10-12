@@ -24,8 +24,9 @@ from hypothesis import strategies as st
 
 import busyist
 from busyist import LOCAL_SETTINGS
-from buzyist import paths
+from buzyist import paths, storage
 from buzyist.constants import MAX_SITE_LIMITS, TOMBSTONE_DAYS
+from conftest import patch_everywhere
 
 DAY_MS = 86400_000
 WORK, REST = 25 * 60_000, 5 * 60_000
@@ -236,7 +237,7 @@ def make_pc(tmp_path, make_app, clock, monkeypatch):
     # Thousands of quick replaces of the same files: Windows (indexer, antivirus)
     # sometimes refuses one with PermissionError. Retry, so that flake can't fail
     # a merge test; what is written is unchanged.
-    real_write = busyist.write_json
+    real_write = storage.write_json
 
     def write_json(path, data):
         for attempt in range(20):
@@ -247,7 +248,7 @@ def make_pc(tmp_path, make_app, clock, monkeypatch):
                     raise
                 time.sleep(0.005)
 
-    monkeypatch.setattr(busyist, "write_json", write_json)
+    patch_everywhere(monkeypatch, "write_json", write_json)  # in every module that writes
     counter = itertools.count()
 
     def make(name: str, **cfg) -> PC:

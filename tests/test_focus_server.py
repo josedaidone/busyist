@@ -12,7 +12,7 @@ import time
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 
 RULE = {
     "id": "abc123",
@@ -242,7 +242,7 @@ def test_trusted_get_registers_the_profile_and_takes_sync_owner(focus_server, ap
     assert r.status == 200
     assert app.shared["instances"]["abcdef123"]["email"] == "me@x.com"
     assert app.cfg["sync_owner"] == "abcdef123"
-    assert busyist.read_json(paths.CONFIG_PATH, {})["sync_owner"] == "abcdef123"
+    assert storage.read_json(paths.CONFIG_PATH, {})["sync_owner"] == "abcdef123"
     assert "sync" in r.json  # the owner's answers carry what to share
 
 

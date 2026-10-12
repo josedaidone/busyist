@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 from conftest import REAL_DATA_DIR, FakeTodoist, RegistryWriteRefused
 
 
@@ -36,7 +36,7 @@ def test_guard_refuses_writes_to_the_real_data_folder(appdata_guard):
     with appdata_guard.expect_refusal(), pytest.raises(PermissionError):
         probe.write_text("x")
     with appdata_guard.expect_refusal(), pytest.raises(PermissionError):
-        busyist.write_json(REAL_DATA_DIR / "config.json", {})
+        storage.write_json(REAL_DATA_DIR / "config.json", {})
     assert not probe.exists()
 
 
@@ -194,7 +194,7 @@ def test_make_app_seeds_files_and_a_restart_resumes(make_app):
     first.start_task(None, "Resume me")
     again = make_app(
         {"use_todoist": False},
-        session=busyist.read_json(paths.SESSION_PATH, None),
+        session=storage.read_json(paths.SESSION_PATH, None),
         timer=first.bar.local.busy_snapshot(),
         history=[{"date": "2026-01-05", "task_id": "", "content": "Earlier", "pomodoros": 1}],
     )

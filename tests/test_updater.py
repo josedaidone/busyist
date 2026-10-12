@@ -10,7 +10,7 @@ import sys
 import pytest
 
 import busyist
-from buzyist import constants, paths
+from buzyist import constants, paths, storage
 
 VERSION = "9.9.9"
 SETUP_NAME = f"Buzyist-Setup-{VERSION}.exe"
@@ -140,7 +140,7 @@ def test_install_update_runs_the_checked_setup(updatable, github, side_effects, 
     [(args, _kwargs)] = side_effects.processes
     assert args[0] == str(paths.UPDATES_DIR / SETUP_NAME)
     assert "/VERYSILENT" in args
-    assert busyist.read_json(paths.UPDATE_MARK, None) == {"from": busyist.__version__, "to": VERSION}
+    assert storage.read_json(paths.UPDATE_MARK, None) == {"from": busyist.__version__, "to": VERSION}
     # The lock is still held when Setup starts, and released by a timer.
     with pytest.raises(PermissionError):
         open(paths.UPDATES_DIR / SETUP_NAME, "r+b")  # noqa: SIM115
