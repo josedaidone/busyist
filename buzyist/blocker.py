@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING
 
 from buzyist import paths
 from buzyist.constants import APP, AppError
-from buzyist.win32.processes import list_processes, process_session, relaunch_app, relaunch_target, terminate_process
+from buzyist.win32.processes import (
+    list_processes,
+    process_path,
+    process_session,
+    relaunch_app,
+    relaunch_target,
+    terminate_process,
+)
 from buzyist.win32.windows import close_windows, pids_with_windows
 
 if TYPE_CHECKING:
@@ -173,6 +180,35 @@ def exe_label(image: str) -> str:
     """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
     stem = image[:-4] if image.lower().endswith(".exe") else image
     return stem.split(".")[0] or stem
+
+
+def running_apps() -> list[dict]:
+    """
+    The programs running for this user, for the app names Settings suggests:
+    [{exe, name, window, protected}], the ones with a window on screen first,
+    then by name. Windows' own programs (under %SystemRoot%), other users'
+    processes and buZyist itself are left out; one entry per program.
+    """
+    me = os.getpid()
+    session = process_session(me)
+    system = os.path.normcase(os.environ.get("SYSTEMROOT") or r"C:\Windows").rstrip("\\/") + os.sep
+    found: dict[str, tuple[str, set[int]]] = {}
+    for pid, image in list_processes():
+        if pid == me or not image.lower().endswith(".exe"):
+            continue
+        if session is not None and process_session(pid) != session:
+            continue
+        path = process_path(pid)
+        if path and os.path.normcase(path).startswith(system):
+            continue
+        found.setdefault(app_key(image), (image, set()))[1].add(pid)
+    shown = pids_with_windows(set().union(*(pids for _, pids in found.values()))) if found else set()
+    apps = [
+        {"exe": image, "name": exe_label(image), "window": bool(pids & shown), "protected": key in PROTECTED_EXES}
+        for key, (image, pids) in found.items()
+    ]
+    apps.sort(key=lambda a: (not a["window"], a["name"].lower(), a["exe"].lower()))
+    return apps
 
 
 class AppBlocker:

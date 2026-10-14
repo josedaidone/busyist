@@ -1088,6 +1088,95 @@ function addBlockedApp() {
   });
   renderBlockedApps();
 }
+// Program names to pick from while typing one: what's running now
+// (Api.running_apps, windowed apps first), asked again after a few seconds.
+let runningApps = { at: 0, list: [] };
+async function loadRunningApps() {
+  if (Date.now() - runningApps.at < 5000) return runningApps.list;
+  const r = await api.running_apps();
+  runningApps = { at: Date.now(), list: r.ok ? r.apps : [] };
+  return runningApps.list;
+}
+
+// The suggestions under an app-name input. The input may hold several names
+// separated by commas (`multi`): only the one being typed is completed.
+// `skip(app)` leaves an app out; `picked(exe)` runs after a click, Enter or
+// Tab on one. Enter with nothing highlighted is left to the input's own handler.
+function suggestApps(input, { multi = false, skip = () => false, picked = () => {} } = {}) {
+  const box = el("div", "suggest hidden");
+  box.setAttribute("role", "listbox");
+  input.parentElement.classList.add("suggest-host");
+  input.after(box);
+  input.setAttribute("autocomplete", "off");
+  let items = [];
+  let active = -1;
+  const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
+  const parts = () => (multi ? input.value.split(/[,;]/) : [input.value]);
+  const hide = () => { box.classList.add("hidden"); items = []; active = -1; };
+  const mark = () => box.querySelectorAll(".suggest-item").forEach((n, i) => n.classList.toggle("active", i === active));
+
+  async function show() {
+    const list = await loadRunningApps();
+    if (document.activeElement !== input) return;
+    const all = parts();
+    const typed = all[all.length - 1].trim().toLowerCase();
+    const taken = new Set(all.slice(0, -1).map((p) => key(p.trim())));
+    items = list.filter((a) => !taken.has(key(a.exe)) && !skip(a)
+      && (!typed || a.exe.toLowerCase().includes(typed) || a.name.toLowerCase().includes(typed)))
+      .slice(0, 8);
+    if (items.length === 1 && key(items[0].exe) === key(typed)) items = [];  // already typed in full
+    active = -1;
+    box.replaceChildren(...items.map((a, i) => {
+      const row = el("div", "suggest-item");
+      row.setAttribute("role", "option");
+      row.append(el("span", "suggest-name", a.name), el("span", "suggest-exe", a.window ? a.exe : a.exe + " · in the background"));
+      row.onmousedown = (e) => { e.preventDefault(); pick(i); };  // keep the focus in the input
+      return row;
+    }));
+    box.classList.toggle("hidden", !items.length);
+    Object.assign(box.style, {  // under the input, wherever its row puts it
+      top: input.offsetTop + input.offsetHeight + 4 + "px", left: input.offsetLeft + "px", width: input.offsetWidth + "px",
+    });
+  }
+
+  function pick(i) {
+    const exe = items[i].exe;
+    if (multi) {
+      const kept = parts().slice(0, -1).map((p) => p.trim()).filter(Boolean);
+      input.value = [...kept, exe].join(", ") + ", ";
+    } else {
+      input.value = exe;
+    }
+    input.dispatchEvent(new Event("input"));
+    hide();
+    picked(exe);
+    if (multi && document.activeElement === input) show();
+  }
+
+  input.addEventListener("focus", show);
+  input.addEventListener("input", (e) => { if (e.isTrusted) show(); });
+  input.addEventListener("blur", hide);
+  input.addEventListener("keydown", (e) => {
+    if (!items.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      active = (active + (e.key === "ArrowDown" ? 1 : items.length - 1 + (active < 0 ? 1 : 0))) % items.length;
+      mark();
+    } else if ((e.key === "Enter" || e.key === "Tab") && active >= 0) {
+      e.preventDefault(); e.stopImmediatePropagation();
+      pick(active);
+    } else if (e.key === "Escape") {
+      e.preventDefault(); e.stopImmediatePropagation();
+      hide();
+    }
+  });
+}
+
+// Registered before the Enter handler below, so picking a suggestion comes first.
+suggestApps($("addBlockedApp"), {
+  skip: (a) => a.protected || blockedApps.some((b) => b.on && b.exes.some((x) => x.toLowerCase() === a.exe.toLowerCase())),
+  picked: addBlockedApp,
+});
 $("addBlockedAppBtn").onclick = addBlockedApp;
 $("addBlockedApp").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); addBlockedApp(); }
@@ -1408,7 +1497,8 @@ function renderLimitEditor() {
   names.oninput = () => { namesText = names.value; };
   box.append(names, el("div", "help", kind === "site"
     ? "Several websites can share one limit: the time adds up across all of them."
-    : "Program names, as Task Manager's Details tab shows them, separated by commas. Several apps can share one limit: the time adds up across all of them."));
+    : "Program names, as Task Manager's Details tab shows them, separated by commas; the ones running now are suggested as you type. Several apps can share one limit: the time adds up across all of them."));
+  if (kind === "app") suggestApps(names, { multi: true, skip: (a) => a.protected && rule.action === "close" });
   box.onkeydown = (e) => {
     if (e.key === "Enter" && e.target.tagName !== "BUTTON" && e.target.tagName !== "SELECT") {
       e.preventDefault(); e.stopPropagation(); commitLimitDraft();
