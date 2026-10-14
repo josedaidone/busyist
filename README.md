@@ -101,8 +101,11 @@ menu, and starts it.
   every few minutes it stays there (5 by default; set it per limit). New installs start with
   limits for WhatsApp (30 min a day) and Slack (1 hour a day), set to beep; switch app limits on
   to use them. App limits stay on this PC; they aren't shared through Chrome.
+- **Stats** (Settings → Stats): how often websites were blocked, during focus or over a limit:
+  totals for today, 7 and 30 days, a bar per day, and the most blocked sites.
 - **The extension's toolbar button**: its badge shows the time left on the current site's limit
-  (otherwise the pomodoro minutes left). Click it to see the current pomodoro and your limits.
+  (otherwise the pomodoro minutes left). Click it to see the current pomodoro, your limits and
+  how many times a site was blocked today.
 - **Installing the extension**: in **Settings → Websites**, click **Open Chrome's extensions
   page**. It opens `chrome://extensions`, copies the extension's folder path and shows the folder
   in Explorer. Turn on **Developer mode**, then drag the folder onto the page (or click **Load

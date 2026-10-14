@@ -640,3 +640,37 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 #limitEditor > .input, #appLimitEditor > .input { width: 100%; }
 .limit-group { display: grid; gap: 6px; padding-bottom: 4px; }
 .limit-days { display: flex; gap: 4px; flex-wrap: wrap; }
+
+/* ------------------------------------------------------- stats tab */
+/* Two series validated with the dataviz checker on Nata: Tomate (focus) and a
+   deeper Manteiga (limits; under 3:1 alone, so every count is also written out). */
+:root { --stat-focus: var(--bz-tomate); --stat-limit: #C98A12; }
+.stat-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px; }
+.stat-tile { background: var(--surface); border-radius: var(--r-row); padding: 10px 12px; }
+.stat-label { font-size: 12px; font-weight: 700; color: var(--muted); }
+.stat-num { font: 600 28px/1.2 var(--bz-font-display); color: var(--ink); }
+.stat-legend { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+.stat-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.stat-sw { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+.stat-f { background: var(--stat-focus); }
+.stat-l { background: var(--stat-limit); }
+.stat-chart {
+  position: relative; display: flex; align-items: stretch; gap: 2px; height: 120px; padding-top: 16px;
+  border-bottom: 2px solid var(--line);
+}
+.stat-max { position: absolute; top: 0; left: 0; font-size: 11px; color: var(--faint); }
+.stat-col { flex: 1; display: flex; flex-direction: column-reverse; gap: 2px; min-width: 0; cursor: default; }
+.stat-col:hover { background: var(--surface); border-radius: 4px 4px 0 0; }
+.stat-seg { display: block; flex: none; min-height: 3px; }
+.stat-col .stat-seg:last-child { border-radius: 4px 4px 0 0; }
+.stat-tip {
+  position: absolute; top: 0; transform: translate(-50%, -100%); z-index: 3; pointer-events: none; white-space: nowrap;
+  display: grid; gap: 2px; padding: 6px 10px; border-radius: 10px; background: var(--ink); color: var(--bg); font-size: 12px;
+}
+.stat-axis { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); margin: 4px 0 16px; }
+.stat-sites { display: grid; gap: 4px; margin-bottom: 12px; }
+.stat-site {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline;
+  padding: 8px 12px; border-radius: var(--r-row); background: var(--surface); font-size: 14px;
+}
+.stat-host { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

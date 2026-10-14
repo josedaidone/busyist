@@ -52,11 +52,22 @@ function setText(id, text) {
   if ($(id).textContent !== text) $(id).textContent = text;
 }
 
+// Tell the worker this page showed a block (buZyist's Stats tab and the popup
+// count them), once: history.state survives a reload and a restored tab.
+function countBlock() {
+  if (history.state && history.state.counted) return;
+  history.replaceState({ counted: true }, "");
+  let host = "";
+  try { host = new URL(original).hostname.replace(/^www\./, ""); } catch (e) { return; }
+  chrome.runtime.sendMessage({ type: "blocked", kind: limitId ? "limit" : "focus", host }).catch(() => {});
+}
+
 function render(status) {
   if (!status) return; // no answer this round: keep what's shown
   const { focus, limit } = status;
   if (limitId) {
     if (!limit) { goBack(); return; }
+    countBlock();
     const eyebrow = $("eyebrow").lastChild;
     if (eyebrow.textContent !== "Limit") eyebrow.textContent = "Limit";
     $("eyebrow").classList.add("limit");
@@ -76,6 +87,7 @@ function render(status) {
     return;
   }
   if (!focus.active) { goBack(); return; }
+  countBlock();
   setText("task", focus.task || "");
   endsAt = focus.ends_at_ms || 0;
   renderCount();

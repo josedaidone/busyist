@@ -159,6 +159,7 @@
     <button type="button" class="stab" role="tab" data-tab="apps" aria-controls="p_apps">Apps</button>
     <button type="button" class="stab" role="tab" data-tab="sites" aria-controls="p_sites">Websites<i class="dot warn hidden" id="sitesDot"></i></button>
     <button type="button" class="stab" role="tab" data-tab="limits" aria-controls="p_limits">Limits<i class="dot warn hidden" id="limitsDot"></i></button>
+    <button type="button" class="stab" role="tab" data-tab="stats" aria-controls="p_stats">Stats</button>
     <button type="button" class="stab" role="tab" data-tab="general" aria-controls="p_general">General</button>
     <button type="button" class="stab" role="tab" data-tab="about" aria-controls="p_about">About<i class="dot good hidden" id="aboutDot"></i></button>
   </div>
@@ -321,6 +322,19 @@
           <div class="extension-status" id="syncStatus">Not synced yet</div>
         </div>
       </div>
+    </div>
+
+    <div class="section" role="tabpanel" id="p_stats" data-panel="stats">
+      <h4>Websites blocked</h4>
+      <div class="stat-tiles" id="statTiles"></div>
+      <div class="stat-legend" aria-hidden="true">
+        <span><i class="stat-sw stat-f"></i>During focus</span><span><i class="stat-sw stat-l"></i>Over a limit</span>
+      </div>
+      <div class="stat-chart" id="statChart" role="img"></div>
+      <div class="stat-axis"><span id="statFirst"></span><span>Today</span></div>
+      <h4>Most blocked, last 30 days</h4>
+      <div class="stat-sites" id="statSites"></div>
+      <div class="help">Counted each time the Chrome extension shows its block page: during a work phase, or when a website limit is used up or in its blocked hours. Every browser profile on this PC adds to the same counts.</div>
     </div>
 
     <div class="section" role="tabpanel" id="p_general" data-panel="general">

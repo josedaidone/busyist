@@ -30,6 +30,7 @@ from buzyist.app_updates import UpdatesMixin
 from buzyist.app_windows import WindowsMixin
 from buzyist.bar import Bar
 from buzyist.blocker import AppBlocker
+from buzyist.blocks import BlockLog
 from buzyist.config import CONFIG_VERSION, DEFAULTS, Config, ConfigStore, migrate_config
 from buzyist.constants import (
     APP,
@@ -82,6 +83,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(paths.USAGE_PATH)
         self.app_usage = SiteUsage(paths.APP_USAGE_PATH)  # time on the limited Windows apps
+        self.blocks = BlockLog(paths.BLOCKS_PATH)  # websites the extension blocked, for the Stats tab
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
         self.usage.set_remote(self.shared["remote"])

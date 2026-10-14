@@ -151,8 +151,17 @@ function render(data) {
   $("limitsCard").classList.toggle("hidden", !data.limits.length);
   swap($("limits"), ...data.limits.map(ruleRow));
 
+  // How often a website was blocked today, on this PC (buZyist's Stats tab has the rest).
+  const b = data.blocks_today || { focus: 0, limit: 0 };
+  $("blocksCard").classList.toggle("hidden", !data.known);
+  const times = (n) => `${n} time${n === 1 ? "" : "s"}`;
+  swap($("blocks"), ...(b.focus + b.limit
+    ? [el("div", "big", times(b.focus + b.limit)),
+       el("div", "small muted", `${b.focus} during focus · ${b.limit} over a limit`)]
+    : [el("div", "small muted", "Nothing blocked yet today.")]));
+
   swap($("footer"), "Change limits in ", el("b", "", "buZyist \u2192 Settings \u2192 Limits"),
-    ". Blocking during pomodoros is in the Websites tab. ", el("span", "", `Extension ${data.version}`));
+    ". Blocking during pomodoros is in the Websites tab, block counts in Stats. ", el("span", "", `Extension ${data.version}`));
 }
 
 let shown = false;
