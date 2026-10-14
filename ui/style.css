@@ -428,6 +428,19 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
 .ctx-item svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
 .ctx-item:hover, .ctx-item:focus { background: var(--surface); outline: none; }
 
+/* program names suggested under an app input (suggestApps in main.js) */
+.suggest-host { position: relative; }
+.suggest {
+  position: absolute; z-index: 5; max-height: 260px; overflow-y: auto; padding: 6px; border-radius: var(--r-row);
+  background: var(--bg); border: 2px solid var(--line); display: flex; flex-direction: column;
+}
+.suggest-item {
+  display: flex; align-items: baseline; gap: 10px; min-height: 36px; padding: 8px 12px; border-radius: 12px;
+  color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.suggest-exe { margin-left: auto; font: 12px Consolas, monospace; color: var(--muted); text-align: right; }
+.suggest-item:hover, .suggest-item.active { background: var(--surface); }
+
 /* ------------------------------------------------------- overlays */
 .scrim {
   position: fixed; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none;
@@ -592,9 +605,10 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 .about code { font-size: 12px; word-break: break-all; }
 .about .about-logo { height: 40px; margin: 4px 0 14px; }
 
-/* website limits */
-#limitsFields { margin-top: 12px; }
-#limitsFields.muted { opacity: .55; }
+/* website and app limits */
+#limitsFields, #appLimitsFields { margin-top: 12px; }
+#limitsFields.muted, #appLimitsFields.muted { opacity: .55; }
+.limits-apps { margin-top: 22px; }
 #syncBox { margin-top: 18px; }
 #syncBox .field { margin-bottom: 8px; }
 #syncFields.muted { opacity: .55; }
@@ -623,6 +637,6 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 .limit-sub .day { height: 32px; min-width: 40px; padding: 0 8px; border-radius: 999px; border: 2px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .limit-sub .day[aria-pressed=true] { background: var(--blocked); border-color: var(--blocked); color: var(--on-blocked); }
 .limit-actions { display: flex; gap: 8px; justify-content: flex-end; }
-#limitEditor > .input { width: 100%; }
+#limitEditor > .input, #appLimitEditor > .input { width: 100%; }
 .limit-group { display: grid; gap: 6px; padding-bottom: 4px; }
 .limit-days { display: flex; gap: 4px; flex-wrap: wrap; }

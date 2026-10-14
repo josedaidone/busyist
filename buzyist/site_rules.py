@@ -95,26 +95,12 @@ def _hhmm(text) -> int:
     return int(match[1]) * 60 + int(match[2])
 
 
-def clean_site_limit(raw) -> dict:
-    """Check and tidy one site-limit rule from Settings; AppError if it's wrong."""
-    if not isinstance(raw, dict):
-        raise AppError("A website limit didn't come through; try again.")
-    sites = raw.get("patterns")
-    if sites is None:  # rules saved before a rule could cover several sites
-        sites = [raw.get("pattern", "")]
-    if not isinstance(sites, list):
-        raise AppError("The websites of a limit didn't come through; try again.")
-    patterns: list[str] = []
-    for site in sites:
-        if str(site).strip():
-            pattern = clean_site_pattern(site)
-            if pattern not in patterns:
-                patterns.append(pattern)
-    if not patterns:
-        raise AppError("Add at least one website to the limit.")
-    if len(patterns) > MAX_LIMIT_SITES:
-        raise AppError(f"Keep a limit to {MAX_LIMIT_SITES} websites or fewer.")
-    pattern = ", ".join(patterns)  # how this rule is named in messages
+def clean_limit_times(raw: dict, pattern: str) -> tuple[str, list[dict], list[dict]]:
+    """
+    The id, time limits and blocked hours of a limit rule (a website or an
+    app limit), checked and tidied; AppError, naming the rule by `pattern`,
+    if they're wrong.
+    """
     rid = str(raw.get("id") or "")
     if not re.fullmatch(r"[a-f0-9]{6,16}", rid):
         rid = uuid.uuid4().hex[:8]
@@ -162,6 +148,30 @@ def clean_site_limit(raw) -> dict:
         raise AppError(f"{pattern}: add a time limit or blocked hours.")
     if len(budgets) > 5 or len(windows) > 5:
         raise AppError(f"{pattern}: keep it to 5 time limits and 5 blocked-hours entries.")
+    return rid, budgets, windows
+
+
+def clean_site_limit(raw) -> dict:
+    """Check and tidy one site-limit rule from Settings; AppError if it's wrong."""
+    if not isinstance(raw, dict):
+        raise AppError("A website limit didn't come through; try again.")
+    sites = raw.get("patterns")
+    if sites is None:  # rules saved before a rule could cover several sites
+        sites = [raw.get("pattern", "")]
+    if not isinstance(sites, list):
+        raise AppError("The websites of a limit didn't come through; try again.")
+    patterns: list[str] = []
+    for site in sites:
+        if str(site).strip():
+            pattern = clean_site_pattern(site)
+            if pattern not in patterns:
+                patterns.append(pattern)
+    if not patterns:
+        raise AppError("Add at least one website to the limit.")
+    if len(patterns) > MAX_LIMIT_SITES:
+        raise AppError(f"Keep a limit to {MAX_LIMIT_SITES} websites or fewer.")
+    pattern = ", ".join(patterns)  # how this rule is named in messages
+    rid, budgets, windows = clean_limit_times(raw, pattern)
     return {
         "id": rid,
         "patterns": patterns,

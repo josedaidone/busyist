@@ -195,7 +195,8 @@ def test_an_app_opened_during_focus_is_asked_too_and_toasted(blocker, desktop, c
     desktop.windows = {200}
     tick(blocker, clock)
     assert desktop.asked() == [{200}]
-    assert blocker.notes and "Spotify is blocked until" in blocker.notes[0][1]
+    assert blocker.notes and blocker.notes[0][0] == "Spotify can wait"
+    assert blocker.notes[0][1].startswith("You're focusing until ")
 
 
 def test_never_this_process_nor_protected_programs(blocker, desktop, clock):

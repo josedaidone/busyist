@@ -78,8 +78,8 @@ class SitesMixin:
         if self.extension_outdated() and self._ext_warned != EXTENSION_VERSION:
             self._ext_warned = EXTENSION_VERSION
             self.notify(
-                "Reload the buZyist extension",
-                "buZyist was updated. Open your browser's extensions page and click Reload on buZyist Focus.",
+                "One more step for the extension",
+                "buZyist was updated. On your browser's extensions page, click Reload on buZyist Focus.",
             )
 
     def site_limits_status(self, enabled_only: bool = False) -> list[dict]:

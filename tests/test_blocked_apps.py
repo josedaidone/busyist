@@ -1,7 +1,10 @@
 """normalize_blocked_apps / clean_blocked_apps: the app blocker's list, as saved and as Settings sends it."""
 
+import os
+
 import pytest
 
+from buzyist import blocker
 from buzyist.blocker import APP_PRESETS, MAX_BLOCKED_APPS, clean_blocked_apps, normalize_blocked_apps
 from buzyist.constants import AppError
 
@@ -140,3 +143,33 @@ def test_clean_refuses_more_than_the_maximum():
 def test_clean_refuses_what_is_not_a_list_of_dicts(values):
     with pytest.raises(AppError, match="didn't come through"):
         clean_blocked_apps(values)
+
+
+# ---------------------------------------------------------------- running_apps
+
+
+def test_running_apps_lists_this_users_programs_windowed_first(monkeypatch):
+    me = os.getpid()
+    procs = {
+        me: ("buZyist.exe", r"C:\Apps\buZyist.exe", 1),
+        10: ("Zoom.exe", r"C:\Apps\Zoom.exe", 1),
+        11: ("Slack.exe", r"C:\Apps\Slack\Slack.exe", 1),
+        12: ("slack.exe", r"C:\Apps\Slack\Slack.exe", 1),  # same program twice: one entry, Slack has the window
+        13: ("chrome.exe", r"C:\Apps\chrome.exe", 1),
+        14: ("svchost.exe", r"C:\Windows\System32\svchost.exe", 1),  # Windows' own
+        15: ("Teams.exe", r"C:\Apps\Teams.exe", 2),  # another user's session
+        16: ("Grammarly.exe", None, 1),  # path unreadable: kept
+        17: ("System", None, 1),  # not a program file
+    }
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+    monkeypatch.setattr(blocker, "list_processes", lambda: [(pid, p[0]) for pid, p in procs.items()])
+    monkeypatch.setattr(blocker, "process_path", lambda pid: procs[pid][1])
+    monkeypatch.setattr(blocker, "process_session", lambda pid: procs[pid][2])
+    monkeypatch.setattr(blocker, "pids_with_windows", lambda pids: pids & {12, 13, 10})
+
+    assert blocker.running_apps() == [
+        {"exe": "chrome.exe", "name": "chrome", "window": True, "protected": True},
+        {"exe": "Slack.exe", "name": "Slack", "window": True, "protected": False},
+        {"exe": "Zoom.exe", "name": "Zoom", "window": True, "protected": False},
+        {"exe": "Grammarly.exe", "name": "Grammarly", "window": False, "protected": False},
+    ]

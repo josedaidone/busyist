@@ -56,6 +56,16 @@ def window_exe(hwnd) -> str:
         kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
 
 
+def foreground_app() -> tuple[int, str]:
+    """(pid, lower-case program name) of the window in front; (0, '') when there is none."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return 0, ""
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value, window_exe(hwnd)
+
+
 # The main window is shown and hidden with plain Win32 calls rather than
 # pywebview's show()/restore()/on_top:
 #  * restore() on a hidden, minimized form makes WinForms take the minimized

@@ -1,11 +1,20 @@
-"""Synthetic key presses, to type an address into a browser window."""
+"""Synthetic key presses, to type an address into a browser window, and how long the PC has been idle."""
 
 from __future__ import annotations
 
 import ctypes
 import time
 
-from buzyist.win32 import INPUT, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, user32
+from buzyist.win32 import (
+    INPUT,
+    INPUT_KEYBOARD,
+    KEYBDINPUT,
+    KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE,
+    LASTINPUTINFO,
+    kernel32,
+    user32,
+)
 
 
 def send_keys(text: str) -> None:
@@ -27,3 +36,11 @@ def send_keys(text: str) -> None:
     seq += [key(ENTER), key(ENTER, flags=KEYUP)]
     arr = (INPUT * len(seq))(*seq)
     user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
+
+
+def idle_seconds() -> float:
+    """Seconds since the last keyboard or mouse input in this session (0 if Windows won't say)."""
+    info = LASTINPUTINFO(cbSize=ctypes.sizeof(LASTINPUTINFO))
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000  # both wrap after 49.7 days

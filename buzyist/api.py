@@ -9,6 +9,7 @@ import webbrowser
 from typing import TYPE_CHECKING
 
 from buzyist import paths
+from buzyist.blocker import running_apps
 from buzyist.config import DEFAULTS
 from buzyist.constants import APP, EXTENSION_ID, REPO_URL, SOLO_H, SOLO_W, AppError, app_version
 from buzyist.extension import EXTENSION_VERSION, find_browser, open_browser_page, show_in_explorer, sync_extension
@@ -106,10 +107,20 @@ class Api:
         return self._do(self._app.sync_info)
 
     def site_usage(self):
-        """Every site-limit rule with its usage, for the Websites tab."""
+        """Every site-limit rule with its usage, for the Limits tab."""
         return self._do(
             lambda: {"on": bool(self._app.cfg.get("site_limits_on")), "rules": self._app.site_limits_status()}
         )
+
+    def app_usage(self):
+        """Every app-limit rule with its usage, for the Limits tab."""
+        return self._do(
+            lambda: {"on": bool(self._app.cfg.get("app_limits_on")), "rules": self._app.app_limiter.status()}
+        )
+
+    def running_apps(self):
+        """The programs running now, for the app names Settings suggests."""
+        return self._do(lambda: {"apps": running_apps()})
 
     def check_update(self):
         return self._do(self._app.check_for_update)

@@ -12,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 from buzyist import paths
 from buzyist.constants import APP, APP_NAME, AppError
 from buzyist.updater import UPDATABLE
+from buzyist.win32 import NIF_INFO, NIIF_NOSOUND, NIM_MODIFY
 
 log = logging.getLogger(APP)
 
@@ -60,12 +61,24 @@ def tray_image(view: dict | None) -> Image.Image:
 class TrayMixin:
     """App's tray icon: notifications, the icon and title kept current, the menu."""
 
-    def notify(self, title: str, message: str) -> None:
-        if self.cfg["notifications"] and self.tray:
-            try:
-                self.tray.notify(message[:250], title)
-            except Exception:
-                log.debug("tray notification failed", exc_info=True)
+    def notify(self, title: str, message: str, quiet: bool = False) -> None:
+        """
+        A Windows notification from the tray icon, when notifications are on.
+        `quiet` leaves out Windows' chime, for alerts that beep themselves.
+        Windows cuts the title at 63 characters and the message at 255.
+        """
+        if not (self.cfg["notifications"] and self.tray):
+            return
+        title, message = title[:63], message[:250]
+        try:
+            if quiet and hasattr(self.tray, "_message"):
+                # pystray's notify() can't pass balloon flags; its _message()
+                # sends the same NOTIFYICONDATAW, with ours added.
+                self.tray._message(NIM_MODIFY, NIF_INFO, szInfo=message, szInfoTitle=title, dwInfoFlags=NIIF_NOSOUND)
+            else:
+                self.tray.notify(message, title)
+        except Exception:
+            log.debug("tray notification failed", exc_info=True)
 
     def update_tray(self) -> None:
         if not self.tray:
@@ -101,7 +114,7 @@ class TrayMixin:
                 try:
                     self.control(action)
                 except AppError as err:
-                    self.notify(APP_NAME, str(err))
+                    self.notify("That didn't work", str(err))
 
             return handler
 
@@ -134,7 +147,7 @@ class TrayMixin:
                 try:
                     self.install_update()
                 except AppError as err:
-                    self.notify(APP_NAME, str(err))
+                    self.notify("That didn't work", str(err))
 
             threading.Thread(target=go, daemon=True).start()
 

@@ -63,9 +63,12 @@ class SessionMixin:
                     rounds = inner.interval_settings.interval_work_cycles_count
                     if state.phase == "rest":
                         mins = inner.interval_settings.interval_rest_ms // 60000
-                        notify = ("Break time", f"Pomodoro {interval // 2 + 1}/{rounds} done. {mins} min break.")
+                        notify = (
+                            "Nice work! Time for a break",
+                            f"Pomodoro {interval // 2 + 1} of {rounds} done. Enjoy your {mins} min break.",
+                        )
                     else:
-                        notify = ("Back to focus", f"Round {interval // 2 + 1}/{rounds}: {session['task']['content']}")
+                        notify = ("Back to it", f"Round {interval // 2 + 1} of {rounds}: {session['task']['content']}")
             if reason:
                 self.session = None
                 paths.SESSION_PATH.unlink(missing_ok=True)
@@ -120,7 +123,7 @@ class SessionMixin:
             self.ended = {"task": task, "done": done, "minutes": minutes, "reason": reason, "problems": problems}
         self.update_tray()
         if reason == "finished":
-            self.notify("Session complete", f"{done} pomodoro{'s' * (done != 1)} on {task['content']}")
+            self.notify("Great focus!", f"Session complete: {done} pomodoro{'s' * (done != 1)} on {task['content']}.")
             if self.cfg["open_on_finish"]:
                 self.show_main()
         self.hide_mini()
@@ -213,7 +216,7 @@ class SessionMixin:
                 if self.session is session:
                     write_json(paths.SESSION_PATH, session)
         except AppError as err:
-            self.notify("Todoist", f"Couldn't add the @{label} label: {err}")
+            self.notify("Todoist didn't take the label", f"Couldn't add @{label}: {err}")
 
     def control(self, action: str) -> None:
         if action == "stop":

@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING
 
 from buzyist import paths
 from buzyist.constants import APP, AppError
-from buzyist.win32.processes import list_processes, process_session, relaunch_app, relaunch_target, terminate_process
+from buzyist.win32.processes import (
+    list_processes,
+    process_path,
+    process_session,
+    relaunch_app,
+    relaunch_target,
+    terminate_process,
+)
 from buzyist.win32.windows import close_windows, pids_with_windows
 
 if TYPE_CHECKING:
@@ -175,6 +182,35 @@ def exe_label(image: str) -> str:
     return stem.split(".")[0] or stem
 
 
+def running_apps() -> list[dict]:
+    """
+    The programs running for this user, for the app names Settings suggests:
+    [{exe, name, window, protected}], the ones with a window on screen first,
+    then by name. Windows' own programs (under %SystemRoot%), other users'
+    processes and buZyist itself are left out; one entry per program.
+    """
+    me = os.getpid()
+    session = process_session(me)
+    system = os.path.normcase(os.environ.get("SYSTEMROOT") or r"C:\Windows").rstrip("\\/") + os.sep
+    found: dict[str, tuple[str, set[int]]] = {}
+    for pid, image in list_processes():
+        if pid == me or not image.lower().endswith(".exe"):
+            continue
+        if session is not None and process_session(pid) != session:
+            continue
+        path = process_path(pid)
+        if path and os.path.normcase(path).startswith(system):
+            continue
+        found.setdefault(app_key(image), (image, set()))[1].add(pid)
+    shown = pids_with_windows(set().union(*(pids for _, pids in found.values()))) if found else set()
+    apps = [
+        {"exe": image, "name": exe_label(image), "window": bool(pids & shown), "protected": key in PROTECTED_EXES}
+        for key, (image, pids) in found.items()
+    ]
+    apps.sort(key=lambda a: (not a["window"], a["name"].lower(), a["exe"].lower()))
+    return apps
+
+
 class AppBlocker:
     """
     Keeps the listed apps away while a work phase runs (issue #1).
@@ -307,7 +343,7 @@ class AppBlocker:
             if not self._first_sweep and key not in self._preexisting:
                 # The app wasn't open when the pomodoro started, so the user
                 # just tried to open it: that's when the "blocked" popup fits.
-                self._toast(entry, "blocked", focus)
+                self._toast(entry, focus)
         if to_close:
             # Ask first, like the X button, so the app can save a draft or its
             # state; end it if it's still there after CLOSE_GRACE. An app's
@@ -345,10 +381,10 @@ class AppBlocker:
             return False
         return True
 
-    def _toast(self, entry: dict, what: str, focus: dict) -> None:
+    def _toast(self, entry: dict, focus: dict) -> None:
         now = time.monotonic()
         if now - self._toasted.get(entry["id"], -self.TOAST_EVERY) < self.TOAST_EVERY:
             return
         self._toasted[entry["id"]] = now
         until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
-        self.app.notify("Focus", f"{entry['name']} is {what} until {until}")
+        self.app.notify(f"{entry['name']} can wait", f"You're focusing until {until}. It'll be back after.")
