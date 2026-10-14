@@ -373,6 +373,32 @@ async function loadTasks(quiet, filterName) {
   applyTaskResult(result);
 }
 
+// A task with a time still ahead waits at the end, earliest first; once its time comes it sorts
+// by priority like the rest. Mirrors task_rank in buzyist/todoist.py.
+function taskRank(t, now) {
+  if (t.time && `${t.day} ${t.time}` > now) return [1, t.day, t.time, t.order];
+  return [0, -t.priority, t.overdue ? 0 : 1, t.time || "99", t.order];
+}
+
+function compareRanks(a, b) {
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  return 0;
+}
+
+// Once a minute: move up the tasks whose time has come, without asking Todoist again.
+function resortTasks() {
+  if (!tasks.length || $("taskMenu")) return;
+  const d = new Date();
+  const now = isoDay(0) + " " + String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  const sorted = [...tasks].sort((a, b) => compareRanks(taskRank(a, now), taskRank(b, now)));
+  if (sorted.every((t, i) => t === tasks[i])) return;
+  const picked = shown[sel] && shown[sel].id;
+  tasks = sorted;
+  renderTasks();
+  const at = shown.findIndex((t) => t.id === picked);
+  if (at >= 0 && at !== sel) { sel = at; markSelection(false); }
+}
+
 function applyTaskResult(result) {
   loadingTasks = false;
   lastTaskLoad = Date.now();
@@ -1734,6 +1760,7 @@ async function boot() {
   setInterval(() => { if (onScreen()) renderTimer(); }, 250);
   // keep the list fresh while the window stays open
   setInterval(() => { if (!document.hidden && Date.now() - lastTaskLoad > 300000) loadTasks(true); }, 60000);
+  setInterval(() => { if (!document.hidden && !loadingTasks) resortTasks(); }, 60000);
 }
 
 if (window.pywebview && window.pywebview.api) boot();

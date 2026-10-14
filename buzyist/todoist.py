@@ -109,7 +109,8 @@ class Todoist:
                     "url": f"https://app.todoist.com/app/task/{item['id']}",
                 }
             )
-        tasks.sort(key=lambda t: (-t["priority"], not t["overdue"], t["time"] or "99", t["order"]))
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        tasks.sort(key=lambda t: task_rank(t, now))
         return tasks
 
     def set_label(self, task_id: str, label: str, present: bool) -> None:
@@ -124,6 +125,15 @@ class Todoist:
 
     def close(self, task_id: str) -> None:
         self.call("POST", f"/tasks/{task_id}/close")
+
+
+def task_rank(task: dict, now: str) -> tuple:
+    """Sort key for the task list. A task with a time still ahead of `now` ("YYYY-MM-DD HH:MM",
+    local) waits at the end, earliest first, whatever its priority; once its time comes it sorts
+    like the rest: priority, overdue, time, Todoist's order. Mirrored by taskRank in ui/main.js."""
+    if task["time"] and f"{task['day']} {task['time']}" > now:
+        return (1, task["day"], task["time"], task["order"])
+    return (0, -task["priority"], not task["overdue"], task["time"] or "99", task["order"])
 
 
 def due_parts(due):
