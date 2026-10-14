@@ -98,7 +98,7 @@ def test_bar_test_with_an_empty_pin_uses_the_saved_one(make_app):
     seen = {}
     api = api_mod.Api(app)
 
-    def fake_run(fn):
+    def fake_run(fn, device=False):
         seen["routes"] = app.bar.routes()
 
     app.bar.run = fake_run

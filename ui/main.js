@@ -187,7 +187,7 @@ function renderCurrent() {
       meta.append(open);
     }
   } else if (t) {
-    $("curEyebrow").textContent = state.bar.local ? "No task linked" : "Started on the bar, no task linked";
+    $("curEyebrow").textContent = state.bar.local || state.bar.offline ? "No task linked" : "Started on the bar, no task linked";
     $("curTask").textContent = "Timer running";
     meta.append(el("span", "", state.todoist ? "Pick a task to put it in focus" : ""));
   } else {
@@ -263,10 +263,12 @@ function renderChrome() {
   renderGuard();
 
   const bar = state.bar;
-  $("barChip").className = "chip" + (bar.ok === true ? " ok" : bar.ok === false ? " bad" : "");
+  $("barChip").className = "chip" + (bar.offline ? "" : bar.ok === true ? " ok" : bar.ok === false ? " bad" : "");
   $("barText").textContent = bar.local ? "Timer on this PC"
+    : bar.offline ? "Bar out of reach · timer on this PC"
     : bar.ok === true ? `BUSY Bar · ${bar.via}` : bar.ok === false ? "Bar offline" : "Looking for the bar";
-  $("barChip").title = bar.ok === false ? bar.error : "";
+  $("barChip").title = bar.offline ? "The BUSY Bar can't be reached. The timer runs here and goes back to the bar once it answers."
+    : bar.ok === false ? bar.error : "";
   $("hotkeyHint").textContent = state.hotkey ? state.hotkey.replace(/\b\w/g, (c) => c.toUpperCase()) : "";
 
   const u = state.update;
@@ -316,11 +318,20 @@ function renderEnded() {
 }
 
 async function poll() {
+  let fresh;
   try {
-    state = await api.get_state();
+    fresh = await api.get_state();
   } catch (err) {
     return;
   }
+  applyState(fresh);
+}
+
+function applyState(fresh) {
+  // A poll sent before the window was shown may answer after the state
+  // onShown brought: never go back to an older one.
+  if (state && fresh.now < state.now) return;
+  state = fresh;
   if (!pomo) loadPomodoro(state.pomodoro);
   renderTimer();
   renderCurrent();
@@ -676,7 +687,7 @@ async function startTask(task, li) {
   const result = await api.start(task.id);
   if (li) li.classList.remove("busy");
   if (!result.ok) return toast(result.error, true);
-  toast(`Go. ${pomo.work_minutes} minutes, just this${state && state.bar.local ? "" : " (on the bar)"}.`);
+  toast(`Go. ${pomo.work_minutes} minutes, just this${state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)"}.`);
   $("search").value = "";
   renderTasks();
   poll();
@@ -838,7 +849,7 @@ async function startFree(name) {
   flushPomodoro();
   const result = await api.start(null, name);
   if (!result.ok) return toast(result.error, true);
-  toast(`Go. ${pomo.work_minutes} minutes, just this${state && state.bar.local ? "" : " (on the bar)"}.`);
+  toast(`Go. ${pomo.work_minutes} minutes, just this${state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)"}.`);
   $("freeName").value = "";
   poll();
 }
@@ -1768,7 +1779,7 @@ $("installUpdate").onclick = async () => {
   const u = state && state.update;
   if (!u) return;
   if (!u.installable) return api.open_url(u.url);
-  const where = state.bar.local ? "" : " on the bar";
+  const where = state.bar.local || state.bar.offline ? "" : " on the bar";
   if (state.session && !confirm(`buZyist restarts to update. The session keeps running${where} and picks up again after the restart. Update now?`)) return;
   $("installUpdate").disabled = true;
   $("installUpdate").textContent = "Installing…";
@@ -1865,13 +1876,26 @@ $("refresh").onclick = () => loadTasks();
 let visible = true;
 const onScreen = () => visible && !document.hidden;
 
+// Overlays appear without their fade while the window is hidden and for a
+// moment after it shows (body.instant in style.css): the fade may not run
+// until the first input, and the end-of-session prompt would stay invisible.
+let instantTimer = 0;
+function instantOverlays(hidden) {
+  clearTimeout(instantTimer);
+  document.body.classList.add("instant");
+  if (!hidden) instantTimer = setTimeout(() => { if (onScreen()) document.body.classList.remove("instant"); }, 1500);
+}
+
 window.App = {
   setVisible(v) {
     visible = !!v;
+    instantOverlays(!visible);
     if (visible) poll();
   },
-  onShown(focusSearch) {
+  onShown(focusSearch, fresh) {
     visible = true;
+    instantOverlays(false);
+    if (fresh) applyState(fresh);  // what Python sees now, before any poll answers
     if (Date.now() - lastTaskLoad > 30000) loadTasks(true);
     poll();
     // A window that was hidden in the tray can still be throttled for a
@@ -1887,7 +1911,11 @@ window.App = {
 };
 
 // Re-sync as soon as the window is restored or focused.
-document.addEventListener("visibilitychange", () => { if (!document.hidden) poll(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return instantOverlays(true);
+  instantOverlays(false);
+  poll();
+});
 window.addEventListener("focus", () => { visible = true; poll(); });  // focused means on screen
 window.addEventListener("resize", () => poll());
 

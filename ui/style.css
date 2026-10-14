@@ -556,6 +556,10 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 }
 .modal-wrap.on { pointer-events: auto; }
 .modal-wrap.on .modal { opacity: 1; transform: none; }
+/* Hidden in the tray or just shown: no fade. A WebView2 back from the tray can
+   hold its animations until the first input, which left the end-of-session
+   prompt at opacity 0 until a click. */
+body.instant .modal, body.instant .scrim { transition: none; }
 .tomatoes { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; min-height: 40px; align-items: center; }
 .tomatoes svg { width: 38px; height: 38px; }
 .tomatoes .more { font: 600 22px/1 var(--bz-font-display); color: var(--muted); margin-left: 4px; }

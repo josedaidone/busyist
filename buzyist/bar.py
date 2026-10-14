@@ -14,10 +14,14 @@ from busylib import BusyBar, exceptions, types
 from busylib.features import timer_state
 
 from buzyist import paths
-from buzyist.constants import APP, BAR_CYCLES_MIN, USB_ADDR, AppError, now_ms
+from buzyist.constants import APP, BAR_CYCLES_MIN, BAR_PROBE_S, USB_ADDR, AppError, now_ms
 from buzyist.storage import read_json, write_json
 
 log = logging.getLogger(APP)
+
+
+class BarUnreachable(AppError):
+    """No route reached the bar (network errors only, not a refused PIN)."""
 
 
 # ---------------------------------------------------------------- BUSY Bar ---
@@ -57,6 +61,13 @@ class LocalClock:
 LOCAL_SETTINGS = types.BusyBarSettings(theme="busy", show_work_phase_only=False, trigger_smart_home=False)
 
 
+def _not_started() -> types.BusySnapshot:
+    return types.BusySnapshot(
+        snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=LOCAL_SETTINGS),
+        snapshot_timestamp_ms=0,
+    )
+
+
 class Bar:
     """
     The BUSY Bar over Wi-Fi and/or USB, whichever answers, or a clock on
@@ -65,6 +76,12 @@ class Bar:
     Every call goes through `run`, which holds one lock (the bar takes the
     freshest snapshot as the truth, so two writers racing would be bad) and
     tries the route that worked last first.
+
+    Standalone: when the bar can't be reached (out of battery, out of range),
+    `go_offline` copies its last snapshot into the local clock and every call
+    goes there, so the timer keeps running and can still be paused or
+    stopped. `poll` looks for the bar every BAR_PROBE_S and, once it answers,
+    `_reconnect` writes the clock's timer back to it.
     """
 
     def __init__(self, cfg: dict):
@@ -73,10 +90,19 @@ class Bar:
         self.via: str | None = None
         self._clients: dict[tuple, BusyBar] = {}
         self.local = LocalClock()
+        self.offline = False  # the bar is on but out of reach: the local clock stands in
+        self.last: types.BusySnapshot | None = None  # the bar's latest snapshot read this run
+        self._seed_stamp = 0  # the local clock's stamp when it took over
+        self._probe_at = 0  # when poll looks for an offline bar again (ms)
 
     @property
     def is_local(self) -> bool:
         return not self.cfg["use_busybar"]
+
+    @property
+    def standalone(self) -> bool:
+        """The timer runs on this PC: no bar in Settings, or the bar is out of reach."""
+        return self.is_local or self.offline
 
     def routes(self) -> list[tuple[str, str, str | None]]:
         found = []
@@ -95,7 +121,10 @@ class Bar:
                 except Exception:
                     log.debug("closing a bar client failed", exc_info=True)
             self._clients.clear()
-            self.via = None
+            self.via = "This PC" if self.offline else None
+            self._probe_at = 0  # new settings: look for the bar at once
+            if self.is_local:
+                self.offline = False
 
     def _client(self, route) -> BusyBar:
         if route not in self._clients:
@@ -112,9 +141,10 @@ class Bar:
             )
         return self._clients[route]
 
-    def run(self, fn):
+    def run(self, fn, device: bool = False):
+        """fn(client) on the bar, or on the local clock; device=True asks the bar even while offline."""
         with self.lock:
-            if self.is_local:
+            if self.is_local or (self.offline and not device):
                 result = fn(self.local)
                 self.via = "This PC"
                 return result
@@ -133,13 +163,104 @@ class Bar:
                     if err.status_code in (401, 403):
                         raise AppError("The bar refused the PIN (check Settings).")
                     raise AppError(f"The bar answered: {err}")
-            self.via = None
-            raise AppError("Can't reach the BUSY Bar. " + "; ".join(problems))
+            self.via = "This PC" if self.offline else None
+            raise BarUnreachable("Can't reach the BUSY Bar. " + "; ".join(problems))
+
+    # ---------------------------------------------------------- standalone
+
+    def go_offline(self, since: int | None = None) -> bool:
+        """
+        Hand the timer to the local clock, starting from the bar's last
+        snapshot; False when there is nothing to start from. `since` is the
+        running session's stamp: with no snapshot read this run (the app
+        started while the bar was already gone), the clock's own timer.json
+        is used if it is at least that new.
+        """
+        with self.lock:
+            if self.is_local or self.offline:
+                return self.offline
+            if self.last is not None:
+                self.local.busy_snapshot_set(self.last)
+            elif since is not None:
+                if self.local.busy_snapshot().snapshot_timestamp_ms < since:
+                    return False
+            else:
+                self.local.busy_snapshot_set(_not_started())
+            self._seed_stamp = self.local.busy_snapshot().snapshot_timestamp_ms
+            self._probe_at = now_ms() + BAR_PROBE_S * 1000
+            self.offline, self.via = True, "This PC"
+            return True
+
+    def poll(self) -> types.BusySnapshot:
+        """The engine's snapshot(); while offline it also looks for the bar every BAR_PROBE_S."""
+        if self.offline and now_ms() >= self._probe_at:
+            self._reconnect()
+        return self.snapshot()
+
+    def _reconnect(self) -> None:
+        with self.lock:
+            self._probe_at = now_ms() + BAR_PROBE_S * 1000
+            try:
+                self.run(self._take_back, device=True)
+            except AppError as err:
+                log.debug("the bar is still out of reach: %s", err)
+                return
+            self.offline = False
+            self.local.busy_snapshot_set(_not_started())
+            log.info("the BUSY Bar answers again (%s): the timer is back on it", self.via)
+
+    def _take_back(self, bar: BusyBar) -> None:
+        """Write what the local clock ran while the bar was gone to the bar."""
+        live = bar.busy_snapshot()
+        mine = self.local.busy_snapshot()
+        variant = mine.snapshot
+        running = isinstance(variant, types.BusySnapshotInterval) and not timer_state(mine).is_finished
+        # A timer still running here always goes back (a bar back from an
+        # empty battery has forgotten it). With nothing running and nothing
+        # done here, a bar that moved on by itself keeps what it has.
+        if (
+            not running
+            and mine.snapshot_timestamp_ms == self._seed_stamp
+            and live.snapshot_timestamp_ms > self._seed_stamp
+        ):
+            return
+        if isinstance(variant, types.BusySnapshotInterval):
+            state = timer_state(mine)
+            if state.is_finished:
+                variant = types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=variant.busy_bar_settings)
+            else:
+                # What is left now, as a fresh snapshot, on the bar's own card
+                # and with at least the work phases it accepts.
+                profile = bar.busy_profile("busy")
+                settings = variant.interval_settings
+                interval = state.interval or 0
+                variant = variant.model_copy(
+                    update={
+                        "card_id": profile.id,
+                        "busy_bar_settings": profile.busy_bar_settings,
+                        "current_interval": interval,
+                        "current_interval_time_total_ms": phase_ms(interval, settings),
+                        "current_interval_time_left_ms": state.time_left_ms or 0,
+                        "interval_settings": settings.model_copy(
+                            update={
+                                "interval_work_cycles_count": max(settings.interval_work_cycles_count, BAR_CYCLES_MIN)
+                            }
+                        ),
+                    }
+                )
+        elif not isinstance(variant, types.BusySnapshotNotStarted):
+            return  # only the interval timers the app starts are carried back
+        # Newer than both, so the bar takes it and the session sees it.
+        self._write(bar, max(live, mine, key=lambda s: s.snapshot_timestamp_ms), variant)
 
     # Thin wrappers, each one bar call (or one read-modify-write) under the lock.
 
     def snapshot(self) -> types.BusySnapshot:
-        return self.run(lambda bar: bar.busy_snapshot())
+        with self.lock:
+            snap = self.run(lambda bar: bar.busy_snapshot())
+            if not self.standalone:
+                self.last = snap
+            return snap
 
     def start(self, work_ms: int, rest_ms: int, cycles: int, autostart: bool) -> int:
         """Start the busy card's standard interval timer; returns its stamp."""

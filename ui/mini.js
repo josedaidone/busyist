@@ -23,7 +23,7 @@ function render() {
   $("mPhase").textContent = { idle: "Ready", paused: "Paused", work: "Focus", rest: "Break" }[phase];
   $("mRound").textContent = t ? `Tomato ${t.round} of ${t.rounds}` : "";
   const r = !s && t && state.remote;  // started on another PC
-  $("mTask").textContent = s ? s.task.content : r ? r.task.content : t ? (state.bar.local ? "Timer running" : "Running on the bar") : "No session";
+  $("mTask").textContent = s ? s.task.content : r ? r.task.content : t ? (state.bar.local || state.bar.offline ? "Timer running" : "Running on the bar") : "No session";
   $("mProject").textContent = s ? s.task.project : r ? r.task.project || `on ${r.by}` : "";
   $("mPauseIcon").setAttribute("href", t && t.paused ? "#i-play" : "#i-pause");
   $("mPause").title = t && t.paused ? "Resume" : "Pause";

@@ -178,7 +178,7 @@ class Api:
             if self._app.bar.is_local:
                 raise AppError("The BUSY Bar is turned off; the timer runs on this PC.")
             self._app.bar.reset()
-            version = self._app.bar.run(lambda bar: bar.version())
+            version = self._app.bar.run(lambda bar: bar.version(), device=True)
             return {"via": self._app.bar.via, "version": getattr(version, "version", "")}
 
         return self._do(go)
