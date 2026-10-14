@@ -203,10 +203,10 @@ def test_full_session_two_cycles(engine, deferred_threads, notes, clock):
     assert notes == []
     app.step(minutes=25, seconds=1)
     assert app.session["done"] == 1
-    assert notes == [("Break time", "Pomodoro 1/2 done. 5 min break.")]
+    assert notes == [("Nice work! Time for a break", "Pomodoro 1 of 2 done. Enjoy your 5 min break.")]
     app.step(minutes=5)
     assert app.session["done"] == 1
-    assert notes[-1] == ("Back to focus", "Round 2/2: Write the tests")
+    assert notes[-1] == ("Back to it", "Round 2 of 2: Write the tests")
     assert app.timer_view()["round"] == 2
     app.step(minutes=24)
     assert app.session is not None
@@ -227,7 +227,7 @@ def test_full_session_two_cycles(engine, deferred_threads, notes, clock):
         "reason": "finished",
         "problems": [],
     }
-    assert notes[-1] == ("Session complete", "2 pomodoros on Write the tests")
+    assert notes[-1] == ("Great focus!", "Session complete: 2 pomodoros on Write the tests.")
 
 
 def test_one_tomato_on_the_local_clock(engine, deferred_threads, notes):
@@ -238,7 +238,7 @@ def test_one_tomato_on_the_local_clock(engine, deferred_threads, notes):
     app.step(minutes=1, seconds=1)
     (entry,) = app.history
     assert (entry["pomodoros"], entry["reason"]) == (1, "finished")
-    assert notes == [("Session complete", "1 pomodoro on Write the tests")]  # no "Break time"
+    assert notes == [("Great focus!", "Session complete: 1 pomodoro on Write the tests.")]  # no break toast
 
 
 def test_one_tomato_on_the_bar_calls_stop(engine, deferred_threads, device, monkeypatch):
@@ -331,7 +331,7 @@ def test_skip_moves_work_to_rest_and_the_last_work_stops(engine, deferred_thread
     app.step()
     # A skipped work phase counts as done: the session is now past it.
     assert app.session["done"] == 1
-    assert notes[-1][0] == "Break time"
+    assert notes[-1][0] == "Nice work! Time for a break"
     app.control("skip")
     assert app.timer_view()["phase"] == "work"
     app.step()
@@ -421,7 +421,7 @@ def test_restart_while_the_timer_runs_resumes_it(engine, deferred_threads, notes
     assert not again.recovering  # a running timer was found: the session is live again
     again.step(minutes=15)
     assert again.ended["reason"] == "finished"
-    assert notes == [("Session complete", "1 pomodoro on Write the tests")]
+    assert notes == [("Great focus!", "Session complete: 1 pomodoro on Write the tests.")]
 
 
 # --------------------------------------------------------------- replaced ---

@@ -23,6 +23,7 @@ from busylib.features import timer_state
 
 from buzyist import paths
 from buzyist.api import Api
+from buzyist.app_limits import AppLimiter
 from buzyist.app_sites import SitesMixin
 from buzyist.app_sync import SyncMixin
 from buzyist.app_updates import UpdatesMixin
@@ -80,6 +81,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         if resave:
             self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(paths.USAGE_PATH)
+        self.app_usage = SiteUsage(paths.APP_USAGE_PATH)  # time on the limited Windows apps
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
         self.usage.set_remote(self.shared["remote"])
@@ -128,6 +130,9 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         # phase starts, so nothing runs when the feature is off.
         self.blocker = AppBlocker(self)
         self.focus_hooks.append(self.blocker.poke)
+        # Counts time on the apps with a limit and acts on those limits, all
+        # day; idle while app limits are off.
+        self.app_limiter = AppLimiter(self)
         # Tells the Chrome extension whether to block sites (issue #2).
         self.extension_last = 0  # now_ms() of the last request the extension made
         self.extension_version = ""  # what it said it is; "" for ones from before it said
@@ -288,6 +293,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             len(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if cfg.get("block_sites") else 0
         )
         limits = sum(1 for r in cfg.get("site_limits") or [] if r.get("enabled")) if cfg.get("site_limits_on") else 0
+        limits += sum(1 for r in cfg.get("app_limits") or [] if r.get("enabled")) if cfg.get("app_limits_on") else 0
         return {
             "apps": apps,
             "sites": sites,
@@ -431,16 +437,25 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.show_mini()
         if self.mini:
             self._js(self.mini, "Mini.alert && Mini.alert()")
+        self.beep()
 
-        def beep():
-            for _ in range(3):
+    def beep(self, times: int = 3) -> None:
+        """Beep a few times, on a thread of its own."""
+
+        def run():
+            for _ in range(times):
                 try:
                     winsound.Beep(880, 180)
                 except Exception:
                     winsound.MessageBeep()
                 time.sleep(0.15)
 
-        threading.Thread(target=beep, daemon=True).start()
+        threading.Thread(target=run, daemon=True, name="beep").start()
+
+    def alert(self, title: str, message: str) -> None:
+        """Beep and show a silent toast (the toast only with notifications on): a "beep" app limit."""
+        self.beep()
+        self.notify(title, message, quiet=True)
 
     def _until_early_end(self, poll: float) -> float:
         """Seconds to the end of a session that is shorter than what the bar runs, if that's sooner than a poll."""
@@ -518,6 +533,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.bar.reset()
             self.wake.set()
         self.blocker.poke()  # pick up a changed list or switch straight away
+        self.app_limiter.poke()
         if self.tray:
             self.tray.update_menu()
 
@@ -582,9 +598,10 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.bind_hotkey()
         except AppError as err:
             log.warning("%s", err)
-            self.notify(APP_NAME, f"{err} Change it in Settings.")
+            self.notify("Your hotkey isn't set", f"{err} Pick another in Settings → General.")
         threading.Thread(target=self.engine, daemon=True).start()
         self.blocker.start()
+        self.app_limiter.start()
         self.site_server.start()
         if paths.FROZEN:  # from source, git is the updater
             threading.Thread(target=self.updater, daemon=True, name="updater").start()

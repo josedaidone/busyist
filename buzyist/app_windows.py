@@ -118,6 +118,7 @@ class WindowsMixin:
         self.blocker.poke()
         self.site_server.stop()
         self.usage.flush(force=True)
+        self.app_usage.flush(force=True)
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:

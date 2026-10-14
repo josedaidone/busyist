@@ -899,8 +899,10 @@ async function openSettings(tab) {
   $("addBlockedApp").value = "";
   renderBlockedApps();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
-  limitRules = JSON.parse(JSON.stringify(s.site_limits || []));
-  limitUsage = {};
+  LIMITS.site.rules = JSON.parse(JSON.stringify(s.site_limits || []));
+  LIMITS.app.rules = JSON.parse(JSON.stringify(s.app_limits || []));
+  LIMITS.site.usage = {};
+  LIMITS.app.usage = {};
   closeLimitEditor();
   renderLimits();
   refreshLimitUsage();
@@ -1140,61 +1142,83 @@ function cleanSitePattern(raw) {
   if (path === "/" || path === "/*") path = "";
   return host + path;
 }
-// ------------------------------------------------------- website limits
+// ------------------------------------------------------- website and app limits
 //
-// Per-site time budgets and blocked hours that apply all day (the Limits
-// tab). Rules are edited in memory and saved with the rest; buZyist checks
-// them (clean_site_limit) and the extension enforces them. Usage comes from
-// buZyist, which keeps the totals.
-let limitRules = [];
-let limitUsage = {};      // rule id -> where it stands, from api.site_usage
-let limitDraft = null;    // {index, rule} while the editor is open
+// Time budgets and blocked hours that apply all day (the Limits tab), for
+// websites (the extension enforces them) and Windows apps (buZyist closes the
+// app, or only beeps). Rules are edited in memory and saved with the rest;
+// buZyist checks them (clean_site_limit, clean_app_limit) and keeps the
+// totals. One editor is open at a time.
+const LIMITS = {
+  site: { rules: [], usage: {}, list: "limitList", editor: "limitEditor", add: "addLimitBtn",
+          fields: "limitsFields", on: "s_site_limits_on", usageCall: "site_usage" },
+  app: { rules: [], usage: {}, list: "appLimitList", editor: "appLimitEditor", add: "addAppLimitBtn",
+         fields: "appLimitsFields", on: "s_app_limits_on", usageCall: "app_usage" },
+};
+let limitDraft = null;    // {kind, index, rule} while an editor is open
 const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 const unitPlural = (every, unit) => (every === 1 ? unit : `${every} ${unit}s`);
 const budgetText = (b) => `${b.minutes} min per ${unitPlural(b.every, b.unit)}`
   + (!b.days || b.days.length === 7 ? "" : ", " + daysText(b.days));
 const clockText = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const appLabel = (exe) => exe.replace(/\.exe$/i, "").split(".")[0] || exe;  // exe_label in blocker.py
+const limitNames = (kind, rule) => (kind === "site" ? rule.patterns : [...new Set(rule.apps.map(appLabel))]).join(", ");
+const REMIND_MIN = 1, REMIND_MAX = 120;  // APP_LIMIT_REMIND_MIN/MAX in buzyist/constants.py
+const beeps = (kind, rule) => kind === "app" && rule.action === "beep";
 
 function daysText(days) {
   if (days.length === 7) return "every day";
-  if (days.join() === "0,1,2,3,4") return "Mon\u2013Fri";
-  if (days.join() === "5,6") return "Sat\u2013Sun";
+  if (days.join() === "0,1,2,3,4") return "Mon–Fri";
+  if (days.join() === "5,6") return "Sat–Sun";
   return days.map((d) => DAY_NAMES[d]).join(", ");
 }
 
-function renderLimits() {
-  const list = $("limitList");
+// One kind's list ("site" or "app"), or both without one.
+function renderLimits(kind) {
+  if (!kind) { renderLimits("site"); renderLimits("app"); return; }
+  const k = LIMITS[kind];
+  const list = $(k.list);
   list.replaceChildren();
-  limitRules.forEach((rule, i) => {
-    const status = limitUsage[rule.id];
+  k.rules.forEach((rule, i) => {
+    const status = k.usage[rule.id];
     const row = el("div", "limit-row" + (rule.enabled ? "" : " off"));
     const head = el("div", "limit-head");
     const sw = el("label", "switch");
     const box = document.createElement("input");
     box.type = "checkbox";
     box.checked = rule.enabled;
-    box.onchange = () => { rule.enabled = box.checked; renderLimits(); };
+    box.onchange = () => { rule.enabled = box.checked; renderLimits(kind); };
     sw.append(box, el("span", "knob"));
     sw.title = rule.enabled ? "Turn this limit off" : "Turn this limit on";
     const edit = el("button", "btn sm ghost", "Edit");
     edit.type = "button";
-    edit.onclick = () => openLimitEditor(i);
-    const x = el("button", "remove", "\u00d7");
+    edit.onclick = () => openLimitEditor(kind, i);
+    const x = el("button", "remove", "×");
     x.type = "button";
     x.title = "Remove this limit";
-    x.onclick = () => { limitRules.splice(i, 1); renderLimits(); };
-    head.append(sw, el("span", "site", rule.patterns.join(", ")), edit, x);
+    x.onclick = () => { k.rules.splice(i, 1); renderLimits(kind); };
+    const name = el("span", "site", limitNames(kind, rule));
+    if (kind === "app") name.title = rule.apps.join(", ");
+    head.append(sw, name, edit, x);
     row.append(head);
-    if (status && status.blocked) row.append(el("div", "limit-tag", `Blocked until ${clockText(status.until_ms)}`));
-    rule.budgets.forEach((b, k) => {
+    if (kind === "app") {
+      row.append(el("div", "limit-line", rule.action === "beep"
+        ? `Beeps when reached, again every ${rule.remind || 5} min; the app stays open`
+        : "Closes the app when reached"));
+    }
+    if (status && status.blocked) {
+      const what = beeps(kind, rule) ? "Over the limit" : kind === "app" ? "Closed" : "Blocked";
+      row.append(el("div", "limit-tag", `${what} until ${clockText(status.until_ms)}`));
+    }
+    rule.budgets.forEach((b, j) => {
       const line = el("div", "limit-line");
-      const live = status && status.budgets && status.budgets[k];
+      const live = status && status.budgets && status.budgets[j];
       if (live && live.budget_s === b.minutes * 60) {
         const used = Math.min(live.used_s, live.budget_s);
         const text = el("div");
         text.append(el("b", "", budgetText(b)),
-          live.active ? ` \u00b7 ${Math.floor(used / 60)} of ${b.minutes} min used` : " \u00b7 not today");
+          live.active ? ` · ${Math.floor(used / 60)} of ${b.minutes} min used` : " · not today");
         const bar = el("div", "limit-bar" + (live.remaining_s <= 0 ? " full" : ""));
         const fill = el("i");
         fill.style.width = Math.round((100 * used) / live.budget_s) + "%";
@@ -1207,20 +1231,22 @@ function renderLimits() {
     });
     for (const w of rule.windows) {
       const line = el("div", "limit-line");
-      line.append(el("div", "", `Blocked ${daysText(w.days)}, ${w.from}\u2013${w.to}`));
+      line.append(el("div", "", `${beeps(kind, rule) ? "Beeps" : "Blocked"} ${daysText(w.days)}, ${w.from}–${w.to}`));
       row.append(line);
     }
     list.append(row);
   });
-  $("limitsFields").classList.toggle("muted", !$("s_site_limits_on").checked);
+  $(k.fields).classList.toggle("muted", !$(k.on).checked);
   renderTabDots();
 }
 
-async function refreshLimitUsage() {
-  const r = await api.site_usage();
+async function refreshLimitUsage(kind) {
+  if (!kind) { refreshLimitUsage("site"); refreshLimitUsage("app"); return; }
+  const k = LIMITS[kind];
+  const r = await api[k.usageCall]();
   if (!r.ok) return;
-  limitUsage = Object.fromEntries(r.rules.map((rule) => [rule.id, rule]));
-  renderLimits();
+  k.usage = Object.fromEntries(r.rules.map((rule) => [rule.id, rule]));
+  renderLimits(kind);
 }
 setInterval(async () => {
   if (!$("drawer").classList.contains("on") || settingsTab !== "limits") return;
@@ -1282,19 +1308,28 @@ const syncMuted = () => $("syncFields").classList.toggle("muted", !$("s_sync_lim
 $("s_sync_owner").onchange = () => { syncOwner = $("s_sync_owner").value; };
 $("s_sync_limits").onchange = $("s_sync_session").onchange = syncMuted;
 
-function openLimitEditor(index) {
+let namesText = "";  // what's typed in the editor's websites (or apps) box
+
+function openLimitEditor(kind, index) {
+  closeLimitEditor();
+  const fresh = kind === "site"
+    ? { patterns: [], budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }] }
+    : { apps: [], action: "close", remind: 5, budgets: [{ minutes: 30, every: 1, unit: "day", days: [0, 1, 2, 3, 4, 5, 6] }] };
   const rule = index === undefined
-    ? { patterns: [], enabled: true, budgets: [{ minutes: 5, every: 1, unit: "hour", days: [0, 1, 2, 3, 4, 5, 6] }], windows: [] }
-    : JSON.parse(JSON.stringify(limitRules[index]));
-  limitDraft = { index, rule };
+    ? { enabled: true, windows: [], ...fresh }
+    : JSON.parse(JSON.stringify(LIMITS[kind].rules[index]));
+  limitDraft = { kind, index, rule };
+  namesText = (kind === "site" ? rule.patterns : rule.apps).join(", ");
   renderLimitEditor();
 }
 
 function closeLimitEditor() {
   limitDraft = null;
-  $("limitEditor").classList.add("hidden");
-  $("limitEditor").replaceChildren();
-  $("addLimitBtn").classList.remove("hidden");
+  for (const k of Object.values(LIMITS)) {
+    $(k.editor).classList.add("hidden");
+    $(k.editor).replaceChildren();
+    $(k.add).classList.remove("hidden");
+  }
 }
 
 function numberInput(value, min, onchange) {
@@ -1307,7 +1342,7 @@ function numberInput(value, min, onchange) {
 }
 
 function removeButton(onclick, title) {
-  const x = el("button", "remove", "\u00d7");
+  const x = el("button", "remove", "×");
   x.type = "button";
   x.title = title;
   x.onclick = onclick;
@@ -1331,26 +1366,56 @@ function dayButtons(item) {
   return wrap;
 }
 
-let sitesText = "";  // what's typed in the editor's websites box
-
 function renderLimitEditor() {
-  const { rule } = limitDraft;
-  sitesText = rule.patterns.join(", ");
-  const box = $("limitEditor");
+  const { kind, rule } = limitDraft;
+  const k = LIMITS[kind];
+  const box = $(k.editor);
   box.replaceChildren();
   box.classList.remove("hidden");
-  $("addLimitBtn").classList.add("hidden");
+  $(k.add).classList.add("hidden");
 
-  const site = el("input", "input");
-  site.id = "limitSite";
-  site.spellcheck = false;
-  site.placeholder = "Websites, e.g. instagram.com, facebook.com";
-  site.value = rule.patterns.join(", ");
-  site.oninput = () => { sitesText = site.value; };
-  box.append(site, el("div", "help", "Several websites can share one limit: the time adds up across all of them."));
+  const names = el("input", "input");
+  names.id = kind === "site" ? "limitSite" : "limitApps";
+  names.spellcheck = false;
+  names.placeholder = kind === "site" ? "Websites, e.g. instagram.com, facebook.com" : "Apps, e.g. WhatsApp.exe, Slack.exe";
+  names.value = namesText;
+  names.oninput = () => { namesText = names.value; };
+  box.append(names, el("div", "help", kind === "site"
+    ? "Several websites can share one limit: the time adds up across all of them."
+    : "Program names, as Task Manager's Details tab shows them, separated by commas. Several apps can share one limit: the time adds up across all of them."));
   box.onkeydown = (e) => {
-    if (e.key === "Enter" && e.target.tagName !== "BUTTON") { e.preventDefault(); e.stopPropagation(); commitLimitDraft(); }
+    if (e.key === "Enter" && e.target.tagName !== "BUTTON" && e.target.tagName !== "SELECT") {
+      e.preventDefault(); e.stopPropagation(); commitLimitDraft();
+    }
   };
+
+  const hoursHead = el("h4");
+  const addWindow = el("button", "btn sm");
+  const hoursText = () => {
+    hoursHead.textContent = beeps(kind, rule) ? "Hours it beeps in" : "Blocked hours";
+    addWindow.textContent = beeps(kind, rule) ? "Add hours" : "Add blocked hours";
+  };
+  if (kind === "app") {
+    const row = el("div", "limit-sub");
+    const action = el("select", "input");
+    for (const [value, text] of [["close", "Close the app"], ["beep", "Beep, keep it open"]]) {
+      const o = el("option", "", text);
+      o.value = value;
+      action.append(o);
+    }
+    action.value = rule.action;
+    if (!rule.remind) rule.remind = 5;
+    const remind = el("span", "limit-sub");
+    remind.append("again every", numberInput(rule.remind, REMIND_MIN, (n) => { rule.remind = n; }), "min");
+    remind.classList.toggle("hidden", rule.action !== "beep");
+    action.onchange = () => {
+      rule.action = action.value;
+      remind.classList.toggle("hidden", rule.action !== "beep");
+      hoursText();
+    };
+    row.append("When a limit is reached:", action, remind);
+    box.append(row);
+  }
 
   box.append(el("h4", "", "Time allowed"));
   rule.budgets.forEach((b, i) => {
@@ -1377,7 +1442,7 @@ function renderLimitEditor() {
   addBudget.onclick = () => { rule.budgets.push({ minutes: 30, every: 1, unit: "day", days: [0, 1, 2, 3, 4, 5, 6] }); renderLimitEditor(); };
   box.append(addBudget);
 
-  box.append(el("h4", "", "Blocked hours"));
+  box.append(hoursHead);
   rule.windows.forEach((w, i) => {
     const row = el("div", "limit-sub");
     row.append(dayButtons(w));
@@ -1392,11 +1457,11 @@ function renderLimitEditor() {
     row.append(from, "to", to, removeButton(() => { rule.windows.splice(i, 1); renderLimitEditor(); }, "Remove these hours"));
     box.append(row);
   });
-  const addWindow = el("button", "btn sm", "Add blocked hours");
   addWindow.type = "button";
   addWindow.onclick = () => { rule.windows.push({ days: [0, 1, 2, 3, 4], from: "08:00", to: "17:00" }); renderLimitEditor(); };
+  hoursText();
   box.append(addWindow);
-  box.append(el("div", "help", "Blocked hours ending before they start run past midnight (22:00 to 06:00). 00:00 to 00:00 is the whole day."));
+  box.append(el("div", "help", "Hours ending before they start run past midnight (22:00 to 06:00). 00:00 to 00:00 is the whole day."));
 
   const actions = el("div", "limit-actions");
   const cancel = el("button", "btn ghost", "Cancel");
@@ -1407,35 +1472,71 @@ function renderLimitEditor() {
   done.onclick = commitLimitDraft;
   actions.append(cancel, done);
   box.append(actions);
-  site.focus();
+  names.focus();
 }
 
-// Move the editor's rule into the list. False (with a toast) if it isn't usable yet.
-function commitLimitDraft() {
-  const { index, rule } = limitDraft;
+// The apps typed in the editor as program names (clean_app_limit); null (with a toast) if one can't be.
+function draftApps(action) {
+  const key = (n) => n.toLowerCase().replace(/\.exe$/, "");
+  const apps = [];
+  for (const part of namesText.split(/[,;\n]+/).map((p) => p.trim().replace(/^"|"$/g, "")).filter(Boolean)) {
+    if (/[\\/]/.test(part)) { toast("App names are just the program, like WhatsApp.exe.", true); return null; }
+    const exe = /\.exe$/i.test(part) ? part : part + ".exe";
+    if (action === "close" && PROTECTED_EXES.has(key(exe))) {
+      toast(`buZyist won't close ${exe}: Windows or your browser needs it. Make that limit beep.`, true);
+      return null;
+    }
+    if (!apps.some((a) => key(a) === key(exe))) apps.push(exe);
+  }
+  if (!apps.length) { toast("Type an app like WhatsApp.exe.", true); return null; }
+  if (apps.length > 20) { toast("Keep a limit to 20 apps or fewer.", true); return null; }
+  return apps;
+}
+
+// The websites typed in the editor as patterns; null (with a toast) if one isn't a website.
+function draftSites() {
   const patterns = [];
-  for (const part of sitesText.split(/[\s,;]+/).filter(Boolean)) {
+  for (const part of namesText.split(/[\s,;]+/).filter(Boolean)) {
     const pattern = cleanSitePattern(part);
-    if (pattern === null) { toast(`"${part}" isn't a website like instagram.com or *.reddit.com.`, true); return false; }
+    if (pattern === null) { toast(`"${part}" isn't a website like instagram.com or *.reddit.com.`, true); return null; }
     if (pattern && !patterns.includes(pattern)) patterns.push(pattern);
   }
-  if (!patterns.length) { toast("Type a website like instagram.com or *.reddit.com.", true); return false; }
-  if (patterns.length > 20) { toast("Keep a limit to 20 websites or fewer.", true); return false; }
+  if (!patterns.length) { toast("Type a website like instagram.com or *.reddit.com.", true); return null; }
+  if (patterns.length > 20) { toast("Keep a limit to 20 websites or fewer.", true); return null; }
+  return patterns;
+}
+
+// Move the editor's rule into its list. False (with a toast) if it isn't usable yet.
+function commitLimitDraft() {
+  const { kind, index, rule } = limitDraft;
+  const k = LIMITS[kind];
+  const names = kind === "site" ? draftSites() : draftApps(rule.action);
+  if (!names) return false;
+  if (beeps(kind, rule) && !(rule.remind >= REMIND_MIN && rule.remind <= REMIND_MAX)) {
+    toast(`Beep again every ${REMIND_MIN} to ${REMIND_MAX} minutes.`, true);
+    return false;
+  }
   if (!rule.budgets.length && !rule.windows.length) { toast("Add a time limit or blocked hours.", true); return false; }
   if (rule.budgets.some((b) => !b.days.length)) { toast("Pick at least one day for each time limit.", true); return false; }
   if (rule.budgets.some((b) => b.minutes < 1 || b.every < 1)) { toast("Time limits need at least 1 minute and a period of at least 1.", true); return false; }
   if (rule.windows.some((w) => !w.days.length || !w.from || !w.to)) { toast("Blocked hours need days and times.", true); return false; }
-  if (limitRules.length >= 30 && index === undefined) { toast("Keep the website limits under 30.", true); return false; }
-  rule.patterns = patterns;
-  if (index === undefined) limitRules.push(rule);
-  else limitRules[index] = rule;
+  if (k.rules.length >= 30 && index === undefined) {
+    toast(`Keep the ${kind === "site" ? "website" : "app"} limits under 30.`, true);
+    return false;
+  }
+  if (kind === "site") rule.patterns = names;
+  else rule.apps = names;
+  if (index === undefined) k.rules.push(rule);
+  else k.rules[index] = rule;
   closeLimitEditor();
-  renderLimits();
+  renderLimits(kind);
   return true;
 }
 
-$("addLimitBtn").onclick = () => openLimitEditor();
-$("s_site_limits_on").onchange = renderLimits;
+$("addLimitBtn").onclick = () => openLimitEditor("site");
+$("addAppLimitBtn").onclick = () => openLimitEditor("app");
+$("s_site_limits_on").onchange = () => renderLimits("site");
+$("s_app_limits_on").onchange = () => renderLimits("app");
 
 for (const r of document.querySelectorAll('input[name="site_mode"]')) r.onchange = () => renderBlockedSites();
 $("addBlockedSiteBtn").onclick = addBlockedSite;
@@ -1518,7 +1619,7 @@ $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: limitRules, sync_owner: syncOwner });
+  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: LIMITS.site.rules, app_limits: LIMITS.app.rules, sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");

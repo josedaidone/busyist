@@ -34,6 +34,7 @@ INPUT_KEYBOARD = 1
 MB_SETFOREGROUND = 0x10000
 ASFW_ANY = -1  # (DWORD)-1: any process may take the foreground
 CF_UNICODETEXT = 13
+NIM_MODIFY, NIF_INFO, NIIF_NOSOUND = 0x1, 0x10, 0x10  # a tray balloon (toast) without Windows' chime
 GMEM_MOVEABLE = 0x0002
 TH32CS_SNAPPROCESS = 0x2
 PROCESS_TERMINATE = 0x1
@@ -76,6 +77,10 @@ class KEYBDINPUT(ctypes.Structure):
         ("time", w.DWORD),
         ("dwExtraInfo", ctypes.c_size_t),
     ]
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", w.UINT), ("dwTime", w.DWORD)]
 
 
 class MOUSEINPUT(ctypes.Structure):  # only here so the union has the right size
@@ -137,6 +142,7 @@ if sys.platform == "win32":
     # user32: input, the hotkey and its message loop
     _declare(user32, "keybd_event", [w.BYTE, w.BYTE, w.DWORD, ctypes.c_size_t], None)
     _declare(user32, "SendInput", [w.UINT, ctypes.POINTER(INPUT), ctypes.c_int], w.UINT)
+    _declare(user32, "GetLastInputInfo", [ctypes.POINTER(LASTINPUTINFO)])
     _declare(user32, "RegisterHotKey", [w.HWND, ctypes.c_int, w.UINT, w.UINT])
     _declare(user32, "UnregisterHotKey", [w.HWND, ctypes.c_int])
     _declare(user32, "GetMessageW", [ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT])
@@ -150,6 +156,7 @@ if sys.platform == "win32":
 
     # kernel32
     _declare(kernel32, "GetCurrentThreadId", [], w.DWORD)
+    _declare(kernel32, "GetTickCount", [], w.DWORD)
     _declare(kernel32, "OpenProcess", [w.DWORD, w.BOOL, w.DWORD], w.HANDLE)
     _declare(kernel32, "CloseHandle", [w.HANDLE])
     _declare(kernel32, "CreateToolhelp32Snapshot", [w.DWORD, w.DWORD], w.HANDLE)

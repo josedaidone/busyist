@@ -1,4 +1,4 @@
-"""Time spent on each limited website (usage.json), and the 'allow 2 more minutes' passes."""
+"""Time spent on each limited website (usage.json) or app (app_usage.json), and the 'allow 2 more minutes' passes."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ log = logging.getLogger(APP)
 
 class SiteUsage:
     """
-    Seconds spent on each limited website, kept in usage.json. The last two
+    Seconds spent on each limited website, kept in usage.json (and, in a
+    second instance, on each limited app, in app_usage.json). The last two
     days are per minute (budgets can restart at any minute); older time is
     rolled up per day, enough for day and week budgets. Also holds the
     short-lived passes from "allow 2 more minutes".

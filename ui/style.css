@@ -592,9 +592,10 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 .about code { font-size: 12px; word-break: break-all; }
 .about .about-logo { height: 40px; margin: 4px 0 14px; }
 
-/* website limits */
-#limitsFields { margin-top: 12px; }
-#limitsFields.muted { opacity: .55; }
+/* website and app limits */
+#limitsFields, #appLimitsFields { margin-top: 12px; }
+#limitsFields.muted, #appLimitsFields.muted { opacity: .55; }
+.limits-apps { margin-top: 22px; }
 #syncBox { margin-top: 18px; }
 #syncBox .field { margin-bottom: 8px; }
 #syncFields.muted { opacity: .55; }
@@ -623,6 +624,6 @@ code { font-family: Consolas, monospace; font-size: .92em; }
 .limit-sub .day { height: 32px; min-width: 40px; padding: 0 8px; border-radius: 999px; border: 2px solid var(--line); background: var(--bg); color: var(--muted); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
 .limit-sub .day[aria-pressed=true] { background: var(--blocked); border-color: var(--blocked); color: var(--on-blocked); }
 .limit-actions { display: flex; gap: 8px; justify-content: flex-end; }
-#limitEditor > .input { width: 100%; }
+#limitEditor > .input, #appLimitEditor > .input { width: 100%; }
 .limit-group { display: grid; gap: 6px; padding-bottom: 4px; }
 .limit-days { display: flex; gap: 4px; flex-wrap: wrap; }

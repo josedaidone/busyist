@@ -9,7 +9,7 @@ import threading
 import time
 
 from buzyist import paths
-from buzyist.constants import APP, APP_NAME, AppError, app_version
+from buzyist.constants import APP, AppError, app_version
 from buzyist.storage import read_json, write_json
 from buzyist.updater import UPDATABLE, UPDATE_EVERY, download_setup, latest_release, stream_sha256
 from buzyist.win32.files import open_locked
@@ -77,7 +77,7 @@ class UpdatesMixin:
         if found:
             log.info("buZyist %s is available", found["version"])
         if new and not (self.cfg["auto_update"] and self.can_auto_update):
-            self.notify("Update available", f"buZyist {found['version']} is out. Open buZyist → Settings to update.")
+            self.notify(f"buZyist {found['version']} is here", "Open Settings → About to get it.")
         if self.tray:
             self.tray.update_menu()
         return {"update": self.update_view()}
@@ -139,10 +139,13 @@ class UpdatesMixin:
         paths.UPDATE_MARK.unlink(missing_ok=True)
         if mark.get("to") == app_version():
             log.info("updated from %s to %s", mark.get("from"), app_version())
-            self.notify(APP_NAME, f"Updated to version {app_version()}.")
+            self.notify("All up to date", f"buZyist {app_version()} is installed. Enjoy!")
         else:
             log.warning("the update to %s didn't install; see %s", mark.get("to"), paths.SETUP_LOG)
             with self.lock:
                 self.update_failed = str(mark.get("to"))
                 self.update_error = f"Updating to {mark.get('to')} didn't work (details in {paths.SETUP_LOG.name})."
-            self.notify(APP_NAME, f"Couldn't update to version {mark.get('to')}.")
+            self.notify(
+                "The update didn't go through",
+                f"buZyist {mark.get('to')} didn't install. Try again from Settings → About.",
+            )

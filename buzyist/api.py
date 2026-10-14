@@ -106,9 +106,15 @@ class Api:
         return self._do(self._app.sync_info)
 
     def site_usage(self):
-        """Every site-limit rule with its usage, for the Websites tab."""
+        """Every site-limit rule with its usage, for the Limits tab."""
         return self._do(
             lambda: {"on": bool(self._app.cfg.get("site_limits_on")), "rules": self._app.site_limits_status()}
+        )
+
+    def app_usage(self):
+        """Every app-limit rule with its usage, for the Limits tab."""
+        return self._do(
+            lambda: {"on": bool(self._app.cfg.get("app_limits_on")), "rules": self._app.app_limiter.status()}
         )
 
     def check_update(self):

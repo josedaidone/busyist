@@ -307,7 +307,7 @@ class AppBlocker:
             if not self._first_sweep and key not in self._preexisting:
                 # The app wasn't open when the pomodoro started, so the user
                 # just tried to open it: that's when the "blocked" popup fits.
-                self._toast(entry, "blocked", focus)
+                self._toast(entry, focus)
         if to_close:
             # Ask first, like the X button, so the app can save a draft or its
             # state; end it if it's still there after CLOSE_GRACE. An app's
@@ -345,10 +345,10 @@ class AppBlocker:
             return False
         return True
 
-    def _toast(self, entry: dict, what: str, focus: dict) -> None:
+    def _toast(self, entry: dict, focus: dict) -> None:
         now = time.monotonic()
         if now - self._toasted.get(entry["id"], -self.TOAST_EVERY) < self.TOAST_EVERY:
             return
         self._toasted[entry["id"]] = now
         until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
-        self.app.notify("Focus", f"{entry['name']} is {what} until {until}")
+        self.app.notify(f"{entry['name']} can wait", f"You're focusing until {until}. It'll be back after.")

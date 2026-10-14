@@ -48,6 +48,37 @@ MAX_SITE_LIMITS = 30
 MAX_LIMIT_SITES = 20  # websites in one limit
 LIMIT_UNITS = {"minute": 1, "hour": 60, "day": 1440, "week": 10080}  # in minutes
 SITE_ANCHOR = date(2024, 1, 1)  # a Monday: day/week periods count from here
+# App limits: the same budgets and blocked hours for Windows programs, measured
+# by buZyist itself (the program in front, while the PC isn't idle).
+MAX_APP_LIMITS = 30
+MAX_LIMIT_APPS = 20  # programs in one limit
+APP_IDLE_S = 60  # no input for this long: the time isn't counted (the extension's IDLE_SECONDS)
+# A "beep" limit beeps again this many minutes later while the app stays in
+# front: the default of a rule's "remind", and its bounds.
+APP_LIMIT_REMIND = 5
+APP_LIMIT_REMIND_MIN, APP_LIMIT_REMIND_MAX = 1, 120
+# What a new install starts with (app limits stay off until switched on).
+# Fixed ids, so the time counted keeps its rule from one start to the next.
+DEFAULT_APP_LIMITS = [
+    {
+        "id": "da0b0001",
+        "apps": ["WhatsApp.Root.exe", "WhatsApp.exe"],  # WhatsApp Desktop today, and older builds
+        "action": "beep",
+        "remind": APP_LIMIT_REMIND,
+        "enabled": True,
+        "budgets": [{"minutes": 30, "every": 1, "unit": "day", "days": [0, 1, 2, 3, 4, 5, 6]}],
+        "windows": [],
+    },
+    {
+        "id": "da0b0002",
+        "apps": ["Slack.exe"],
+        "action": "beep",
+        "remind": APP_LIMIT_REMIND,
+        "enabled": True,
+        "budgets": [{"minutes": 60, "every": 1, "unit": "day", "days": [0, 1, 2, 3, 4, 5, 6]}],
+        "windows": [],
+    },
+]
 PASS_SECONDS = 120  # what "allow 2 more minutes" on the block page grants
 # Sharing limits across PCs (see App.sync_payload): days of per-day time each
 # PC shares, and how long an unheard-of PC's time keeps counting.

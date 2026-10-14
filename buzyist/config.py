@@ -22,11 +22,13 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
 from pydantic_core import PydanticCustomError
 
+from buzyist.app_limits import _sanitize_app_limits, clean_app_limits
 from buzyist.blocker import clean_blocked_apps, normalize_blocked_apps
 from buzyist.constants import (
     APP,
     CYCLES_MAX,
     CYCLES_MIN,
+    DEFAULT_APP_LIMITS,
     DEFAULT_BLOCKED_SITES,
     DEFAULT_FILTER,
     MAX_BLOCKED_SITES,
@@ -85,6 +87,11 @@ DEFAULTS = {
     # per period and/or hours when the site is blocked. See clean_site_limit.
     "site_limits_on": False,
     "site_limits": [],
+    # The same limits for Windows apps, measured by buZyist (the app in
+    # front). Each rule either closes its apps or only beeps once reached;
+    # see clean_app_limit. They stay on this PC (not shared through Chrome).
+    "app_limits_on": False,
+    "app_limits": copy.deepcopy(DEFAULT_APP_LIMITS),  # WhatsApp and Slack, beeping
     # Share the limits and the time spent on them with your other PCs, through
     # Chrome sync. One browser profile per PC does it: sync_owner is its
     # extension instance id, taken by the first one to connect when empty.
@@ -333,6 +340,8 @@ class Config(BaseModel):
     allowed_sites: list[str] = _default("allowed_sites")
     site_limits_on: bool = _default("site_limits_on")
     site_limits: list[dict] = _default("site_limits")  # kept as dicts: clean_site_limit is the schema
+    app_limits_on: bool = _default("app_limits_on")
+    app_limits: list[dict] = _default("app_limits")  # kept as dicts: clean_app_limit is the schema
     sync_limits: bool = _default("sync_limits")
     sync_owner: str = _default("sync_owner")
     sync_session: bool = _default("sync_session")
@@ -386,6 +395,13 @@ class Config(BaseModel):
             value = _sanitize_site_limits(value)
         return _app_error(clean_site_limits, value)
 
+    @field_validator("app_limits", mode="before")
+    @classmethod
+    def _app_limits(cls, value, info: ValidationInfo):
+        if _loading(info, value):
+            value = _sanitize_app_limits(value)
+        return _app_error(clean_app_limits, value)
+
     @field_validator("sync_owner")
     @classmethod
     def _owner(cls, value: str) -> str:
@@ -430,8 +446,8 @@ FIELD_ERRORS = {
     "poll_seconds": f"Check the bar every {POLL_MIN} to {POLL_MAX} seconds.",
     "focus_label": f"Keep the label to {MAX_LABEL} characters or fewer.",
 }
-LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits")
-ERROR_ORDER = ["blocked_apps", "blocked_sites", "allowed_sites", "site_limits", *FIELD_ERRORS]
+LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits")
+ERROR_ORDER = ["blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits", *FIELD_ERRORS]
 
 
 def validation_message(err: ValidationError) -> str:
