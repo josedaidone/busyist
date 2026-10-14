@@ -48,6 +48,7 @@ const MAX_GAP_S = 65; // a longer gap than this (sleep, worker killed) isn't cou
 let lastGood = null; // the last answer from buZyist, kept across restarts
 let pending = {}; // {ruleId: {epochMinute: seconds}} measured, not yet sent
 let passes = {}; // {ruleId: untilMs} granted from the block page while buZyist was out
+let blocks = []; // [{id, at, kind, host}] sites the block page showed, not yet sent (the Stats tab)
 let counting = { ids: [], since: 0 }; // the rules being timed right now
 let timer = null;
 let cache = { at: 0, data: null };
@@ -56,10 +57,11 @@ let cache = { at: 0, data: null };
 // shares limits through Chrome sync, and to name it in Settings.
 const me = { id: "", account: "" };
 
-const ready = chrome.storage.local.get(["lastGood", "pending", "passes", "instanceId"]).then(async (s) => {
+const ready = chrome.storage.local.get(["lastGood", "pending", "passes", "blocks", "instanceId"]).then(async (s) => {
   lastGood = s.lastGood || null;
   pending = s.pending || {};
   passes = s.passes || {};
+  blocks = Array.isArray(s.blocks) ? s.blocks : [];
   me.id = s.instanceId || "";
   if (!/^[a-z0-9]{6,32}$/.test(me.id)) {
     me.id = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -88,10 +90,10 @@ const focusUrl = () => FOCUS_URL + "&i=" + me.id + "&a=" + encodeURIComponent(me
 // Written only when something changed: most ticks change nothing.
 let savedSig = null;
 function saveState() {
-  const sig = canon({ lastGood, pending, passes });
+  const sig = canon({ lastGood, pending, passes, blocks });
   if (sig === savedSig) return Promise.resolve();
   savedSig = sig;
-  return chrome.storage.local.set({ lastGood, pending, passes }).catch((e) => {
+  return chrome.storage.local.set({ lastGood, pending, passes, blocks }).catch((e) => {
     savedSig = null; // try again next time
     throw e;
   });
@@ -187,6 +189,30 @@ function limitBlocks(url, focus, now) {
   return null;
 }
 
+// One block shown (blocked.js says so once per page). Kept until buZyist has
+// it; the id lets buZyist count a report sent twice only once.
+const MAX_BLOCKS = 500;
+function addBlock(kind, host, now) {
+  if ((kind !== "focus" && kind !== "limit") || typeof host !== "string" || !host) return;
+  blocks.push({ id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), at: now, kind, host: host.toLowerCase() });
+  blocks = blocks.filter((b) => b.at > now - 3 * 86400000).slice(-MAX_BLOCKS); // buZyist ignores older ones
+}
+
+// "YYYY-MM-DD" in local time, as buZyist names days.
+function localDay(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+// Today's blocks: buZyist's last count plus the ones not sent yet.
+function blocksToday(now) {
+  const day = localDay(now);
+  const known = lastGood && lastGood.blocks_today && lastGood.blocks_today.day === day ? lastGood.blocks_today : {};
+  const out = { focus: known.focus || 0, limit: known.limit || 0 };
+  for (const b of blocks) if (localDay(b.at) === day) out[b.kind] += 1;
+  return out;
+}
+
 function addPending(ids, seconds, now) {
   const minute = Math.floor(now / 60000);
   // buZyist ignores anything older than 3 days, so don't keep it either.
@@ -247,13 +273,15 @@ async function post(url, body) {
 // (not running, or an old one with no /usage) fall back to what we last knew:
 // focus blocking lets go, limits keep being enforced.
 async function fetchState(force) {
-  const hasPending = Object.keys(pending).length > 0;
+  const hasPending = Object.keys(pending).length > 0 || blocks.length > 0;
   if (!force && !hasPending && cache.data && Date.now() - cache.at < TICK_MS) return cache.data;
   let data = null;
   const sent = JSON.parse(JSON.stringify(pending));
+  const sentBlocks = new Set(blocks.map((b) => b.id));
   try {
-    data = await post(USAGE_URL, Object.assign({ usage: sent }, who()));
+    data = await post(USAGE_URL, Object.assign({ usage: sent, blocks: blocks.slice() }, who()));
     if (data) {
+      blocks = blocks.filter((b) => !sentBlocks.has(b.id));
       // What we sent is now in buZyist's totals; anything measured while the
       // request was out stays pending.
       for (const [id, per] of Object.entries(sent)) {
@@ -692,8 +720,8 @@ chrome.idle.onStateChanged.addListener(() => sync(false));
 
 // ------------------------------------------------------- the block page
 
-// blocked.js asks where things stand (so it works while buZyist is closed too)
-// and can grant a short pass ("allow 2 more minutes").
+// blocked.js asks where things stand (so it works while buZyist is closed too),
+// can grant a short pass ("allow 2 more minutes") and says when it showed a block.
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   (async () => {
     await ready;
@@ -705,6 +733,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
       await sync(true);
     }
     if (msg.type === "popup") { reply(await exclusive(() => popupData())); return; }
+    if (msg.type === "blocked") {
+      addBlock(msg.kind, msg.host, Date.now());
+      saveState();
+      reply(true);
+      sync(false); // sends it
+      return;
+    }
     reply(await exclusive(() => blockPageData(msg)));
   })().catch((e) => { console.warn("buZyist", e); reply(null); });
   return true; // reply asynchronously
@@ -747,6 +782,7 @@ async function popupData() {
       mode: focus.mode || "block", sites: (focus.patterns || []).length,
     },
     limits_on: !!focus.limits_on,
+    blocks_today: blocksToday(now),
     pass_minutes: focus.pass_minutes || 2,
     limits: limitRules(focus).map((rule) => {
       const state = limitState(rule, now);

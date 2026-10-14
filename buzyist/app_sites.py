@@ -45,6 +45,7 @@ class SitesMixin:
             "limits_on": limits_on,
             "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
             "pass_minutes": PASS_SECONDS // 60,
+            "blocks_today": self.blocks.today(),  # the popup's counts
         }
         if self.is_sync_owner(instance):
             out["sync"] = self.sync_payload()

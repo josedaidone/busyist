@@ -119,6 +119,7 @@ EXPECTED_DATA_PATHS = (
     "TIMER_PATH",
     "USAGE_PATH",
     "APP_USAGE_PATH",
+    "BLOCKS_PATH",
     "SYNC_PATH",
     "LOG_PATH",
     "WEBVIEW_DIR",

@@ -890,6 +890,62 @@ function showTab(name, focus) {
   }
   for (const p of document.querySelectorAll("[data-panel]")) p.classList.toggle("hidden", p.dataset.panel !== name);
   $("settingsForm").scrollTop = 0;
+  if (name === "stats" && api) loadStats();
+}
+
+// ------------------------------------------------------------- stats tab
+
+// How often websites were blocked (Api.block_stats, from blocks.json): totals,
+// one stacked bar per day for 30 days (focus below, limits above), and the
+// most blocked sites.
+async function loadStats() {
+  const r = await api.block_stats();
+  if (r.ok) renderStats(r);
+}
+
+const blockWord = (n) => `${n} block${n === 1 ? "" : "s"}`;
+const statDay = (iso) => new Date(iso + "T12:00").toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+
+function renderStats(s) {
+  const tiles = [["Today", s.totals.today], ["Last 7 days", s.totals.week], [`Last ${s.span} days`, s.totals.span]];
+  $("statTiles").replaceChildren(...tiles.map(([label, t]) => {
+    const tile = el("div", "stat-tile");
+    tile.append(el("div", "stat-label", label), el("div", "stat-num", String(t.focus + t.limit)),
+                el("div", "help", `${t.focus} focus · ${t.limit} limit`));
+    return tile;
+  }));
+
+  const chart = $("statChart");
+  const top = Math.max(1, ...s.days.map((d) => d.focus + d.limit));
+  const tip = el("div", "stat-tip hidden");
+  chart.replaceChildren(el("div", "stat-max", String(top)), tip);
+  chart.setAttribute("aria-label", `Blocks per day over the last ${s.span} days: ${s.totals.span.focus} during focus, ${s.totals.span.limit} over a limit.`);
+  s.days.forEach((d, i) => {
+    const col = el("div", "stat-col");
+    for (const kind of ["focus", "limit"]) {  // column-reverse: the first is at the bottom
+      if (!d[kind]) continue;
+      const seg = el("i", "stat-seg " + (kind === "focus" ? "stat-f" : "stat-l"));
+      seg.style.height = (100 * d[kind]) / top + "%";
+      col.append(seg);
+    }
+    col.onmouseenter = () => {
+      tip.replaceChildren(el("b", "", i === s.days.length - 1 ? "Today" : statDay(d.day)),
+        el("span", "", d.focus + d.limit ? `${d.focus} during focus · ${d.limit} over a limit` : "Nothing blocked"));
+      tip.classList.remove("hidden");
+      const x = col.offsetLeft + col.offsetWidth / 2;
+      tip.style.left = Math.min(Math.max(x, 90), chart.clientWidth - 90) + "px";
+    };
+    col.onmouseleave = () => tip.classList.add("hidden");
+    chart.append(col);
+  });
+  $("statFirst").textContent = s.days.length ? statDay(s.days[0].day) : "";
+
+  $("statSites").replaceChildren(...(s.sites.length ? s.sites.map((site) => {
+    const row = el("div", "stat-site");
+    row.append(el("span", "stat-host", site.host), el("span", "help", `${site.focus} focus · ${site.limit} limit`),
+               el("b", "", blockWord(site.focus + site.limit)));
+    return row;
+  }) : [el("div", "help", "Nothing blocked yet. Turn on blocking in the Websites tab, or add a website limit.")]));
 }
 
 for (const b of document.querySelectorAll("#settingsTabs .stab")) b.onclick = () => showTab(b.dataset.tab);

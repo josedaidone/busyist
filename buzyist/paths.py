@@ -37,6 +37,7 @@ HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed task
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
 USAGE_PATH = DATA_DIR / "usage.json"  # time spent per limited website (site limits)
 APP_USAGE_PATH = DATA_DIR / "app_usage.json"  # time spent per limited Windows app (app limits)
+BLOCKS_PATH = DATA_DIR / "blocks.json"  # how often websites were blocked, for the Stats tab
 SYNC_PATH = DATA_DIR / "sync.json"  # sharing the limits and their time with other PCs
 LOG_PATH = DATA_DIR / "busyist.log"
 WEBVIEW_DIR = DATA_DIR / "webview"

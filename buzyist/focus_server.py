@@ -42,7 +42,7 @@ class FocusServer:
 
     It serves GET /focus, returning App.site_focus(), and two POST routes that
     answer with the same thing: /usage (time the extension measured on
-    limited sites), /grant (the block page's "2 more minutes") and /sync
+    limited sites, and the websites it blocked), /grant (the block page's "2 more minutes") and /sync
     (what other PCs shared through Chrome sync, see App.apply_sync). OPTIONS is
     answered for the CORS preflight, including Private Network Access
     (`Access-Control-Allow-Private-Network`), which Chrome requires before it
@@ -151,6 +151,7 @@ class FocusServer:
                 try:
                     if route == "/usage":
                         app.record_usage(data.get("usage"))
+                        app.blocks.add(data.get("blocks"))
                     elif route == "/sync":
                         if trusted:
                             app.apply_sync(data, instance)
