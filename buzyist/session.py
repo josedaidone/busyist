@@ -13,6 +13,7 @@ from datetime import date, datetime
 from busylib.features import timer_state
 
 from buzyist import paths
+from buzyist.bar import BarUnreachable
 from buzyist.constants import APP, AppError
 from buzyist.storage import write_json
 
@@ -150,7 +151,7 @@ class SessionMixin:
         rest = int(self.cfg["rest_minutes"]) * 60000
         cycles = int(self.cfg["cycles"])
         with self.bar.lock:  # nothing reads the bar between the start and our bookkeeping
-            stamp = self.bar.start(work, rest, cycles, bool(self.cfg["autostart"]))
+            stamp = self._on_bar(lambda: self.bar.start(work, rest, cycles, bool(self.cfg["autostart"])))
             with self.lock:
                 old, self.ended = self.session, None
                 self.session = {
@@ -162,7 +163,7 @@ class SessionMixin:
                     "interval": 0,
                     "label": self.cfg["focus_label"].strip(),
                     "label_added": False,
-                    "local": self.bar.is_local,
+                    "local": self.bar.standalone,
                     "rounds": cycles,  # the bar may run more (BAR_CYCLES_MIN)
                 }
                 write_json(paths.SESSION_PATH, self.session)
@@ -218,22 +219,47 @@ class SessionMixin:
         except AppError as err:
             self.notify("Todoist didn't take the label", f"Couldn't add @{label}: {err}")
 
+    def _on_bar(self, call):
+        """call() on the bar; if the bar is out of reach, once more on this PC (go_standalone)."""
+        try:
+            return call()
+        except BarUnreachable:
+            if not self.go_standalone():
+                raise
+            return call()
+
     def control(self, action: str) -> None:
-        if action == "stop":
-            self.bar.stop()
-        elif action == "pause":
-            self.bar.set_paused(True)
-        elif action == "resume":
-            self.bar.set_paused(False)
-            self.show_mini()
-        elif action == "skip":
-            self.bar.next_phase()
+        try:
+            if action == "stop":
+                self._on_bar(self.bar.stop)
+            elif action == "pause":
+                self._on_bar(lambda: self.bar.set_paused(True))
+            elif action == "resume":
+                self._on_bar(lambda: self.bar.set_paused(False))
+                self.show_mini()
+            elif action == "skip":
+                self._on_bar(self.bar.next_phase)
+        except BarUnreachable:
+            # Nothing to run the timer from here (the app started with the
+            # bar already gone): a stop still ends the session.
+            with self.lock:
+                session = self.session if action == "stop" else None
+                if session:
+                    self.session = None
+                    paths.SESSION_PATH.unlink(missing_ok=True)
+            if not session:
+                raise
+            log.warning("stopped the session without the bar, which is out of reach")
+            threading.Thread(target=self.finish, args=(session, "stopped"), daemon=True).start()
         self.wake.set()
-        # Read the result straight back so the window updates at once.
+        # Read the result straight back so the window updates at once, and
+        # follow it now: a stop ends the session (and opens its summary)
+        # without waiting for the engine's next look at the bar.
         try:
             snap = self.bar.snapshot()
             with self.lock:
                 self.snap, self.bar_ok, self.bar_fails = snap, True, 0
+            self.follow_session()
         except AppError:
             pass
         # A pause/resume/stop from the app lifts or applies the block now.

@@ -355,6 +355,17 @@ def test_stop_counts_the_finished_work_phases(engine, deferred_threads):
     assert app.todoist.comments[0][1].startswith("🍅 × 1 (25 min focus)")  # noqa: RUF001
 
 
+def test_stop_ends_the_session_at_once_on_the_bar(engine, deferred_threads, device):
+    """The summary doesn't wait for the engine's next look at the bar."""
+    app = engine({**BAR_CONFIG, "use_todoist": False})
+    start(app, deferred_threads)
+    app.control("stop")
+    deferred_threads.run_pending()  # no engine step
+    assert app.session is None
+    assert app.ended["reason"] == "stopped"
+    assert app.timer_view() is None
+
+
 def test_stop_before_the_first_tomato_logs_no_comment(engine, deferred_threads):
     app = engine()
     start(app, deferred_threads, "t1")
@@ -512,7 +523,7 @@ def test_focus_is_active_only_in_running_work(engine, deferred_threads, clock):
     assert flips == [True, False, True, False, True, False]
 
 
-def test_focus_fails_open_after_three_failed_bar_polls(engine, deferred_threads, device):
+def test_focus_survives_a_blip_and_carries_on_on_this_pc_after_three(engine, deferred_threads, device, notes):
     app = engine({**BAR_CONFIG, "use_todoist": False})
     start(app, deferred_threads)
     assert app.focus()["active"] is True
@@ -520,14 +531,188 @@ def test_focus_fails_open_after_three_failed_bar_polls(engine, deferred_threads,
     app.step(seconds=5)
     app.step(seconds=5)
     assert app.bar_fails == 2
+    assert not app.bar.offline
     assert app.focus()["active"] is True  # a blip keeps the block
     app.step(seconds=5)
-    assert app.bar_fails == 3
-    assert app.focus()["active"] is False
-    assert app.session is not None  # the session itself waits for the bar
-    device.down = set()
-    app.step(seconds=5)
+    assert app.bar.offline  # the third miss hands the timer to this PC
+    assert app.state()["bar"] | {"error": ""} == {
+        "ok": True,
+        "via": "This PC",
+        "error": "",
+        "local": False,
+        "offline": True,
+    }
     assert app.focus()["active"] is True
+    assert notes[-1] == ("BUSY Bar out of reach", "Your session carries on on this PC.")
+
+
+# ------------------------------------------------------------- standalone ---
+
+
+def lose_the_bar(app, device):
+    """Take every route down and poll until the app runs the timer itself."""
+    device.down = {WIFI, constants.USB_ADDR}
+    for _ in range(constants.BAR_OFFLINE_AFTER):
+        app.step(seconds=5)
+    assert app.bar.offline
+
+
+def test_a_lost_bar_session_can_be_paused_and_stopped(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "cycles": 2, "use_todoist": False})
+    start(app, deferred_threads)
+    app.step(minutes=10)
+    lose_the_bar(app, device)
+    left = app.timer_view()["left_ms"]
+    assert left == 15 * MIN - 15_000  # the bar's timer, carried on from where it was
+    app.control("pause")
+    assert app.timer_view()["paused"]
+    app.step(minutes=5)
+    assert app.timer_view()["left_ms"] == left
+    assert app.focus()["active"] is False
+    app.control("resume")
+    app.step(seconds=1)
+    assert app.focus()["active"] is True
+    app.control("stop")
+    app.step(seconds=1)
+    assert app.session is None
+    assert app.history[-1]["reason"] == "stopped"
+    assert app.focus()["active"] is False
+
+
+def test_a_lost_bar_session_finishes_on_this_pc(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "cycles": 2, "use_todoist": False})
+    start(app, deferred_threads)
+    lose_the_bar(app, device)
+    app.step(minutes=30)
+    assert app.timer_view()["round"] == 2
+    app.step(minutes=30)
+    assert app.session is None
+    assert (app.history[-1]["pomodoros"], app.history[-1]["reason"]) == (2, "finished")
+
+
+def test_a_one_tomato_session_still_ends_at_the_first_break_without_the_bar(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "cycles": 1, "use_todoist": False})
+    start(app, deferred_threads)
+    lose_the_bar(app, device)
+    app.step(minutes=25)
+    assert app.session is None
+    assert (app.history[-1]["pomodoros"], app.history[-1]["reason"]) == (1, "finished")
+
+
+def test_a_control_goes_to_this_pc_at_once_when_the_bar_is_gone(engine, deferred_threads, device):
+    """No waiting for three polls: a pause pressed while the bar is out of reach works."""
+    app = engine({**BAR_CONFIG, "use_todoist": False})
+    start(app, deferred_threads)
+    device.down = {WIFI, constants.USB_ADDR}
+    app.control("pause")
+    assert app.bar.offline
+    assert app.timer_view()["paused"]
+
+
+def test_a_session_can_start_on_this_pc_while_the_bar_is_gone(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "cycles": 1, "use_todoist": False})
+    app.step()
+    device.down = {WIFI, constants.USB_ADDR}
+    start(app, deferred_threads)
+    assert app.bar.offline
+    assert app.session["local"]
+    app.step(minutes=26)
+    assert app.history[-1]["reason"] == "finished"
+
+
+def test_the_bar_gets_the_timer_back_when_it_answers(engine, deferred_threads, device, notes):
+    app = engine({**BAR_CONFIG, "cycles": 2, "use_todoist": False})
+    start(app, deferred_threads)
+    lose_the_bar(app, device)
+    app.control("pause")
+    paused_left = app.timer_view()["left_ms"]
+    app.step(seconds=10)
+    device.snap = types.BusySnapshot(  # back from an empty battery, it remembers nothing
+        snapshot=types.BusySnapshotNotStarted(type="NOT_STARTED", busy_bar_settings=bar_mod.LOCAL_SETTINGS),
+        snapshot_timestamp_ms=app.snap.snapshot_timestamp_ms + 5,
+    )
+    device.down = set()
+    app.step(seconds=constants.BAR_PROBE_S)
+    assert not app.bar.offline
+    assert app.bar.via == "Wi-Fi"
+    assert notes[-1] == ("BUSY Bar is back", "The timer is on the bar again.")
+    inner = device.snap.snapshot
+    assert isinstance(inner, types.BusySnapshotInterval)
+    assert inner.is_paused
+    assert inner.current_interval_time_left_ms == paused_left
+    assert inner.card_id == "card-busy"
+    assert app.session is not None
+    app.control("resume")
+    app.step(minutes=60)
+    assert app.session is None
+    assert (app.history[-1]["pomodoros"], app.history[-1]["reason"]) == (2, "finished")
+
+
+def test_a_running_timer_goes_back_with_the_time_left_now(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "cycles": 1, "use_todoist": False})
+    app.step()
+    device.down = {WIFI, constants.USB_ADDR}
+    start(app, deferred_threads)  # started on this PC: 1 work phase, fewer than the bar takes
+    app.step(minutes=10)
+    device.down = set()
+    app.step(seconds=constants.BAR_PROBE_S)
+    assert not app.bar.offline
+    inner = device.snap.snapshot
+    assert inner.interval_settings.interval_work_cycles_count == constants.BAR_CYCLES_MIN
+    assert app.timer_view()["left_ms"] == inner.current_interval_time_left_ms
+    assert 14 * MIN < inner.current_interval_time_left_ms < 15 * MIN
+    assert app.timer_view()["rounds"] == 1
+    app.step(minutes=15)
+    assert app.history[-1]["reason"] == "finished"
+
+
+def test_with_nothing_running_the_bar_keeps_what_it_did_meanwhile(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "use_todoist": False})
+    lose_the_bar(app, device)
+    device.down = set()
+    bar_mod.Bar(app.cfg).start(25 * MIN, 5 * MIN, 2, True)  # pressed on the bar meanwhile
+    app.step(seconds=constants.BAR_PROBE_S)
+    assert not app.bar.offline
+    assert isinstance(device.snap.snapshot, types.BusySnapshotInterval)
+    assert app.focus()["active"] is True
+
+
+def test_the_bar_is_not_looked_for_on_every_poll(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "use_todoist": False})
+    lose_the_bar(app, device)
+    device.down, device.calls = set(), []
+    app.step(seconds=1)
+    assert device.calls == []
+    app.step(seconds=constants.BAR_PROBE_S)
+    assert device.calls
+
+
+def test_a_restart_without_the_bar_carries_on_from_the_saved_timer(engine, deferred_threads, device):
+    cfg = {**BAR_CONFIG, "cycles": 2, "use_todoist": False}
+    first = engine(cfg)
+    start(first, deferred_threads)
+    lose_the_bar(first, device)  # timer.json now holds the bar's timer
+    again = restart(engine, first, cfg)
+    for _ in range(constants.BAR_OFFLINE_AFTER):
+        again.step(seconds=5)
+    assert again.bar.offline
+    assert again.session is not None
+    again.step(minutes=60)
+    assert (again.history[-1]["pomodoros"], again.history[-1]["reason"]) == (2, "finished")
+
+
+def test_stop_ends_the_session_with_no_timer_to_carry_on(engine, deferred_threads, device):
+    """Started before a restart, the bar gone since: no snapshot to run, a stop still ends it."""
+    first = engine({**BAR_CONFIG, "use_todoist": False})
+    start(first, deferred_threads)
+    device.down = {WIFI, constants.USB_ADDR}
+    again = engine({**BAR_CONFIG, "use_todoist": False}, session=storage.read_json(paths.SESSION_PATH, None))
+    with pytest.raises(constants.AppError, match="Can't reach"):
+        again.control("pause")
+    again.control("stop")
+    deferred_threads.run_pending()
+    assert again.session is None
+    assert again.history[-1]["reason"] == "stopped"
 
 
 def test_focus_follows_a_timer_started_on_the_bar_itself(engine, deferred_threads, device):

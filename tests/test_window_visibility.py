@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from buzyist import api
@@ -74,7 +76,17 @@ def test_a_show_right_after_a_hide_wins(app, windows, deferred_threads):
     app.show_main()  # before the hide's message went out
     deferred_threads.run_pending()
     assert visibility(main) == ["window.App && App.setVisible && App.setVisible(true)"]
-    assert "App.onShown(false)" in main.scripts  # onShown means visible too
+    assert any(js.startswith("App.onShown(false, {") for js in main.scripts)  # onShown means visible too
+
+
+def test_showing_the_main_window_brings_the_state_along(app, windows):
+    """The page shows what is true now at once, not its last poll from the tray."""
+    main, _ = windows
+    app.show_main()
+    (shown,) = [js for js in main.scripts if js.startswith("App.onShown(")]
+    pushed = json.loads(shown[len("App.onShown(false, ") : -1])
+    assert isinstance(pushed["now"], int)
+    assert {"timer", "session", "ended", "bar"} <= pushed.keys()
 
 
 def test_the_mini_timer(app, windows, deferred_threads):
@@ -99,7 +111,7 @@ def test_the_hotkey_cycle(app, windows, deferred_threads):
     app.cycle_windows()  # tray -> window
     deferred_threads.run_pending()
     assert main.shown
-    assert main.scripts[-1] in ("App.onShown(true)", "window.poll && poll()")
+    assert main.scripts[-1] == "window.poll && poll()" or main.scripts[-1].startswith("App.onShown(true, {")
 
 
 def test_starting_a_session_hides_the_main_window(app, windows, deferred_threads):

@@ -139,6 +139,9 @@ menu, and starts it.
 
 - **"Bar offline"**: check the IP and PIN in Settings, and that your PC and the bar are on the same
   network. Some office and guest networks block devices from talking to each other.
+- **"Bar out of reach · timer on this PC"**: the bar stopped answering (empty battery, out of
+  range), so buZyist carries the running timer on on your PC: pause and stop still work. It looks
+  for the bar every 30 seconds and puts the timer back on it once it answers.
 - **Websites aren't blocked**: **Settings → Websites** should say *Browser extension: connected*.
   If not, check that the extension is turned on in `chrome://extensions`, and that buZyist is
   running. If buZyist shows **Reload extension**, click the extension's reload arrow in

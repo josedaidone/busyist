@@ -102,6 +102,11 @@ MAX_LABEL = 60  # the Todoist label a running task gets
 # The bar itself refuses fewer than 2 work phases, so a 1-tomato session runs
 # as 2 on the bar and the app stops it when the first break would begin.
 BAR_CYCLES_MIN = 2
+# A bar that can't be reached this many polls in a row (out of battery, out of
+# range) hands its timer to this PC, which looks for the bar again every
+# BAR_PROBE_S and gives the timer back once it answers.
+BAR_OFFLINE_AFTER = 3
+BAR_PROBE_S = 30
 
 DEFAULT_FILTER = {"name": "Today", "query": "today | overdue"}
 MAX_FILTERS = 20

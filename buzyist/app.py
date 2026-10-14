@@ -28,7 +28,7 @@ from buzyist.app_sites import SitesMixin
 from buzyist.app_sync import SyncMixin
 from buzyist.app_updates import UpdatesMixin
 from buzyist.app_windows import WindowsMixin
-from buzyist.bar import Bar
+from buzyist.bar import Bar, BarUnreachable
 from buzyist.blocker import AppBlocker
 from buzyist.blocks import BlockLog
 from buzyist.config import CONFIG_VERSION, DEFAULTS, Config, ConfigStore, migrate_config
@@ -36,6 +36,7 @@ from buzyist.constants import (
     APP,
     APP_NAME,
     BAR_CYCLES_MIN,
+    BAR_OFFLINE_AFTER,
     MAX_FILTERS,
     MINI_H,
     MINI_W,
@@ -315,7 +316,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 # Started on another PC (only when this one runs nothing).
                 "remote": self._remote_view(),
                 "ended": self.ended,
-                "bar": {"ok": self.bar_ok, "via": self.bar.via, "error": self.bar_error, "local": self.bar.is_local},
+                "bar": {
+                    "ok": self.bar_ok,
+                    "via": self.bar.via,
+                    "error": self.bar_error,
+                    "local": self.bar.is_local,
+                    "offline": self.bar.offline,  # out of reach: the timer runs on this PC
+                },
                 "today": self.today_stats(),
                 "task_tomatoes": self.task_tomatoes(),
                 "blocks": self.blocks_view(),
@@ -396,10 +403,20 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
 
     def engine_step(self) -> float:
         """One pass of the engine loop; returns the seconds to wait before the next."""
+        offline = self.bar.offline
         try:
-            snap = self.bar.snapshot()
+            snap = self.bar.poll()
             with self.lock:
                 self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
+            if offline and not self.bar.offline:
+                self.notify("BUSY Bar is back", "The timer is on the bar again.")
+        except BarUnreachable as err:
+            with self.lock:
+                self.bar_ok, self.bar_error = False, str(err)
+                self.bar_fails += 1
+                fails = self.bar_fails
+            if fails >= BAR_OFFLINE_AFTER:
+                self.go_standalone()
         except AppError as err:
             with self.lock:
                 self.bar_ok, self.bar_error = False, str(err)
@@ -417,8 +434,30 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         except Exception:
             log.exception("engine")
         # Reading the local clock costs nothing, so follow it closely.
-        poll = 1 if self.bar.is_local else max(2, int(self.cfg.get("poll_seconds", 5)))
+        poll = 1 if self.bar.standalone else max(2, int(self.cfg.get("poll_seconds", 5)))
         return min(poll, self._until_early_end(poll))
+
+    def go_standalone(self) -> bool:
+        """
+        The bar is out of reach (out of battery, out of range): run its timer
+        on this PC from the last snapshot we saw, so a session can still be
+        followed, paused and stopped. Bar.poll gives it back when the bar answers.
+        """
+        with self.lock:
+            since = self.session["stamp"] if self.session else None
+        if not self.bar.go_offline(since):
+            return False
+        log.warning("can't reach the BUSY Bar: the timer runs on this PC until it's back")
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_error, self.bar_fails = snap, True, "", 0
+                running = self.session is not None
+        except AppError:
+            return True
+        if running:
+            self.notify("BUSY Bar out of reach", "Your session carries on on this PC.")
+        return True
 
     def pause_reminder(self) -> None:
         """Every PAUSE_REMIND_S of a pause, flash the mini timer and beep 3 times."""

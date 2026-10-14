@@ -20,7 +20,9 @@ class WindowsMixin:
             return
         show_window(self.main)
         wake_window(self.main)
-        self._js(self.main, f"App.onShown({json.dumps(focus_search)})")
+        # The state goes along: the page shows it at once instead of what its
+        # last poll saw (up to 15 s old in the tray) until get_state answers.
+        self._js(self.main, f"App.onShown({json.dumps(focus_search)}, {json.dumps(self.state(), default=str)})")
         # The page may still be throttled; nudge it again shortly after.
         for delay in (0.15, 0.5, 1.2):
             threading.Timer(delay, self._rewake).start()
