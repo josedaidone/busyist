@@ -14,7 +14,7 @@ from busylib.features import timer_state
 
 from buzyist import paths
 from buzyist.bar import BarUnreachable
-from buzyist.constants import APP, AppError
+from buzyist.constants import APP, HISTORY_KEEP, AppError
 from buzyist.storage import write_json
 
 log = logging.getLogger(APP)
@@ -117,7 +117,7 @@ class SessionMixin:
                     "ended_at": datetime.now().isoformat(timespec="seconds"),
                 }
             )
-            self.history = self.history[-500:]
+            self.history = self.history[-HISTORY_KEEP:]
             write_json(paths.HISTORY_PATH, self.history)
             if reason == "replaced" or silent:
                 return
@@ -203,7 +203,7 @@ class SessionMixin:
                     "ended_at": datetime.now().isoformat(timespec="seconds"),
                 }
             )
-            self.history = self.history[-500:]
+            self.history = self.history[-HISTORY_KEEP:]
             write_json(paths.HISTORY_PATH, self.history)
 
     def _label_task(self, session: dict) -> None:

@@ -118,6 +118,10 @@ class Api:
             lambda: {"on": bool(self._app.cfg.get("app_limits_on")), "rules": self._app.app_limiter.status()}
         )
 
+    def focus_stats(self):
+        """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""
+        return self._do(self._app.focus_stats)
+
     def block_stats(self):
         """How often websites were blocked over the last 30 days, for the Stats tab."""
         return self._do(self._app.blocks.stats)

@@ -144,6 +144,8 @@ class Bar:
     def run(self, fn, device: bool = False):
         """fn(client) on the bar, or on the local clock; device=True asks the bar even while offline."""
         with self.lock:
+            if device and self.is_local:
+                raise AppError("The BUSY Bar is turned off; the timer runs on this PC.")
             if self.is_local or (self.offline and not device):
                 result = fn(self.local)
                 self.via = "This PC"
@@ -200,6 +202,9 @@ class Bar:
     def _reconnect(self) -> None:
         with self.lock:
             self._probe_at = now_ms() + BAR_PROBE_S * 1000
+            if self.is_local:
+                self.offline = False  # the bar was turned off in Settings meanwhile
+                return
             try:
                 self.run(self._take_back, device=True)
             except AppError as err:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes
+import os
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,6 +29,7 @@ from buzyist.win32 import (
     SWP_NOSIZE,
     SWP_NOZORDER,
     SWP_SHOWWINDOW,
+    VK_MASK,
     VK_MENU,
     WM_CLOSE,
     WM_MOUSEMOVE,
@@ -54,6 +57,12 @@ def window_exe(hwnd) -> str:
         return Path(buf.value).name.lower()
     finally:
         kernel32.CloseHandle(ctypes.wintypes.HANDLE(handle))
+
+
+def _window_pid(hwnd) -> int:
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value
 
 
 def foreground_app() -> tuple[int, str]:
@@ -109,17 +118,34 @@ def show_window(window: webview.Window) -> None:
         return
     user32.ShowWindow(hwnd, SW_RESTORE if user32.IsIconic(hwnd) else SW_SHOW)
     user32.SetForegroundWindow(hwnd)
-    if window_focused(window):
+    # Called off the window's own thread, the switch lands a moment later:
+    # wait for it before deciding it was refused.
+    for _ in range(10):
+        if window_focused(window):
+            return
+        time.sleep(0.02)
+    fg = user32.GetForegroundWindow()
+    if not fg or _window_pid(fg) == os.getpid():
+        # Nothing in front, or one of our own windows (the mini timer just
+        # clicked): Windows lets us take the foreground, no tricks needed.
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
         return
     # Windows refuses SetForegroundWindow from a process that isn't the
-    # foreground one (e.g. right after the mini timer, which we may just have
-    # hidden). Attach to the foreground thread's input queue to get around it.
-    fg = user32.GetForegroundWindow()
-    fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    # foreground one. Attach to the foreground thread's input queue and tap
+    # Alt to get around it.
+    fg_thread = user32.GetWindowThreadProcessId(fg, None)
     this_thread = kernel32.GetCurrentThreadId()
     attached = bool(fg_thread and fg_thread != this_thread and user32.AttachThreadInput(this_thread, fg_thread, True))
     try:
-        user32.keybd_event(VK_MENU, 0, 0, 0)  # a synthetic Alt press lifts the foreground lock
+        # A synthetic Alt press lifts the foreground lock. The keys arrive
+        # later, at whatever window is in front by then, often ours: a bare
+        # Alt tap would put it in menu mode, where WebView2 stalls (no
+        # get_state answers, the end-of-session prompt never shows) until a
+        # click. A key pressed inside the tap stops that.
+        user32.keybd_event(VK_MENU, 0, 0, 0)
+        user32.keybd_event(VK_MASK, 0, 0, 0)
+        user32.keybd_event(VK_MASK, 0, KEYEVENTF_KEYUP, 0)
         user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)

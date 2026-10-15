@@ -910,8 +910,64 @@ function showTab(name, focus) {
 // one stacked bar per day for 30 days (focus below, limits above), and the
 // most blocked sites.
 async function loadStats() {
-  const r = await api.block_stats();
+  const [f, r] = await Promise.all([api.focus_stats(), api.block_stats()]);
+  if (f.ok) renderFocusStats(f);
   if (r.ok) renderStats(r);
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+// One column per day, stacked from `series` ([key, css class] pairs, the
+// first at the bottom); `tip(day)` is the hover line, `label` the aria text.
+function barChart(chart, days, series, label, tip) {
+  const top = Math.max(1, ...days.map((d) => series.reduce((sum, [k]) => sum + d[k], 0)));
+  const box = el("div", "stat-tip hidden");
+  chart.replaceChildren(el("div", "stat-max", tip.max ? tip.max(top) : String(top)), box);
+  chart.setAttribute("aria-label", label);
+  days.forEach((d, i) => {
+    const col = el("div", "stat-col");
+    for (const [key, cls] of series) {  // column-reverse: the first is at the bottom
+      if (!d[key]) continue;
+      const seg = el("i", "stat-seg " + cls);
+      seg.style.height = (100 * d[key]) / top + "%";
+      col.append(seg);
+    }
+    col.onmouseenter = () => {
+      box.replaceChildren(el("b", "", i === days.length - 1 ? "Today" : statDay(d.day)), el("span", "", tip.line(d)));
+      box.classList.remove("hidden");
+      const x = col.offsetLeft + col.offsetWidth / 2;
+      box.style.left = Math.min(Math.max(x, 90), chart.clientWidth - 90) + "px";
+    };
+    col.onmouseleave = () => box.classList.add("hidden");
+    chart.append(col);
+  });
+}
+
+// Focus from history.json (Api.focus_stats): focus time, tomatoes, sessions
+// and tasks for today / 7 / 30 days, the streak, minutes per day, top tasks.
+function renderFocusStats(s) {
+  const tiles = [["Today", s.totals.today], ["Last 7 days", s.totals.week], [`Last ${s.span} days`, s.totals.span]];
+  $("focusTiles").replaceChildren(...tiles.map(([label, t]) => {
+    const tile = el("div", "stat-tile");
+    tile.append(el("div", "stat-label", label), el("div", "stat-num", duration(t.minutes)),
+                el("div", "help", `${plural(t.pomodoros, "tomato")} · ${plural(t.sessions, "session")}`),
+                el("div", "help", `${plural(t.tasks, "task")} worked on · ${t.completed} done`));
+    return tile;
+  }));
+  const streak = $("focusStreak");
+  streak.replaceChildren("Streak: ", el("b", "", plural(s.streak.current, "day")), ` in a row · best ${plural(s.streak.best, "day")}`);
+
+  barChart($("focusChart"), s.days, [["minutes", "stat-f"]],
+    `Focus per day over the last ${s.span} days: ${duration(s.totals.span.minutes)} in all.`,
+    { line: (d) => d.minutes ? `${duration(d.minutes)} · ${plural(d.pomodoros, "tomato")}` : "No tomatoes", max: duration });
+  $("focusFirst").textContent = s.days.length ? statDay(s.days[0].day) : "";
+
+  $("focusTasks").replaceChildren(...(s.tasks.length ? s.tasks.map((t) => {
+    const row = el("div", "stat-site");
+    row.append(el("span", "stat-host", t.content), el("span", "help", `${plural(t.pomodoros, "tomato")} · ${plural(t.sessions, "session")}`),
+               el("b", "", duration(t.minutes)));
+    return row;
+  }) : [el("div", "help", "No tomatoes yet. Pick a task and start the timer.")]));
 }
 
 const blockWord = (n) => `${n} block${n === 1 ? "" : "s"}`;
@@ -926,29 +982,9 @@ function renderStats(s) {
     return tile;
   }));
 
-  const chart = $("statChart");
-  const top = Math.max(1, ...s.days.map((d) => d.focus + d.limit));
-  const tip = el("div", "stat-tip hidden");
-  chart.replaceChildren(el("div", "stat-max", String(top)), tip);
-  chart.setAttribute("aria-label", `Blocks per day over the last ${s.span} days: ${s.totals.span.focus} during focus, ${s.totals.span.limit} over a limit.`);
-  s.days.forEach((d, i) => {
-    const col = el("div", "stat-col");
-    for (const kind of ["focus", "limit"]) {  // column-reverse: the first is at the bottom
-      if (!d[kind]) continue;
-      const seg = el("i", "stat-seg " + (kind === "focus" ? "stat-f" : "stat-l"));
-      seg.style.height = (100 * d[kind]) / top + "%";
-      col.append(seg);
-    }
-    col.onmouseenter = () => {
-      tip.replaceChildren(el("b", "", i === s.days.length - 1 ? "Today" : statDay(d.day)),
-        el("span", "", d.focus + d.limit ? `${d.focus} during focus · ${d.limit} over a limit` : "Nothing blocked"));
-      tip.classList.remove("hidden");
-      const x = col.offsetLeft + col.offsetWidth / 2;
-      tip.style.left = Math.min(Math.max(x, 90), chart.clientWidth - 90) + "px";
-    };
-    col.onmouseleave = () => tip.classList.add("hidden");
-    chart.append(col);
-  });
+  barChart($("statChart"), s.days, [["focus", "stat-f"], ["limit", "stat-l"]],
+    `Blocks per day over the last ${s.span} days: ${s.totals.span.focus} during focus, ${s.totals.span.limit} over a limit.`,
+    { line: (d) => d.focus + d.limit ? `${d.focus} during focus · ${d.limit} over a limit` : "Nothing blocked" });
   $("statFirst").textContent = s.days.length ? statDay(s.days[0].day) : "";
 
   $("statSites").replaceChildren(...(s.sites.length ? s.sites.map((site) => {

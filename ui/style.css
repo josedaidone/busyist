@@ -678,3 +678,6 @@ body.instant .modal, body.instant .scrim { transition: none; }
   padding: 8px 12px; border-radius: var(--r-row); background: var(--surface); font-size: 14px;
 }
 .stat-host { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-tile .help { margin-top: 2px; line-height: 1.35; }
+.stat-streak { font-size: 13.5px; color: var(--muted); margin: -4px 0 12px; }
+.stat-streak b { color: var(--ink); }

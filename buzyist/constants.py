@@ -108,6 +108,9 @@ BAR_CYCLES_MIN = 2
 BAR_OFFLINE_AFTER = 3
 BAR_PROBE_S = 30
 
+# Entries history.json keeps (sessions and completed tasks): months of them, for the Stats tab.
+HISTORY_KEEP = 5000
+
 DEFAULT_FILTER = {"name": "Today", "query": "today | overdue"}
 MAX_FILTERS = 20
 

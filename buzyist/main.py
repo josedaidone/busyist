@@ -45,7 +45,10 @@ def setup_logging() -> None:
 
 def adopt_old_files() -> None:
     """Earlier versions kept their files next to the script; move them in once."""
-    if paths.FROZEN:
+    # Once the data folder has a config, it's been done: copying again would
+    # bring back an old session.json each time no session is running, and
+    # each start would log that old session again.
+    if paths.FROZEN or paths.CONFIG_PATH.exists():
         return
     for name in ("config.json", "session.json", "history.json"):
         old, new = paths.SOURCE_DIR / name, paths.DATA_DIR / name
