@@ -122,7 +122,7 @@ def desktop(monkeypatch):
 
 @pytest.fixture
 def blocker(desktop, clock):
-    app = SimpleNamespace(cfg={"blocked_apps": [SPOTIFY]}, notify=lambda *a: notes.append(a))
+    app = SimpleNamespace(cfg={"block_apps": True, "blocked_apps": [SPOTIFY]}, notify=lambda *a: notes.append(a))
     notes: list[tuple] = []
     made = blocker_mod.AppBlocker(app)
     made.notes = notes
@@ -136,6 +136,16 @@ def tick(blocker, clock, seconds=blocker_mod.AppBlocker.TICK):
     blocker.enforce(FOCUS)
     blocker._first_sweep = False  # what _loop does after each enforce
     clock.advance(seconds)
+
+
+def test_an_activity_that_lets_the_app_through_leaves_it_open(blocker, desktop, clock):
+    blocker.app.cfg["activities"] = [{"id": "music", "name": "Music", "apps": {"allow": ["spotify.exe"]}}]
+    desktop.processes = {100: "Spotify.exe"}
+    desktop.windows = {100}
+    blocker.enforce({**FOCUS, "activity": "music"})
+    assert desktop.asked() == []
+    blocker.enforce({**FOCUS, "activity": ""})  # no activity: the global list
+    assert desktop.asked() == [{100}]
 
 
 def test_close_asks_first_and_ends_it_after_the_grace_time(blocker, desktop, clock, caplog):

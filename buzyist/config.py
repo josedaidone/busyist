@@ -19,9 +19,10 @@ from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_core import PydanticCustomError
 
+from buzyist.activities import DEFAULT_ACTIVITIES, clean_activities
 from buzyist.app_limits import _sanitize_app_limits, clean_app_limits
 from buzyist.blocker import clean_blocked_apps, normalize_blocked_apps
 from buzyist.constants import (
@@ -60,6 +61,15 @@ DEFAULTS = {
     "rest_minutes": 5,
     "cycles": 4,
     "autostart": True,
+    # A task with a duration in Todoist sets its own tomatoes (see buzyist/plan.py):
+    # up to plan_single_max min it is one tomato, longer ones are split into
+    # tomatoes of about plan_target min, between plan_min and plan_max.
+    "plan_from_duration": True,
+    "plan_single_max": 20,
+    "plan_target": 15,
+    "plan_min": 10,
+    "plan_max": 30,
+    "offer_subtasks": True,  # play on a task with subtasks asks which one to start on
     "poll_seconds": 5,
     "hotkey": "ctrl+alt+p",
     "focus_label": "pomodoro",
@@ -69,6 +79,12 @@ DEFAULTS = {
     "launch_at_login": True,
     "open_on_finish": True,
     "auto_update": True,
+    # The Stats tab's streak: a Saturday or Sunday without a tomato doesn't
+    # break it (one with a tomato still counts).
+    "streak_skip_weekends": False,
+    # What the "What are you working on?" field offers for a session with no
+    # task (see buzyist/activities.py); the Stats tab adds up time per activity.
+    "activities": copy.deepcopy(DEFAULT_ACTIVITIES),
     # Keep distracting apps away while a work phase runs (issue #1). Off by
     # default for other users. The list is APP_PRESETS (each switchable)
     # plus apps added by hand; normalize_blocked_apps() fills it in.
@@ -323,6 +339,12 @@ class Config(BaseModel):
     rest_minutes: Minutes = _default("rest_minutes")
     cycles: Annotated[int, Field(ge=CYCLES_MIN, le=CYCLES_MAX)] = _default("cycles")
     autostart: bool = _default("autostart")
+    plan_from_duration: bool = _default("plan_from_duration")
+    plan_single_max: Annotated[int, Field(ge=0, le=PHASE_MAX)] = _default("plan_single_max")
+    plan_target: Minutes = _default("plan_target")
+    plan_min: Minutes = _default("plan_min")
+    plan_max: Minutes = _default("plan_max")
+    offer_subtasks: bool = _default("offer_subtasks")
     poll_seconds: Annotated[int, Field(ge=POLL_MIN, le=POLL_MAX)] = _default("poll_seconds")
     hotkey: str = _default("hotkey")
     focus_label: Annotated[str, Field(max_length=MAX_LABEL)] = _default("focus_label")
@@ -345,6 +367,8 @@ class Config(BaseModel):
     sync_limits: bool = _default("sync_limits")
     sync_owner: str = _default("sync_owner")
     sync_session: bool = _default("sync_session")
+    streak_skip_weekends: bool = _default("streak_skip_weekends")
+    activities: list[dict] = _default("activities")  # kept as dicts: clean_activities is the schema
 
     @field_validator("filters", mode="before")
     @classmethod
@@ -402,12 +426,28 @@ class Config(BaseModel):
             value = _sanitize_app_limits(value)
         return _app_error(clean_app_limits, value)
 
+    @field_validator("activities", mode="before")
+    @classmethod
+    def _activities(cls, value, info: ValidationInfo):
+        return _app_error(clean_activities, value, _loading(info, value))
+
     @field_validator("sync_owner")
     @classmethod
     def _owner(cls, value: str) -> str:
         if not re.fullmatch(r"[a-z0-9]{0,32}", value):
             raise PydanticCustomError("app", "{message}", {"message": FIELD_ERRORS["sync_owner"]})
         return value
+
+    @model_validator(mode="after")
+    def _plan(self, info: ValidationInfo):
+        if self.plan_min <= self.plan_target <= self.plan_max:
+            return self
+        if info.context and info.context.get("load"):
+            log.warning("config: the tomato lengths from task durations didn't fit together; using the defaults")
+            for key in ("plan_target", "plan_min", "plan_max"):
+                setattr(self, key, DEFAULTS[key])
+            return self
+        raise PydanticCustomError("app", "{message}", {"message": FIELD_ERRORS["plan_target"]})
 
     @classmethod
     def check(cls, data) -> dict:
@@ -443,11 +483,23 @@ FIELD_ERRORS = {
     "work_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
     "rest_minutes": f"Phases run {PHASE_MIN} to {PHASE_MAX} minutes.",
     "cycles": f"Sessions run {CYCLES_MIN} to {CYCLES_MAX} rounds.",
+    "plan_single_max": f"One tomato for tasks up to 0 to {PHASE_MAX} minutes.",
+    "plan_target": "Aim for a tomato length between the shortest and the longest.",
+    "plan_min": f"Tomatoes run {PHASE_MIN} to {PHASE_MAX} minutes.",
+    "plan_max": f"Tomatoes run {PHASE_MIN} to {PHASE_MAX} minutes.",
     "poll_seconds": f"Check the bar every {POLL_MIN} to {POLL_MAX} seconds.",
     "focus_label": f"Keep the label to {MAX_LABEL} characters or fewer.",
 }
-LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits")
-ERROR_ORDER = ["blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits", *FIELD_ERRORS]
+LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits", "activities")
+ERROR_ORDER = [
+    "blocked_apps",
+    "blocked_sites",
+    "allowed_sites",
+    "site_limits",
+    "app_limits",
+    "activities",
+    *FIELD_ERRORS,
+]
 
 
 def validation_message(err: ValidationError) -> str:

@@ -77,8 +77,46 @@ def test_the_streak_allows_today_to_come_and_keeps_the_best():
     assert focus_stats([ran(2)], None, TODAY)["streak"] == {"current": 0, "best": 1}
 
 
+def test_the_streak_can_skip_weekends():
+    # TODAY is a Wednesday: Mon, Tue, then Fri and Thu, the weekend between them empty.
+    history = [ran(1), ran(2), ran(5), ran(6)]
+    assert focus_stats(history, None, TODAY)["streak"] == {"current": 2, "best": 2}
+    assert focus_stats(history, None, TODAY, skip_weekends=True)["streak"] == {"current": 4, "best": 4}
+    # A weekend tomato still counts; an empty Friday still breaks it.
+    assert focus_stats([ran(1), ran(2), ran(3), ran(6)], None, TODAY, skip_weekends=True)["streak"] == {
+        "current": 3,
+        "best": 3,
+    }
+    # On a Sunday with nothing done yet, Friday's run is still going.
+    sunday = TODAY + timedelta(days=4)
+    assert focus_stats([ran(-2), ran(-1)], None, sunday, skip_weekends=True)["streak"] == {"current": 2, "best": 2}
+    assert focus_stats([ran(-2), ran(1)], None, sunday, skip_weekends=True)["streak"] == {"current": 1, "best": 1}
+
+
 def test_nothing_yet_and_odd_entries():
     s = focus_stats([{"date": 5}, "junk", {"date": "not a day", "pomodoros": 1, "reason": "finished"}], None, TODAY)
     assert s["totals"]["span"] == {"minutes": 0, "pomodoros": 0, "sessions": 0, "tasks": 0, "completed": 0}
     assert s["tasks"] == []
     assert s["streak"] == {"current": 0, "best": 0}
+
+
+def test_focus_by_activity():
+    email = {"id": "email", "name": "Email", "detail": "Q4"}
+    old = {"id": "gone", "name": "Old name", "detail": ""}
+    history = [
+        {**ran(0, "", "Email · Q4", 2), "activity": email},
+        {**ran(1, "", "Email", 1), "activity": {**email, "name": "Mail"}},  # renamed since: the setting's name wins
+        {**ran(2, "", "Old name", 3), "activity": old},  # removed from the setting
+        ran(3, "t1", "Write the tests", 1),
+        ran(4, "", "Plan", 1),
+        {**ran(5, "", "Email", 0, "stopped"), "activity": email},  # no tomato: not counted
+        {**ran(40, "", "Email", 8), "activity": email},  # too old
+    ]
+    running = {"task": {"id": "", "content": "Email"}, "done": 1, "work_ms": 25 * 60000, "activity": email}
+    s = focus_stats(history, running, TODAY, activities=[{"id": "email", "name": "Email", "icon": "mail"}])
+    assert [(g["id"], g["name"], g["icon"], g["minutes"], g["sessions"]) for g in s["activities"]] == [
+        ("email", "Email", "mail", 100, 3),
+        ("gone", "Old name", "dot", 75, 1),
+        ("_other", "Other", "", 25, 1),
+        ("_task", "Todoist tasks", "", 25, 1),
+    ]

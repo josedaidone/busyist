@@ -1,0 +1,99 @@
+{
+  "_comment": "What an activity blocks: app_blocking (buzyist/blocker.py) and site_blocking (buzyist/site_rules.py), and their mirrors appBlocking/siteBlocking in ui/main.js. Each case's cfg is laid over base; rules (when given) are the activity's apps or sites, on an activity with id \"x\". Protected programs: only chrome.exe is used here (tests/js passes just that one).",
+  "base": {
+    "block_apps": true,
+    "blocked_apps": [
+      {"id": "whatsapp", "name": "WhatsApp", "exes": ["WhatsApp.Root.exe", "WhatsApp.exe"], "on": true, "action": "close", "custom": false},
+      {"id": "slack", "name": "Slack", "exes": ["Slack.exe"], "on": false, "action": "hide", "custom": false},
+      {"id": "custom:discord", "name": "Discord", "exes": ["Discord.exe"], "on": true, "action": "close", "custom": true}
+    ],
+    "block_sites": true,
+    "site_mode": "block",
+    "blocked_sites": ["*.google.com", "youtube.com", "x.com"],
+    "allowed_sites": ["github.com", "docs.python.org"]
+  },
+  "apps": [
+    {
+      "name": "no activity: the global entries switched on",
+      "out": [
+        {"id": "whatsapp", "name": "WhatsApp", "exes": ["WhatsApp.Root.exe", "WhatsApp.exe"], "on": true, "action": "close", "custom": false},
+        {"id": "custom:discord", "name": "Discord", "exes": ["Discord.exe"], "on": true, "action": "close", "custom": true}
+      ]
+    },
+    {
+      "name": "global switch off, activity inherits: nothing",
+      "cfg": {"block_apps": false},
+      "rules": {"state": "inherit", "allow": [], "block": ["Spotify.exe"]},
+      "out": []
+    },
+    {
+      "name": "off blocks nothing",
+      "rules": {"state": "off", "allow": [], "block": ["Spotify.exe"]},
+      "out": []
+    },
+    {
+      "name": "allow takes programs out, case and .exe aside",
+      "rules": {"state": "inherit", "allow": ["whatsapp.root", "WHATSAPP.EXE"], "block": []},
+      "out": [
+        {"id": "custom:discord", "name": "Discord", "exes": ["Discord.exe"], "on": true, "action": "close", "custom": true}
+      ]
+    },
+    {
+      "name": "block adds: a preset switched off keeps its action, a new one closes, protected and repeats are skipped",
+      "rules": {"state": "inherit", "allow": ["Teams.exe"], "block": ["Slack.exe", "Spotify.exe", "chrome.exe", "discord.exe", "Teams.exe"]},
+      "out": [
+        {"id": "whatsapp", "name": "WhatsApp", "exes": ["WhatsApp.Root.exe", "WhatsApp.exe"], "on": true, "action": "close", "custom": false},
+        {"id": "custom:discord", "name": "Discord", "exes": ["Discord.exe"], "on": true, "action": "close", "custom": true},
+        {"id": "slack", "name": "Slack", "exes": ["Slack.exe"], "on": true, "action": "hide", "custom": false},
+        {"id": "activity:spotify", "name": "Spotify", "exes": ["Spotify.exe"], "on": true, "action": "close", "custom": true}
+      ]
+    },
+    {
+      "name": "on blocks even with the global switch off",
+      "cfg": {"block_apps": false},
+      "rules": {"state": "on", "allow": ["Discord.exe"], "block": []},
+      "out": [
+        {"id": "whatsapp", "name": "WhatsApp", "exes": ["WhatsApp.Root.exe", "WhatsApp.exe"], "on": true, "action": "close", "custom": false}
+      ]
+    }
+  ],
+  "sites": [
+    {
+      "name": "no activity: the global list",
+      "out": {"on": true, "mode": "block", "patterns": ["*.google.com", "youtube.com", "x.com"], "except": []}
+    },
+    {
+      "name": "global switch off, activity inherits",
+      "cfg": {"block_sites": false},
+      "rules": {"state": "inherit", "mode": "", "allow": [], "block": ["reddit.com"]},
+      "out": {"on": false, "mode": "block", "patterns": [], "except": []}
+    },
+    {
+      "name": "off",
+      "rules": {"state": "off", "mode": "allow", "allow": [], "block": []},
+      "out": {"on": false, "mode": "allow", "patterns": [], "except": []}
+    },
+    {
+      "name": "block mode: block adds, allow carves out and drops an equal entry",
+      "rules": {"state": "inherit", "mode": "", "allow": ["mail.google.com", "x.com"], "block": ["reddit.com", "youtube.com"]},
+      "out": {"on": true, "mode": "block", "patterns": ["*.google.com", "youtube.com", "reddit.com"], "except": ["mail.google.com", "x.com"]}
+    },
+    {
+      "name": "allow mode inherited: allow adds, block carves out",
+      "cfg": {"site_mode": "allow"},
+      "rules": {"state": "inherit", "mode": "allow", "allow": ["stackoverflow.com"], "block": ["github.com/trending"]},
+      "out": {"on": true, "mode": "allow", "patterns": ["github.com", "docs.python.org", "stackoverflow.com"], "except": ["github.com/trending"]}
+    },
+    {
+      "name": "a mode of its own starts from an empty list",
+      "rules": {"state": "inherit", "mode": "allow", "allow": ["mail.google.com"], "block": []},
+      "out": {"on": true, "mode": "allow", "patterns": ["mail.google.com"], "except": []}
+    },
+    {
+      "name": "on blocks even with the global switch off",
+      "cfg": {"block_sites": false},
+      "rules": {"state": "on", "mode": "block", "allow": [], "block": ["news.com"]},
+      "out": {"on": true, "mode": "block", "patterns": ["*.google.com", "youtube.com", "x.com", "news.com"], "except": []}
+    }
+  ]
+}

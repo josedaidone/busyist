@@ -7,7 +7,7 @@ from datetime import datetime
 
 from buzyist.constants import PASS_SECONDS, AppError, now_ms
 from buzyist.extension import EXTENSION_VERSION
-from buzyist.site_rules import is_plain_domain, site_limit_status
+from buzyist.site_rules import is_plain_domain, site_blocking, site_limit_status
 from buzyist.updater import version_tuple
 
 
@@ -22,25 +22,29 @@ class SitesMixin:
         are sent, so the extension removes its rules.
 
         `mode` and `patterns` are what the extension uses (patterns may hold
-        wildcards and paths). `sites` is kept for extensions from before
-        those: only the plain domains of a blocklist, which they understand.
+        wildcards and paths), and `except` the patterns that go the other way
+        inside them (allowed in "block" mode). All three come from the
+        session's activity, see site_blocking; `activity` is its name, for
+        the block page. `sites` is kept for extensions from before patterns:
+        only the plain domains of a blocklist, which they understand.
 
         The browser profile that shares the limits with other PCs (`instance`
         is the sync owner) also gets `sync`, see sync_payload.
         """
         cfg = self.cfg.view()
-        on = bool(cfg.get("block_sites"))
         limits_on = bool(cfg.get("site_limits_on"))
-        mode = cfg.get("site_mode", "block")
         focus = self.focus()
-        active = on and focus["active"]
-        patterns = list(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if on else []
+        blocking = site_blocking(cfg, focus["activity"])
+        active = blocking["on"] and focus["active"]
+        mode, patterns = blocking["mode"], blocking["patterns"]
         out = {
             "active": active,
             "task": focus["task"] if active else "",
+            "activity": focus["activity_name"] if active else "",
             "ends_at_ms": focus["ends_at_ms"] if active else 0,
             "mode": mode,
             "patterns": patterns,
+            "except": blocking["except"],
             "sites": [p for p in patterns if is_plain_domain(p)] if mode == "block" else [],
             "limits_on": limits_on,
             "limits": self.site_limits_status(enabled_only=True) if limits_on else [],

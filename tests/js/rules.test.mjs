@@ -52,13 +52,13 @@ test("buildRules: allow mode", () => {
   ]);
 });
 
-test("buildRules: limits that block now, above allow rules and below focus blocks", () => {
+test("buildRules: limits that block now, above every other rule", () => {
   const focus = { active: true, mode: "block", patterns: ["youtube.com"], limits_on: true, limits: [open, blocked] };
   const rules = buildRules(focus, NOW);
   assert.deepEqual(summary(rules), [
     [1, 4, "redirect", regexOf("youtube.com")],
-    [1000, 3, "redirect", regexOf("reddit.com")],
-    [1001, 3, "redirect", regexOf("x.com")],
+    [1000, 5, "redirect", regexOf("reddit.com")],
+    [1001, 5, "redirect", regexOf("x.com")],
   ]);
   assert.equal(plain(rules[1]).action.redirect.regexSubstitution, BLOCKED + "?l=abc&u=\\1");
   // With the limits switched off, or out of their blocked hours, they're gone.
@@ -66,9 +66,48 @@ test("buildRules: limits that block now, above allow rules and below focus block
   assert.equal(buildRules(focus, NOW + 1000).length, 1);
 });
 
+test("buildRules: an activity's exceptions in block mode get through the focus blocks", () => {
+  const focus = { active: true, mode: "block", patterns: ["*.google.com", "x.com"], except: ["mail.google.com"] };
+  assert.deepEqual(summary(buildRules(focus, NOW)), [
+    [1, 4, "redirect", regexOf("*.google.com")],
+    [2, 4, "redirect", regexOf("x.com")],
+    // Same priority as the redirects: Chrome prefers "allow" at a tie.
+    [3, 4, "allow", regexOf("mail.google.com")],
+  ]);
+  // A limit still blocks an excepted site that is out of budget.
+  const limited = { id: "ghi", patterns: ["mail.google.com"], windows_ms: [[NOW - 1000, NOW + 1000]] };
+  const rules = buildRules(Object.assign({}, focus, { limits_on: true, limits: [limited] }), NOW);
+  assert.deepEqual(summary(rules).slice(3), [[1000, 5, "redirect", regexOf("mail.google.com")]]);
+});
+
+test("buildRules: an activity's exceptions in allow mode are blocked inside the allowed sites", () => {
+  const focus = { active: true, mode: "allow", patterns: ["*.google.com"], except: ["news.google.com", "play.google.com"] };
+  assert.deepEqual(summary(buildRules(focus, NOW)), [
+    [1, 1, "redirect", "^(https?://.*)$"],
+    [2, 2, "allow", regexOf("*.google.com")],
+    [3, 4, "redirect", regexOf("news.google.com")],
+    [4, 4, "redirect", regexOf("play.google.com")],
+  ]);
+  // Without a session they're gone with the rest.
+  assert.deepEqual(plain(buildRules(Object.assign({}, focus, { active: false }), NOW)), []);
+});
+
+test("focusBlocks follows the exceptions, like the rules", () => {
+  const focusBlocks = bg.get("focusBlocks");
+  const block = { active: true, mode: "block", patterns: ["*.google.com"], except: ["mail.google.com"] };
+  assert.equal(focusBlocks("https://www.google.com/", block), true);
+  assert.equal(focusBlocks("https://mail.google.com/mail/u/0", block), false);
+  const allow = { active: true, mode: "allow", patterns: ["*.google.com"], except: ["news.google.com"] };
+  assert.equal(focusBlocks("https://docs.google.com/", allow), false);
+  assert.equal(focusBlocks("https://news.google.com/", allow), true);
+  assert.equal(focusBlocks("https://example.com/", allow), true);
+  // An older buZyist sends no `except`.
+  assert.equal(focusBlocks("https://mail.google.com/", { active: true, mode: "block", patterns: ["*.google.com"] }), true);
+});
+
 test("buildRules: the same input gives the same rules", () => {
   const canon = bg.get("canon");
-  const focus = { active: true, mode: "allow", patterns: ["a.com", "b.com"], limits_on: true, limits: [blocked] };
+  const focus = { active: true, mode: "allow", patterns: ["a.com", "b.com"], except: ["c.a.com"], limits_on: true, limits: [blocked] };
   assert.equal(canon(buildRules(focus, NOW)), canon(buildRules(structuredClone(focus), NOW)));
 });
 
@@ -95,7 +134,7 @@ test("setRules: a budget that runs out changes the rules", async () => {
   assert.equal(await setRules(focus, NOW), false);
   bg.set("pending", { def: { [Math.floor(NOW / 60000)]: 60 } });
   assert.equal(await setRules(focus, NOW), true);
-  assert.deepEqual(summary(bg.calls.rules), [[1000, 3, "redirect", regexOf("news.com")]]);
+  assert.deepEqual(summary(bg.calls.rules), [[1000, 5, "redirect", regexOf("news.com")]]);
 });
 
 test("setRules: a restarted worker writes the rules again", async () => {

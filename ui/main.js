@@ -195,6 +195,8 @@ function renderCurrent() {
     $("curTask").textContent = state.todoist ? "Pick a task to start" : "Ready when you are";
   }
   $("freeBox").classList.toggle("hidden", !!t || !!s);
+  syncFreeActivity();
+  if (t || s) closeFreeList();
   // One Tomate button per screen: with a task list, its play buttons are the main action.
   $("startFree").classList.toggle("primary", !state.todoist);
   if (t) {
@@ -571,9 +573,12 @@ function showEmpty(title, text, withSettings) {
 function renderTasks() {
   const q = $("search").value.trim().toLowerCase();
   shown = !q ? tasks : tasks.filter((t) =>
-    (t.content + " " + t.project + " " + t.labels.join(" ")).toLowerCase().includes(q));
+    [t.content, t.parent, t.project, ...t.labels].join(" ").toLowerCase().includes(q));
   sel = Math.min(sel, Math.max(0, shown.length - 1));
-  $("count").textContent = `${shown.length} of ${tasks.length}`;
+  // The filter's Todoist durations added up (tasks without one count nothing).
+  const planned = tasks.reduce((sum, t) => sum + (t.minutes || 0), 0);
+  $("count").textContent = `${shown.length} of ${tasks.length}` + (planned ? ` · ${duration(planned)}` : "");
+  $("count").title = planned ? `${duration(planned)} of Todoist durations in this filter` : "";
   const list = $("list");
   list.textContent = "";
   if (!tasks.length) return showEmpty("All clear", "Nothing in this filter. Enjoy it.");
@@ -583,7 +588,13 @@ function renderTasks() {
     const li = el("li", "task");
     li.dataset.id = t.id;
     const body = el("div", "t-body");
-    body.append(el("div", "t-title", t.content));
+    const title = el("div", "t-title");
+    // A subtask carries its parent's name in front: "parent › subtask".
+    if (t.parent) title.append(el("span", "t-parent", t.parent + " › "));
+    title.append(t.content);
+    title.title = t.parent ? `${t.parent} › ${t.content}` : t.content;
+    body.append(title);
+    if (t.description) body.append(taskDescription(t));
     const meta = el("div", "t-meta");
     if (t.project && !t.inbox) {
       const proj = el("span", "proj");
@@ -594,7 +605,23 @@ function renderTasks() {
     }
     const due = dueText(t);
     if (due) meta.append(el("span", t.overdue ? "late" : "", due));
+    if (t.plan) {
+      // Its Todoist duration sets the tomatoes (buzyist/plan.py).
+      const [mins, rounds] = t.plan;
+      const chip = el("span", "plan");
+      chip.title = `${t.minutes} min in Todoist: ${rounds} tomato${rounds === 1 ? "" : "es"} of ${mins} min. Shift+click play for your usual settings.`;
+      chip.append(icon("recent"), rounds === 1 ? `${mins} min` : `${rounds} × ${mins} min`);
+      meta.append(chip);
+    }
     for (const l of t.labels) meta.append(el("span", "lbl" + (l === state?.label ? " mine" : ""), "@" + l));
+    if (t.subtasks && t.subtasks.length) {
+      // Play asks which one to start on (openSubtaskPicker).
+      const n = t.subtasks.length;
+      const chip = el("span", "subs", `${n} subtask${n === 1 ? "" : "s"}`);
+      chip.title = "Play lets you pick one of them, or the whole task";
+      meta.append(chip);
+      li.dataset.subs = t.subtasks.map((s) => s.id).join(" ");
+    }
     const dots = el("span", "t-dots");
     meta.prepend(dots);
     // Priority: a pill (filled flag, P1-P3 and a word) first in the meta line,
@@ -622,7 +649,7 @@ function renderTasks() {
     check.append(box);
     check.onclick = (e) => { e.stopPropagation(); completeTask(t, li); };
     li.append(check, body, play);
-    play.onclick = (e) => { e.stopPropagation(); startTask(t, li); };
+    play.onclick = (e) => { e.stopPropagation(); startTask(t, li, e.shiftKey); };
     li.onclick = (e) => { sel = i; markSelection(false); openTaskMenu(t, li, e.clientX, e.clientY); };
     li.oncontextmenu = (e) => {
       e.preventDefault();
@@ -635,6 +662,35 @@ function renderTasks() {
   });
   markSelection(false);
   markCurrentTask();
+}
+
+// The description under the title, cut to two lines; "more" opens it (the row's
+// click still opens the task menu, so the toggle stops it).
+const openDescriptions = new Set();
+function taskDescription(t) {
+  const wrap = el("div", "t-desc");
+  const text = el("div", "t-desc-text", t.description);
+  const more = el("button", "t-more");
+  more.type = "button";
+  more.tabIndex = -1;
+  const set = (open) => {
+    wrap.classList.toggle("open", open);
+    more.textContent = open ? "less" : "more";
+    more.setAttribute("aria-expanded", open);
+  };
+  more.onclick = (e) => {
+    e.stopPropagation();
+    const open = !wrap.classList.contains("open");
+    if (open) openDescriptions.add(t.id); else openDescriptions.delete(t.id);
+    set(open);
+  };
+  set(openDescriptions.has(t.id));
+  wrap.append(text, more);
+  // Only long texts get the toggle: measured once the row is on the page.
+  requestAnimationFrame(() => {
+    more.hidden = !wrap.classList.contains("open") && text.scrollHeight <= text.clientHeight + 1;
+  });
+  return wrap;
 }
 
 function markSelection(scroll) {
@@ -652,7 +708,8 @@ function markCurrentTask() {
   const word = !t ? "Wrapping up" : t.paused ? "Paused" : t.phase === "rest" ? "Break" : "In focus";
   const counts = (state && state.task_tomatoes) || {};
   for (const li of $("list").querySelectorAll(".task")) {
-    const on = li.dataset.id === id;
+    // a session on one of its subtasks marks the row too
+    const on = !!id && (li.dataset.id === id || (li.dataset.subs || "").split(" ").includes(id));
     li.classList.toggle("in-focus", on);
     let badge = li.querySelector(".badge");
     if (on && !badge) {
@@ -676,7 +733,11 @@ function markCurrentTask() {
   }
 }
 
-async function startTask(task, li) {
+// fixed: the usual tomato settings even when the task's duration would set them.
+// A task with open subtasks first asks which one (direct: start this one, no asking;
+// at: where to open the question, see openSubtaskPicker).
+async function startTask(task, li, fixed, direct, at) {
+  if (!direct && task.subtasks && task.subtasks.length) return openSubtaskPicker(task, li, fixed, at);
   if (state && state.session && state.session.task.id === task.id) {
     toast("That task is already in focus.");
     return;
@@ -684,10 +745,13 @@ async function startTask(task, li) {
   if (state && state.session && !confirm(`Replace the current session on “${state.session.task.content}”?`)) return;
   if (li) li.classList.add("busy");
   flushPomodoro();
-  const result = await api.start(task.id);
+  const result = await api.start(task.id, "", "", !!fixed);
   if (li) li.classList.remove("busy");
   if (!result.ok) return toast(result.error, true);
-  toast(`Go. ${pomo.work_minutes} minutes, just this${state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)"}.`);
+  const where = state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)";
+  toast(result.planned
+    ? `Go. ${result.rounds === 1 ? "1 tomato" : result.rounds + " tomatoes"} of ${result.work_minutes} min, from the task's duration${where}.`
+    : `Go. ${result.work_minutes} minutes, just this${where}.`);
   $("search").value = "";
   renderTasks();
   poll();
@@ -731,7 +795,10 @@ function openTaskMenu(task, li, x, y) {
     b.onclick = (e) => { e.stopPropagation(); closeTaskMenu(); fn(); };
     menu.append(b);
   };
-  item("play", "Start pomodoro", () => startTask(task, li));
+  item("play", "Start pomodoro", () => startTask(task, li, false, false, { x, y }));
+  if (task.plan || task.subtasks?.length) {
+    item("play", `Start with your usual ${pomo.work_minutes}-min tomatoes`, () => startTask(task, li, true, false, { x, y }));
+  }
   item("check", "Mark as done", () => completeTask(task, li));
   if (task.url) item("eye", "See on Todoist", () => api.open_url(task.url));
   document.body.append(menu);
@@ -739,6 +806,53 @@ function openTaskMenu(task, li, x, y) {
   menu.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
   menu.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
   menu.querySelector("button").focus();
+}
+
+// "Start on…": the task's open subtasks (all depths, indented, in Todoist's order), then the
+// task itself. Shares #taskMenu with the task menu, so its keys and closing work the same.
+// at: {x, y} to open there; else under the row's play button.
+function openSubtaskPicker(task, li, fixed, at) {
+  closeTaskMenu();
+  const menu = el("div", "ctx-menu pick-menu");
+  menu.id = "taskMenu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Start on");
+  menu.append(el("div", "pick-head", "Start on…"));
+  const item = (t, depth, label) => {
+    const b = el("button", "ctx-item pick-item");
+    b.setAttribute("role", "menuitem");
+    b.style.paddingLeft = 12 + (depth - 1) * 16 + "px";
+    b.append(el("span", "pick-name", label || t.content));
+    // the tomatoes it would get (unless shift+click asked for the usual ones)
+    if (t.plan && !fixed) b.append(el("span", "pick-plan", t.plan[1] === 1 ? `${t.plan[0]} min` : `${t.plan[1]} × ${t.plan[0]}`));
+    b.title = t.content;
+    b.onclick = (e) => { e.stopPropagation(); closeTaskMenu(); startTask(t, li, fixed, true); };
+    menu.append(b);
+  };
+  for (const s of task.subtasks) item(s, s.depth);
+  menu.append(el("div", "pick-sep"));
+  item(task, 1, "The whole task");
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  const play = li && li.querySelector(".play");
+  const anchor = play ? play.getBoundingClientRect() : null;
+  const x = at ? at.x : anchor ? anchor.right - r.width : 4;
+  // under the play button, or above it when there is no room below
+  let y = at ? at.y : anchor ? anchor.bottom + 4 : 4;
+  if (!at && anchor && y + r.height > innerHeight - 4) y = anchor.top - r.height - 4;
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+  menu.querySelector("button").focus();
+}
+
+// A task of the list or one of its subtasks, by id.
+function findTask(id) {
+  for (const t of tasks) {
+    if (t.id === id) return t;
+    const sub = (t.subtasks || []).find((s) => s.id === id);
+    if (sub) return sub;
+  }
+  return null;
 }
 
 document.addEventListener("mousedown", (e) => { if (!e.target.closest("#taskMenu")) closeTaskMenu(); });
@@ -843,42 +957,305 @@ async function control(action) {
   if (!result.ok) toast(result.error, true);
   poll();
 }
-async function startFree(name) {
-  if (typeof name !== "string") name = $("freeName").value;
-  if (state && state.session && !confirm(`Replace the current session on “${state.session.task.content}”?`)) return;
-  flushPomodoro();
-  const result = await api.start(null, name);
-  if (!result.ok) return toast(result.error, true);
-  toast(`Go. ${pomo.work_minutes} minutes, just this${state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)"}.`);
-  $("freeName").value = "";
-  poll();
-}
-$("startFree").onclick = () => startFree();
-$("freeName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.stopPropagation(); startFree(); } });
 $("btnStop").onclick = () => control("stop");
 $("guard").onclick = () => openSettings($("guard").dataset.tab || "apps");
 $("btnSkip").onclick = () => control("skip");
 $("btnPause").onclick = () => control(state.timer && state.timer.paused ? "resume" : "pause");
 
+// ------------------------------------------------- what are you working on
+
+// The free field (a tomato with no task) is a combobox. Focusing it lists
+// the activities (state.activities, edited in Settings, General) and the
+// latest names used (Api.recent_free). Picking an activity turns it into a
+// chip in the field, and what you type after it is the detail ("Email ·
+// Q4 budget"). Text that matches no activity is a name of its own, and
+// "call: Ana" (an activity's name, then ":") picks the activity as you type.
+// The list is position: fixed, because the timer panel scrolls and would cut it.
+const ACTIVITY_ICONS = ["mail", "chat", "phone", "code", "book", "pen", "people", "paint", "bulb", "wrench", "chart", "dot"];  // as in buzyist/activities.py
+
+const free = { activity: null, recent: [], options: [], active: -1, open: false };
+const activities = () => (state && state.activities) || [];
+
+function activityIcon(name) {
+  const svg = icon("x");
+  svg.firstChild.setAttribute("href", "#a-" + (ACTIVITY_ICONS.includes(name) ? name : "dot"));
+  return svg;
+}
+
+function setFreeActivity(activity) {
+  free.activity = activity ? { ...activity } : null;
+  $("freeChip").classList.toggle("hidden", !activity);
+  $("freeField").classList.toggle("has-chip", !!activity);
+  if (activity) {
+    $("freeChipIcon").setAttribute("href", "#a-" + (ACTIVITY_ICONS.includes(activity.icon) ? activity.icon : "dot"));
+    $("freeChipName").textContent = activity.name;
+  }
+  $("freeName").placeholder = activity ? "Add a detail (optional)" : "What are you working on? (optional)";
+}
+
+// An activity renamed, given another icon or removed in Settings meanwhile.
+function syncFreeActivity() {
+  if (!free.activity) return;
+  const now = activities().find((a) => a.id === free.activity.id);
+  if (!now) setFreeActivity(null);
+  else if (now.name !== free.activity.name || now.icon !== free.activity.icon) setFreeActivity(now);
+}
+
+function recentText(r) {
+  const a = r.activity && activities().find((x) => x.id === r.activity);
+  return a ? `${a.name} · ${r.detail}` : r.detail;
+}
+
+function freeOptions() {
+  const typed = $("freeName").value.trim();
+  const text = typed.toLowerCase();
+  const out = [];
+  if (free.activity) {
+    // With a chip: this activity's recent details, or another activity.
+    for (const r of free.recent) {
+      const detail = r.detail.toLowerCase();
+      if (r.activity === free.activity.id && detail.includes(text) && detail !== text) {
+        out.push({ kind: "recent", group: `Recent ${free.activity.name}`, recent: r });
+      }
+    }
+    if (!text) for (const a of activities()) if (a.id !== free.activity.id) out.push({ kind: "activity", group: "Switch to", activity: a });
+    return out;
+  }
+  const starts = (s) => s.toLowerCase().startsWith(text);
+  const found = activities().filter((a) => a.name.toLowerCase().includes(text));
+  found.sort((a, b) => starts(b.name) - starts(a.name));
+  for (const a of found) out.push({ kind: "activity", group: "Activities", activity: a });
+  for (const r of free.recent) {
+    const shown = recentText(r).toLowerCase();
+    if (shown.includes(text) && shown !== text) out.push({ kind: "recent", group: "Recent", recent: r });
+  }
+  if (typed && !activities().some((a) => a.name.toLowerCase() === text)) out.push({ kind: "custom", group: "", text: typed });
+  return out;
+}
+
+function renderFreeList() {
+  const list = $("freeList");
+  free.options = freeOptions();
+  if (!free.open || !free.options.length) {
+    list.classList.add("hidden");
+    $("freeCombo").classList.remove("open");
+    $("freeName").setAttribute("aria-expanded", "false");
+    $("freeName").removeAttribute("aria-activedescendant");
+    return;
+  }
+  // Enter takes the highlighted option: an activity the text starts with,
+  // or (nothing else matching) the text as typed. With nothing typed, or
+  // after a chip, nothing is highlighted and Enter starts the tomato.
+  const text = $("freeName").value.trim().toLowerCase();
+  if (free.active === -2) {
+    free.active = text && !free.activity
+      ? free.options.findIndex((o) => (o.kind === "activity" && o.activity.name.toLowerCase().startsWith(text)) || o.kind === "custom")
+      : -1;
+  }
+  if (free.active >= free.options.length) free.active = -1;
+  const nodes = [];
+  let group = null;
+  free.options.forEach((o, i) => {
+    if (o.group && o.group !== group) nodes.push(el("div", "combo-head", o.group));
+    group = o.group;
+    const opt = el("div", "combo-opt");
+    opt.id = "freeOpt" + i;
+    opt.setAttribute("role", "option");
+    if (o.kind === "activity") {
+      opt.append(activityIcon(o.activity.icon), el("span", "", o.activity.name));
+    } else if (o.kind === "recent") {
+      const a = o.recent.activity && activities().find((x) => x.id === o.recent.activity);
+      opt.append(icon("recent"));
+      if (a && !free.activity) opt.append(el("span", "", a.name), el("span", "sub", o.recent.detail));
+      else opt.append(el("span", "grow", o.recent.detail));
+    } else {
+      opt.classList.add("custom");
+      opt.append(icon("play"), el("span", "grow", `Start “${o.text}”`));
+    }
+    opt.onmousedown = (e) => e.preventDefault();  // keep the focus in the field
+    opt.onclick = () => chooseFree(o);
+    opt.onmousemove = () => { if (free.active !== i) { free.active = i; markFreeActive(); } };
+    nodes.push(opt);
+  });
+  const edit = el("button", "combo-edit", "Edit activities…");
+  edit.type = "button";
+  edit.tabIndex = -1;
+  edit.onmousedown = (e) => e.preventDefault();
+  edit.onclick = () => { closeFreeList(); openSettings("general"); };
+  nodes.push(edit);
+  list.replaceChildren(...nodes);
+  list.classList.remove("hidden");
+  $("freeCombo").classList.add("open");
+  $("freeName").setAttribute("aria-expanded", "true");
+  placeFreeList();
+  markFreeActive();
+}
+
+function markFreeActive() {
+  for (const n of $("freeList").querySelectorAll(".combo-opt")) {
+    const on = n.id === "freeOpt" + free.active;
+    n.classList.toggle("on", on);
+    n.setAttribute("aria-selected", on);
+    if (on) n.scrollIntoView({ block: "nearest" });
+  }
+  if (free.active >= 0) $("freeName").setAttribute("aria-activedescendant", "freeOpt" + free.active);
+  else $("freeName").removeAttribute("aria-activedescendant");
+}
+
+// Under the field, or above it when the window has more room there.
+function placeFreeList() {
+  const list = $("freeList"), r = $("freeField").getBoundingClientRect();
+  const below = window.innerHeight - r.bottom - 12, above = r.top - 12;
+  const up = below < 220 && above > below;
+  list.style.left = r.left + "px";
+  list.style.width = r.width + "px";
+  list.style.maxHeight = Math.max(120, Math.min(300, up ? above : below)) + "px";
+  list.style.top = up ? "" : r.bottom + 6 + "px";
+  list.style.bottom = up ? window.innerHeight - r.top + 6 + "px" : "";
+}
+
+function refreshFreeList() {
+  free.open = true;
+  free.active = -2;  // renderFreeList picks the default
+  renderFreeList();
+}
+
+async function openFreeList() {
+  refreshFreeList();
+  const result = await api.recent_free();
+  if (!result.ok || !free.open) return;
+  free.recent = result.recent;
+  const keep = free.active;
+  free.active = keep < 0 ? -2 : keep;
+  renderFreeList();
+}
+
+function closeFreeList() {
+  if (!free.open) return;
+  free.open = false;
+  renderFreeList();
+}
+
+function chooseFree(o) {
+  const input = $("freeName");
+  if (o.kind === "custom") { closeFreeList(); return startFree(); }
+  if (o.kind === "activity") {
+    if (!free.activity) input.value = "";  // what was typed only looked for it
+    setFreeActivity(o.activity);
+  } else {
+    const a = o.recent.activity && activities().find((x) => x.id === o.recent.activity);
+    setFreeActivity(a || null);
+    input.value = o.recent.detail;
+  }
+  closeFreeList();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+async function startFree(name, activityId) {
+  if (typeof name !== "string") {
+    name = $("freeName").value;
+    activityId = free.activity ? free.activity.id : "";
+  }
+  if (state && state.session && !confirm(`Replace the current session on “${state.session.task.content}”?`)) return;
+  flushPomodoro();
+  const result = await api.start(null, name, activityId || "");
+  if (!result.ok) return toast(result.error, true);
+  toast(`Go. ${pomo.work_minutes} minutes, just this${state && (state.bar.local || state.bar.offline) ? "" : " (on the bar)"}.`);
+  $("freeName").value = "";
+  setFreeActivity(null);
+  closeFreeList();
+  poll();
+}
+$("startFree").onclick = () => startFree();
+
+$("freeName").addEventListener("focus", () => { if (!free.open) openFreeList(); });
+$("freeName").addEventListener("input", () => {
+  const input = $("freeName");
+  if (!free.activity) {
+    // "call: Ana" or "Call · Ana": the activity, then the detail.
+    const m = input.value.match(/^\s*([^:·]+?)\s*[:·]\s*(.*)$/);
+    const a = m && activities().find((x) => x.name.toLowerCase() === m[1].toLowerCase());
+    if (a) { setFreeActivity(a); input.value = m[2]; }
+  }
+  refreshFreeList();
+});
+$("freeName").addEventListener("keydown", (e) => {
+  const input = $("freeName");
+  const n = free.options.length;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    e.stopPropagation();  // not the task list's selection
+    if (!free.open) return openFreeList();
+    if (!n) return;
+    const step = e.key === "ArrowDown" ? 1 : -1;
+    free.active = free.active < 0 ? (step > 0 ? 0 : n - 1) : (free.active + step + n) % n;
+    markFreeActive();
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    e.stopPropagation();
+    if (free.open && free.active >= 0 && free.options[free.active]) chooseFree(free.options[free.active]);
+    else startFree();
+  } else if (e.key === "Escape" && free.open && n) {
+    e.stopPropagation();  // not "hide the window"
+    closeFreeList();
+  } else if (e.key === "Backspace" && free.activity && input.selectionStart === 0 && input.selectionEnd === 0) {
+    e.preventDefault();
+    setFreeActivity(null);
+    refreshFreeList();
+  } else if (e.key === "Tab") {
+    closeFreeList();
+  }
+});
+$("freeCombo").addEventListener("focusout", (e) => { if (!$("freeCombo").contains(e.relatedTarget)) closeFreeList(); });
+$("freeField").addEventListener("mousedown", (e) => {
+  if (e.target === $("freeName")) { if (!free.open) openFreeList(); return; }
+  e.preventDefault();  // the chip and the arrow keep the focus in the field
+  $("freeName").focus();
+  if (e.target.closest("#freeChipX")) {
+    setFreeActivity(null);
+    refreshFreeList();
+  } else if (e.target.closest("#freeToggle")) {
+    if (free.open) closeFreeList();
+    else openFreeList();
+  } else if (!free.open) {
+    openFreeList();
+  }
+});
+document.querySelector(".panel.focus").addEventListener("scroll", () => { if (free.open) placeFreeList(); });
+window.addEventListener("resize", () => { if (free.open) placeFreeList(); });
+
 $("endedClose").onclick = async () => { await api.dismiss_ended(); poll(); };
 $("endedComplete").onclick = async () => {
   const e = state.ended;
-  const result = await api.complete(e.task.id);
+  const result = await api.complete(e.task.id, true);
   if (!result.ok) return toast(result.error, true);
   toast("Done in Todoist.");
   // drop it at once, then reload so the filter shows what Todoist now has
-  tasks = tasks.filter((t) => t.id !== e.task.id);
-  renderTasks();
+  const gone = new Set([e.task.id]);
+  const dropGone = () => {
+    tasks = tasks.filter((t) => !gone.has(t.id))
+      .map((t) => t.subtasks ? { ...t, subtasks: t.subtasks.filter((s) => !gone.has(s.id)) } : t);
+    renderTasks();
+  };
+  dropGone();
   await poll();
+  // That was the last open subtask: offer to close its parent too.
+  const parent = result.parent;
+  if (parent && confirm(`That was the last subtask of “${parent.content || "its parent"}”. Complete it too?`)) {
+    const closed = await api.complete(parent.id, false, parent.content);
+    if (!closed.ok) toast(closed.error, true);
+    else { toast("Both done in Todoist."); gone.add(parent.id); dropGone(); }
+  }
   loadTasks(true);
 };
 $("endedAgain").onclick = async () => {
   const e = state.ended;
-  const task = tasks.find((t) => t.id === e.task.id);
+  const task = findTask(e.task.id);
   await api.dismiss_ended();
-  if (!e.task.id) return startFree(e.task.content);
+  if (!e.task.id) return e.activity ? startFree(e.activity.detail, e.activity.id) : startFree(e.task.content);
   if (!task) return toast("That task is no longer in the list.", true);
-  startTask(task);
+  startTask(task, null, false, true);  // the same one again, no picker
 };
 
 // ------------------------------------------------------------- settings
@@ -914,6 +1291,13 @@ async function loadStats() {
   if (f.ok) renderFocusStats(f);
   if (r.ok) renderStats(r);
 }
+
+// Saved at once (not with Save), so the streak above changes as you click.
+$("s_streak_skip_weekends").onchange = async () => {
+  const result = await api.save_settings(formValues(["streak_skip_weekends"]));
+  if (!result.ok) return toast(result.error, true);
+  loadStats();
+};
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
@@ -961,6 +1345,19 @@ function renderFocusStats(s) {
     `Focus per day over the last ${s.span} days: ${duration(s.totals.span.minutes)} in all.`,
     { line: (d) => d.minutes ? `${duration(d.minutes)} · ${plural(d.pomodoros, "tomato")}` : "No tomatoes", max: duration });
   $("focusFirst").textContent = s.days.length ? statDay(s.days[0].day) : "";
+
+  // One row per activity, with Todoist tasks and typed names ("_task",
+  // "_other") as their own rows; hidden until an activity has been used.
+  const groups = s.activities || [];
+  const used = groups.some((g) => !g.id.startsWith("_"));
+  $("focusActivities").replaceChildren(...(used ? groups.map((g) => {
+    const row = el("div", "stat-site");
+    const name = el("span", "stat-host stat-activity");
+    name.append(g.icon ? activityIcon(g.icon) : el("i", "stat-noicon"), g.name);
+    const share = s.totals.span.minutes ? Math.round((100 * g.minutes) / s.totals.span.minutes) : 0;
+    row.append(name, el("span", "help", `${plural(g.pomodoros, "tomato")} · ${share}%`), el("b", "", duration(g.minutes)));
+    return row;
+  }) : [el("div", "help", "Pick an activity under “What are you working on?” to see where your focus goes.")]));
 
   $("focusTasks").replaceChildren(...(s.tasks.length ? s.tasks.map((t) => {
     const row = el("div", "stat-site");
@@ -1027,6 +1424,11 @@ async function openSettings(tab) {
   blockedApps =(s.blocked_apps || []).map((a) => ({ ...a, exes: [...a.exes] }));
   $("addBlockedApp").value = "";
   renderBlockedApps();
+  activityRows = (s.activities || []).map((a) => ({ ...a }));
+  iconPicker = -1;
+  blockScope = "";
+  $("addActivity").value = "";
+  renderActivities();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
   LIMITS.site.rules = JSON.parse(JSON.stringify(s.site_limits || []));
   LIMITS.app.rules = JSON.parse(JSON.stringify(s.app_limits || []));
@@ -1042,11 +1444,13 @@ async function openSettings(tab) {
   $("extDir").title = s.extension_dir || "";
   for (const n of document.querySelectorAll(".browser-name")) n.textContent = s.extension_browser || "Chrome";
   renderBlockedSites();
+  renderBlocking();
   $("extOldVersion").textContent = s.extension_version ? "version " + s.extension_version : "an older version";
   $("extNewVersion").textContent = s.extension_latest || "";
   renderExtension(s.extension_connected, s.extension_outdated);
   showBarFields();
   showTodoistFields();
+  showPlanFields();
   $("aboutVersion").textContent = "buZyist " + s.version;
   $("aboutData").textContent = s.data_dir;
   $("autoUpdateRow").classList.toggle("hidden", !s.can_auto_update);
@@ -1106,6 +1510,41 @@ function showTodoistFields() {
 }
 $("s_use_todoist").onchange = showTodoistFields;
 
+// (minutes per tomato, tomatoes) for a task of `minutes`, or null. Mirrors
+// plan_session in buzyist/plan.py; tests/plan_cases.json checks both.
+function planSession(minutes, c) {
+  if (!c.plan_from_duration || !(minutes > 0)) return null;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  if (minutes <= c.plan_single_max) return [clamp(minutes, 5, 480), 1];
+  let rounds = Math.max(1, Math.floor(minutes / c.plan_target + 0.5));
+  rounds = Math.max(1, Math.min(rounds, Math.floor(minutes / c.plan_min)));
+  rounds = Math.max(rounds, Math.ceil(minutes / c.plan_max));
+  rounds = Math.min(rounds, 35);
+  return [clamp(Math.floor(minutes / rounds + 0.5), 5, 480), rounds];
+}
+
+// The duration options, with what they make of a few task lengths.
+function showPlanFields() {
+  const v = formValues(["plan_from_duration", "plan_single_max", "plan_target", "plan_min", "plan_max"]);
+  $("planFields").classList.toggle("muted", !v.plan_from_duration);
+  const c = { ...v };
+  for (const k of ["plan_single_max", "plan_target", "plan_min", "plan_max"]) c[k] = +v[k];
+  const ok = c.plan_target >= 5 && c.plan_min >= 5 && c.plan_max >= 5 && c.plan_single_max >= 0
+    && c.plan_min <= c.plan_target && c.plan_target <= c.plan_max;
+  if (!ok) {
+    $("planExample").textContent = "Keep the tomato length between the shortest and the longest.";
+    return;
+  }
+  c.plan_from_duration = true;
+  $("planExample").textContent = "For example: " + [15, 30, 45, 60, 90, 120].map((m) => {
+    const [mins, rounds] = planSession(m, c);
+    return `${duration(m)} → ${rounds === 1 ? mins + " min" : rounds + " × " + mins}`;
+  }).join(" · ");
+}
+for (const name of ["plan_from_duration", "plan_single_max", "plan_target", "plan_min", "plan_max"]) {
+  document.querySelector(`#settingsForm input[name="${name}"]`).addEventListener("input", showPlanFields);
+}
+
 // The bar's address, PIN and polling only matter with a bar.
 function showBarFields() {
   const on = $("s_use_busybar").checked;
@@ -1115,6 +1554,99 @@ function showBarFields() {
 $("s_use_busybar").onchange = showBarFields;
 
 // The apps kept away during focus, as edited here; saved with the rest.
+// The activities offered under "What are you working on?" (General tab):
+// [{id, name, icon}], renamed in place (the id stays, so do their stats),
+// reordered, removed, added. clean_activities in buzyist/activities.py has
+// the last word when Settings are saved.
+const MAX_ACTIVITIES = 12;  // as in buzyist/activities.py
+let activityRows = [];
+let iconPicker = -1;  // the row whose icons are showing
+
+function renderActivities() {
+  const list = $("activityList");
+  list.replaceChildren();
+  activityRows.forEach((a, i) => {
+    const row = el("div", "activity-row");
+    const pick = el("button", "activity-icon");
+    pick.type = "button";
+    pick.title = "Change the icon";
+    pick.setAttribute("aria-label", `Icon for ${a.name}`);
+    pick.setAttribute("aria-expanded", iconPicker === i);
+    pick.append(activityIcon(a.icon));
+    pick.onclick = () => { iconPicker = iconPicker === i ? -1 : i; renderActivities(); };
+
+    const name = el("input", "input slim");  // no name: formValues() leaves it alone
+    name.value = a.name;
+    name.type = "text";
+    name.maxLength = 30;
+    name.spellcheck = false;
+    name.setAttribute("aria-label", "Activity name");
+    name.oninput = () => { a.name = name.value; renderScopes(); };
+
+    const move = (d) => {
+      const j = i + d;
+      if (j < 0 || j >= activityRows.length) return;
+      [activityRows[i], activityRows[j]] = [activityRows[j], activityRows[i]];
+      iconPicker = -1;
+      renderActivities();
+      list.querySelectorAll(".activity-row")[j].querySelector(d < 0 ? ".up" : ".down").focus();
+    };
+    const up = el("button", "remove up");
+    up.type = "button";
+    up.title = "Move up";
+    up.disabled = i === 0;
+    up.append(icon("up"));
+    up.onclick = () => move(-1);
+    const down = el("button", "remove down");
+    down.type = "button";
+    down.title = "Move down";
+    down.disabled = i === activityRows.length - 1;
+    down.append(icon("down"));
+    down.onclick = () => move(1);
+    const x = el("button", "remove", "×");
+    x.type = "button";
+    x.title = "Remove " + a.name;
+    x.onclick = () => { activityRows.splice(i, 1); iconPicker = -1; renderActivities(); };
+
+    row.append(pick, name, up, down, x);
+    list.append(row);
+    if (iconPicker === i) {
+      const icons = el("div", "icon-grid");
+      icons.setAttribute("role", "group");
+      icons.setAttribute("aria-label", `Icons for ${a.name}`);
+      for (const k of ACTIVITY_ICONS) {
+        const b = el("button", "activity-icon" + (k === a.icon ? " on" : ""));
+        b.type = "button";
+        b.title = k;
+        b.setAttribute("aria-pressed", k === a.icon);
+        b.append(activityIcon(k));
+        b.onclick = () => { a.icon = k; iconPicker = -1; renderActivities(); list.querySelectorAll(".activity-row")[i].querySelector(".activity-icon").focus(); };
+        icons.append(b);
+      }
+      list.append(icons);
+    }
+  });
+  if (!activityRows.length) list.append(el("div", "help", "No activities: the field takes only what you type."));
+  $("addActivity").disabled = $("addActivityBtn").disabled = activityRows.length >= MAX_ACTIVITIES;
+  renderBlocking();  // the picker in Apps and Websites
+}
+
+function addActivity() {
+  const input = $("addActivity");
+  const name = input.value.trim().replace(/\s+/g, " ");
+  if (!name) return;
+  if (activityRows.some((a) => a.name.trim().toLowerCase() === name.toLowerCase())) return toast(`${name} is already in the list.`, true);
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 20) || "activity";
+  let id = base;
+  for (let n = 2; activityRows.some((a) => a.id === id); n++) id = `${base}-${n}`;
+  activityRows.push({ id, name, icon: "dot" });
+  input.value = "";
+  iconPicker = activityRows.length - 1;  // a new one picks its icon next
+  renderActivities();
+}
+$("addActivityBtn").onclick = addActivity;
+$("addActivity").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addActivity(); } });
+
 // Each is {id, name, exes, on, action: "close"|"hide", custom}; the presets
 // come from Python and can only be switched, apps added here can be removed.
 const MAX_BLOCKED_APPS = 20;
@@ -1360,6 +1892,364 @@ function cleanSitePattern(raw) {
   if (path === "/" || path === "/*") path = "";
   return host + path;
 }
+// ---------------------------------------------------- blocking per activity
+//
+// The Apps and Websites tabs edit either the global settings ("Everything") or
+// what one activity changes in them during its work phases: its `apps` and
+// `sites` rules, kept on its row in activityRows and saved with it.
+// appBlocking and siteBlocking mirror app_blocking (blocker.py) and
+// site_blocking (site_rules.py) for the summary under the lists; Python has the
+// last word (tests/activity_blocking_cases.json feeds both).
+let blockScope = "";  // "" for the global settings, else an activity's id
+const scopeActivity = () => activityRows.find((a) => a.id === blockScope) || null;
+const appKey = (n) => n.trim().toLowerCase().replace(/\.exe$/, "");  // app_key in blocker.py
+const BLOCK_STATES = [["inherit", "Like global"], ["off", "Don't block"], ["on", "Block"]];
+const RULE_DEFAULTS = {
+  apps: { state: "inherit", allow: [], block: [] },
+  sites: { state: "inherit", mode: "", allow: [], block: [] },
+};
+// An activity's rules, or a fresh copy of the defaults when it has none:
+// editActivityRules stores them on the first change, so looking changes nothing.
+const activityRules = (a, key) => a[key] || structuredClone(RULE_DEFAULTS[key]);
+
+function editActivityRules(a, key, change) {
+  const rules = activityRules(a, key);
+  change(rules);
+  a[key] = rules;
+  renderBlocking();
+}
+
+function appBlocking(cfg, id, protect = PROTECTED_EXES) {
+  const key = (n) => n.trim().toLowerCase().replace(/\.exe$/, "");
+  const label = (exe) => exe.replace(/\.exe$/i, "").split(".")[0] || exe;
+  const activity = id ? (cfg.activities || []).find((a) => a.id === id) : null;
+  const rules = (activity && activity.apps) || {};
+  const state = rules.state || "inherit";
+  if (state === "off" || (state === "inherit" && !cfg.block_apps)) return [];
+  const skip = new Set([...(rules.allow || []).map(key), ...protect]);
+  const entries = cfg.blocked_apps || [];
+  const out = [];
+  const taken = new Set();
+  for (const entry of entries) {
+    const exes = entry.on ? entry.exes.filter((e) => !skip.has(key(e))) : [];
+    if (exes.length) {
+      out.push({ ...entry, exes });
+      for (const e of exes) taken.add(key(e));
+    }
+  }
+  for (const exe of rules.block || []) {
+    const k = key(exe);
+    if (taken.has(k) || skip.has(k)) continue;
+    taken.add(k);
+    const owner = entries.find((e) => e.exes.some((x) => key(x) === k));
+    out.push(owner ? { ...owner, exes: [exe], on: true }
+      : { id: "activity:" + k, name: label(exe), exes: [exe], on: true, action: "close", custom: true });
+  }
+  return out;
+}
+
+function siteBlocking(cfg, id) {
+  const activity = id ? (cfg.activities || []).find((a) => a.id === id) : null;
+  const rules = (activity && activity.sites) || {};
+  const state = rules.state || "inherit";
+  const globalMode = cfg.site_mode || "block";
+  const mode = rules.mode || globalMode;
+  if (state === "off" || (state === "inherit" && !cfg.block_sites)) return { on: false, mode, patterns: [], except: [] };
+  const base = mode === globalMode ? [...(cfg[mode === "allow" ? "allowed_sites" : "blocked_sites"] || [])] : [];
+  const carve = [...(rules[mode === "allow" ? "block" : "allow"] || [])];
+  const patterns = [];
+  for (const p of [...base, ...(rules[mode] || [])]) {
+    if (!patterns.includes(p) && !carve.includes(p)) patterns.push(p);
+  }
+  return { on: true, mode, patterns, except: carve };
+}
+
+// The settings as edited here, in the shape the mirrors take.
+const draftBlocking = () => ({
+  block_apps: $("s_block_apps").checked, blocked_apps: blockedApps,
+  block_sites: $("s_block_sites").checked, site_mode: siteMode(),
+  blocked_sites: siteLists.block, allowed_sites: siteLists.allow, activities: activityRows,
+});
+
+// The picker at the top of both tabs: Everything, then each activity. Drawn
+// again when an activity is added, renamed or removed in General.
+function renderScopes() {
+  if (blockScope && !scopeActivity()) blockScope = "";
+  for (const id of ["appsScope", "sitesScope"]) {
+    const box = $(id);
+    box.classList.toggle("hidden", !activityRows.length);
+    box.replaceChildren();
+    const choice = (value, name, iconName) => {
+      const b = el("button", "scope");
+      b.type = "button";
+      b.setAttribute("aria-pressed", blockScope === value);
+      if (iconName) b.append(activityIcon(iconName));
+      b.append(el("span", "", name));
+      b.onclick = () => {
+        blockScope = value;
+        renderBlocking();
+        $(id).querySelector('[aria-pressed="true"]').focus();
+      };
+      box.append(b);
+    };
+    choice("", "Everything");
+    for (const a of activityRows) choice(a.id, a.name.trim() || "Unnamed", a.icon);
+  }
+}
+
+function renderBlocking() {
+  renderScopes();
+  const a = scopeActivity();
+  for (const [global, own] of [["appsGlobal", "appsActivity"], ["sitesGlobal", "sitesActivity"]]) {
+    $(global).classList.toggle("hidden", !!a);
+    $(own).classList.toggle("hidden", !a);
+  }
+  if (!a) return;
+  renderActivityApps(a);
+  renderActivitySites(a);
+}
+
+// A row of choices that looks like .seg's radios without being a setting of
+// its own (formValues reads every named input).
+function segButtons(label, options, value, onpick) {
+  const seg = el("div", "seg");
+  seg.setAttribute("role", "radiogroup");
+  seg.setAttribute("aria-label", label);
+  for (const [v, text] of options) {
+    const b = el("button", "", text);
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", v === value);
+    b.onclick = () => {
+      onpick(v);
+      const again = [...document.querySelectorAll(".seg")].find((s) => s.getAttribute("aria-label") === label);
+      if (again) again.querySelector('[aria-checked="true"]').focus();
+    };
+    seg.append(b);
+  }
+  return seg;
+}
+
+// A list of program names or websites with an input to add one. `suggest`
+// (apps only) is suggestApps' skip.
+function editableList(box, { title, label, help, items, placeholder, add, remove, suggest }) {
+  box.append(el("h4", "", title));
+  if (help) box.append(el("div", "help", help));
+  const list = el("div", "app-list");
+  items.forEach((item, i) => {
+    const row = el("div", "app-row");
+    row.append(el("span", "site", item), el("span"), removeButton(() => remove(i), "Remove " + item));
+    list.append(row);
+  });
+  const line = el("div", "input-row");
+  const input = el("input", "input");  // no name: formValues() leaves it alone
+  input.spellcheck = false;
+  input.placeholder = placeholder;
+  input.setAttribute("aria-label", label);
+  const btn = el("button", "btn", "Add");
+  btn.type = "button";
+  line.append(input, btn);
+  box.append(list, line);
+  const go = () => {
+    const value = input.value;
+    input.value = "";
+    add(value);
+    const again = [...document.querySelectorAll("#appsActivity input, #sitesActivity input")]
+      .find((n) => n.getAttribute("aria-label") === label);
+    if (again) again.focus();
+  };
+  if (suggest) suggestApps(input, { skip: suggest, picked: go });  // before the Enter handler, as above
+  btn.onclick = go;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); go(); } });
+}
+
+// One global entry under an activity, with a switch that takes it out (or
+// puts it back) for that activity. `key` finds the switch again after a render.
+function inheritedRow(boxId, key, text, exe, kept, state, toggle) {
+  const row = el("div", "app-row" + (kept ? "" : " off"));
+  row.dataset.key = key;
+  const label = el("label", "switch");
+  const check = el("input");  // no name: formValues() leaves it alone
+  check.type = "checkbox";
+  check.checked = kept;
+  check.onchange = () => {
+    toggle(check.checked);
+    const again = $(boxId).querySelector(`[data-key="${CSS.escape(key)}"] input`);
+    if (again) again.focus();
+  };
+  label.append(check, el("span", "knob"), el("span", exe ? "" : "site", text));
+  if (exe) label.append(el("span", "exe", exe));
+  row.append(label, el("span", "state", state), el("span"));
+  return row;
+}
+
+const activityName = (a) => a.name.trim() || "this activity";
+
+function renderActivityApps(a) {
+  const box = $("appsActivity");
+  box.replaceChildren();
+  const rules = activityRules(a, "apps");
+  const name = activityName(a);
+  const globalOn = $("s_block_apps").checked;
+  box.append(el("div", "help", `What work phases on ${name} do with apps. Todoist tasks and names you type use Everything.`));
+  box.append(segButtons(`Apps during ${name}`, BLOCK_STATES, rules.state, (v) => editActivityRules(a, "apps", (r) => { r.state = v; })));
+  box.append(el("div", "help", {
+    inherit: globalOn ? "Keeps away the apps of the global list, with the changes below."
+      : "The global switch is off, so no app is blocked. Pick Block to block these anyway.",
+    off: `Leaves every app alone during ${name}.`,
+    on: "Keeps these apps away even when the global switch is off.",
+  }[rules.state]));
+  if (rules.state === "off") return;
+  const fields = el("div", "activity-fields" + (rules.state === "inherit" && !globalOn ? " muted" : ""));
+  box.append(fields);
+
+  fields.append(el("h4", "", "From the global list"));
+  const allowed = new Set(rules.allow.map(appKey));
+  const shown = blockedApps.filter((e) => e.on);
+  const list = el("div", "app-list");
+  for (const entry of shown) {
+    const kept = !entry.exes.some((e) => allowed.has(appKey(e)));
+    list.append(inheritedRow("appsActivity", entry.id, entry.name, entry.exes[0], kept,
+      kept ? (entry.action === "hide" ? "Hidden" : "Closed") : "Let through",
+      (keep) => editActivityRules(a, "apps", (r) => {
+        const keys = new Set(entry.exes.map(appKey));
+        r.allow = r.allow.filter((e) => !keys.has(appKey(e)));
+        if (!keep) r.allow.push(...entry.exes);
+      })));
+  }
+  if (!shown.length) list.append(el("div", "help", "The global list blocks no app."));
+  fields.append(list);
+
+  const listed = new Set(shown.flatMap((e) => e.exes.map(appKey)));
+  const extra = rules.allow.filter((e) => !listed.has(appKey(e)));
+  editableList(fields, {
+    title: "Also let through", label: "Also let through (apps)",
+    help: "Left alone even if the global list blocks them later.",
+    items: extra, placeholder: "Add a program, e.g. Teams.exe",
+    add: (raw) => addActivityApp(a, "allow", raw),
+    remove: (i) => editActivityRules(a, "apps", (r) => { r.allow = r.allow.filter((e) => e !== extra[i]); }),
+    suggest: (app) => allowed.has(appKey(app.exe)),
+  });
+  editableList(fields, {
+    title: "Also block", label: "Also block (apps)",
+    help: `Closed during work phases on ${name}, on top of the global list.`,
+    items: rules.block, placeholder: "Add a program, e.g. Spotify.exe",
+    add: (raw) => addActivityApp(a, "block", raw),
+    remove: (i) => editActivityRules(a, "apps", (r) => { r.block.splice(i, 1); }),
+    suggest: (app) => app.protected || rules.block.some((e) => appKey(e) === appKey(app.exe)),
+  });
+  const names = [...new Set(appBlocking(draftBlocking(), a.id).map((e) => e.name))];
+  fields.append(el("div", "help preview", names.length
+    ? `During ${name}: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} kept away.`
+    : `During ${name}: no app is blocked.`));
+}
+
+function addActivityApp(a, field, raw) {
+  const name = raw.trim().replace(/[,;\s]+$/, "");
+  if (!name) return;
+  if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
+  if (field === "block" && PROTECTED_EXES.has(appKey(name))) {
+    return toast(`buZyist won't close ${name}: Windows or your browser needs it.`, true);
+  }
+  const rules = activityRules(a, "apps");
+  if (rules[field].some((e) => appKey(e) === appKey(name))) return;
+  if (rules[field].length >= MAX_BLOCKED_APPS) {
+    return toast(`Keep the ${field === "allow" ? "allowed" : "blocked"} apps under ${MAX_BLOCKED_APPS}.`, true);
+  }
+  const exe = /\.exe$/i.test(name) ? name : name + ".exe";
+  const other = field === "allow" ? "block" : "allow";
+  editActivityRules(a, "apps", (r) => {
+    r[other] = r[other].filter((e) => appKey(e) !== appKey(exe));  // one or the other
+    r[field].push(exe);
+  });
+}
+
+function renderActivitySites(a) {
+  const box = $("sitesActivity");
+  box.replaceChildren();
+  const rules = activityRules(a, "sites");
+  const name = activityName(a);
+  const globalOn = $("s_block_sites").checked;
+  const globalMode = siteMode();
+  box.append(el("div", "help", `What work phases on ${name} do with websites. Todoist tasks and names you type use Everything.`));
+  box.append(segButtons(`Websites during ${name}`, BLOCK_STATES, rules.state, (v) => editActivityRules(a, "sites", (r) => { r.state = v; })));
+  box.append(el("div", "help", {
+    inherit: globalOn ? "Uses the global websites, with the changes below."
+      : "The global switch is off, so no website is blocked. Pick Block to block these anyway.",
+    off: `Leaves every website open during ${name}.`,
+    on: "Limits these websites even when the global switch is off.",
+  }[rules.state]));
+  if (rules.state === "off") return;
+  const fields = el("div", "activity-fields" + (rules.state === "inherit" && !globalOn ? " muted" : ""));
+  box.append(fields);
+
+  fields.append(segButtons(`Website mode during ${name}`, [["", `Like global (${globalMode === "allow" ? "allow only" : "block"})`], ["block", "Block these"], ["allow", "Allow only these"]],
+    rules.mode, (v) => editActivityRules(a, "sites", (r) => { r.mode = v; })));
+  const mode = rules.mode || globalMode;
+  const carve = mode === "allow" ? "block" : "allow";  // site_blocking's `except`
+  const inherited = mode === globalMode;
+  if (inherited) {
+    fields.append(el("h4", "", mode === "allow" ? "Allowed by the global list" : "Blocked by the global list"));
+    const list = el("div", "app-list");
+    for (const site of siteLists[mode]) {
+      const kept = !rules[carve].includes(site);
+      list.append(inheritedRow("sitesActivity", site, site, "", kept,
+        mode === "allow" ? (kept ? "Allowed" : "Blocked") : (kept ? "Blocked" : "Let through"),
+        (keep) => editActivityRules(a, "sites", (r) => {
+          r[carve] = r[carve].filter((p) => p !== site);
+          if (!keep) r[carve].push(site);
+        })));
+    }
+    if (!siteLists[mode].length) {
+      list.append(el("div", "help", mode === "allow" ? "The global list allows no website." : "The global list blocks no website."));
+    }
+    fields.append(list);
+  } else {
+    fields.append(el("div", "help", `The global setting ${globalMode === "allow" ? "allows only its list" : "blocks its list"}, so nothing is inherited: ${name} uses only the websites below.`));
+  }
+  editableList(fields, {
+    title: inherited ? (mode === "allow" ? "Also allow" : "Also block") : (mode === "allow" ? "Allow only these" : "Block these"),
+    label: (mode === "allow" ? "Allowed" : "Blocked") + " websites",
+    items: rules[mode],
+    placeholder: mode === "allow" ? "Add an allowed website, e.g. github.com" : "Add a website, e.g. youtube.com",
+    add: (raw) => addActivitySite(a, mode, raw),
+    remove: (i) => editActivityRules(a, "sites", (r) => { r[mode].splice(i, 1); }),
+  });
+  const base = new Set(inherited ? siteLists[mode] : []);
+  const extra = rules[carve].filter((p) => !base.has(p));
+  editableList(fields, {
+    title: mode === "allow" ? "Still block" : "Let through",
+    label: (mode === "allow" ? "Still blocked" : "Let through") + " websites",
+    help: mode === "allow"
+      ? "Blocked even inside an allowed website, e.g. youtube.com/shorts/* inside youtube.com."
+      : "Open even inside a blocked website, e.g. mail.google.com inside *.google.com.",
+    items: extra,
+    placeholder: mode === "allow" ? "e.g. youtube.com/shorts/*" : "e.g. mail.google.com",
+    add: (raw) => addActivitySite(a, carve, raw),
+    remove: (i) => editActivityRules(a, "sites", (r) => { r[carve] = r[carve].filter((p) => p !== extra[i]); }),
+  });
+  const b = siteBlocking(draftBlocking(), a.id);
+  const n = b.patterns.length;
+  const m = b.except.length;
+  fields.append(el("div", "help preview", b.mode === "allow"
+    ? (n ? `During ${name}: only ${plural(n, "website")} open${m ? `, with ${m} blocked inside them` : ""}.` : `During ${name}: every website is blocked.`)
+    : (n ? `During ${name}: ${plural(n, "website")} blocked${m ? `, with ${m} let through inside them` : ""}.` : `During ${name}: no website is blocked.`)));
+}
+
+function addActivitySite(a, field, raw) {
+  const site = cleanSitePattern(raw);
+  if (site === "") return;
+  if (site === null) return toast("Type a website like youtube.com or *.google.com.", true);
+  const rules = activityRules(a, "sites");
+  if (rules[field].includes(site)) return;
+  if (rules[field].length >= 50) return toast("Keep the list under 50 websites.", true);
+  const other = field === "allow" ? "block" : "allow";
+  editActivityRules(a, "sites", (r) => {
+    r[other] = r[other].filter((p) => p !== site);  // one or the other
+    r[field].push(site);
+  });
+}
+
 // ------------------------------------------------------- website and app limits
 //
 // Time budgets and blocked hours that apply all day (the Limits tab), for
@@ -1837,8 +2727,9 @@ $("settingsForm").onsubmit = (e) => { e.preventDefault(); $("saveSettings").clic
 $("saveSettings").onclick = async () => {
   addBlockedApp(); // a name typed but not yet added still counts
   addBlockedSite(); // same for a website typed but not yet added
+  addActivity(); // and an activity
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: LIMITS.site.rules, app_limits: LIMITS.app.rules, sync_owner: syncOwner });
+  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: LIMITS.site.rules, app_limits: LIMITS.app.rules, activities: activityRows, sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");

@@ -208,7 +208,59 @@ body[data-phase="paused"] .time { animation: blink 1.6s ease-in-out infinite; }
 .rounds-text:empty { display: none; }
 
 .free { display: grid; gap: 10px; width: 100%; justify-items: center; }
-.free .input { max-width: 300px; text-align: center; }
+
+/* "What are you working on?": an activity chip plus free text (the combobox in main.js) */
+.combo { width: 100%; max-width: 320px; }
+.combo-field {
+  display: flex; align-items: center; gap: 4px; height: 44px; padding: 0 4px 0 6px; border-radius: 14px;
+  border: 2px solid var(--line); background: var(--field); cursor: text; transition: border-color .15s;
+}
+.combo-field:focus-within { border-color: var(--bz-tomate); }
+.combo-field input {
+  flex: 1; min-width: 0; height: 100%; padding: 0 4px 0 30px; border: 0; background: transparent; outline: none;
+  font-size: 14.5px; font-weight: 500; text-align: center;
+}
+.combo-field.has-chip input { padding-left: 4px; text-align: left; }
+.combo-field input::placeholder { color: var(--muted); opacity: .75; }
+.combo-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none; max-width: 60%; height: 30px; padding: 0 3px 0 9px;
+  border-radius: 999px; background: var(--surface-3); font-size: 13.5px; font-weight: 700; white-space: nowrap; cursor: default;
+}
+.combo-chip > span { overflow: hidden; text-overflow: ellipsis; }
+.combo-chip > svg { width: 16px; height: 16px; flex: none; }
+.combo-chip button {
+  display: grid; place-items: center; flex: none; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.combo-chip button:hover { background: var(--bg); color: var(--ink); }
+.combo-chip button svg { width: 12px; height: 12px; }
+.combo-toggle {
+  display: grid; place-items: center; flex: none; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 10px;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.combo-toggle:hover { background: var(--surface); color: var(--ink); }
+.combo-toggle svg { width: 18px; height: 18px; transition: transform .15s; }
+.combo.open .combo-toggle svg { transform: rotate(180deg); }
+.combo-list {
+  position: fixed; z-index: 9; overflow-y: auto; padding: 6px; border-radius: var(--r-row);
+  background: var(--bg); border: 2px solid var(--line); display: flex; flex-direction: column; text-align: left;
+}
+.combo-head { padding: 8px 12px 3px; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--faint); }
+.combo-opt {
+  display: flex; align-items: center; gap: 10px; flex: none; min-height: 38px; padding: 6px 12px; border-radius: 12px;
+  color: var(--ink); font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.combo-opt > span { white-space: nowrap; }
+.combo-opt .sub, .combo-opt .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.combo-opt .sub { color: var(--muted); font-weight: 500; }
+.combo-opt svg { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.combo-opt.custom svg { width: 14px; height: 14px; margin: 0 2px; color: var(--primary); }
+.combo-opt.on { background: var(--surface); }
+.combo-edit {
+  flex: none; margin-top: 4px; padding: 8px 12px 4px; border: 0; border-top: 2px solid var(--line); background: none;
+  color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; text-align: left; cursor: pointer;
+}
+.combo-edit:hover { color: var(--primary-text); }
 body.solo .body { grid-template-columns: 1fr; }
 body.solo .tasks { display: none; }
 .tasks.off { opacity: .5; pointer-events: none; }
@@ -367,12 +419,23 @@ kbd {
 .task.done .t-title { text-decoration: line-through; color: var(--muted); }
 .t-body { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .t-title { font-size: 15.5px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-title .t-parent { color: var(--muted); font-weight: 500; }
+/* The task's Todoist description: two lines, "more" for the rest. */
+.t-desc { display: flex; align-items: flex-end; gap: 6px; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.t-desc-text { flex: 1; min-width: 0; white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.t-desc.open .t-desc-text { display: block; }
+.t-more { flex: none; border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--primary-text); cursor: pointer; }
+.t-more:hover { text-decoration: underline; }
 .t-meta { display: flex; gap: 12px; align-items: center; font-size: 12.5px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .t-meta .proj { display: inline-flex; align-items: center; gap: 5px; }
+.t-meta .subs { color: var(--muted); }
 .t-meta .proj i { width: 8px; height: 8px; border-radius: 3px; }
 .t-meta .late { color: var(--primary-text); }
 .t-meta .lbl { color: var(--faint); }
 .t-meta .lbl.mine { color: var(--primary-text); }
+/* The tomatoes the task's Todoist duration gives it (buzyist/plan.py). */
+.t-meta .plan { display: inline-flex; align-items: center; gap: 4px; }
+.t-meta .plan svg { width: 13px; height: 13px; }
 /* Priority: Tomate for P1, Manteiga for P2, Barro for P3 (Todoist's red,
    orange and blue, moved into the buZyist palette). The pill always carries
    "P1 Urgent" etc., so it reads without the colour. */
@@ -427,6 +490,13 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
 }
 .ctx-item svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
 .ctx-item:hover, .ctx-item:focus { background: var(--surface); outline: none; }
+/* "Start on…": a task's subtasks (openSubtaskPicker in main.js) */
+.pick-menu { width: min(340px, calc(100vw - 8px)); max-height: min(420px, calc(100vh - 8px)); overflow-y: auto; }
+.pick-head { padding: 6px 12px 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.pick-item { flex: none; }
+.pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-plan { flex: none; font-size: 12.5px; color: var(--muted); }
+.pick-sep { flex: none; height: 2px; margin: 4px 6px; background: var(--line); }
 
 /* program names suggested under an app input (suggestApps in main.js) */
 .suggest-host { position: relative; }
@@ -498,6 +568,24 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
   width: 28px; height: 28px; border-radius: 50%; font: inherit; font-size: 18px; line-height: 1;
 }
 .remove:hover { background: var(--line); color: var(--ink); }
+.remove:disabled { opacity: .3; cursor: default; background: none; }
+.remove svg { width: 16px; height: 16px; margin: auto; }
+
+/* Settings, General: the activities (renderActivities in main.js) */
+.activity-list { display: grid; gap: 6px; margin: 0 0 8px; }
+.activity-row {
+  display: grid; grid-template-columns: 36px 1fr 28px 28px 28px; align-items: center; gap: 6px;
+  padding: 4px 8px 4px 6px; border-radius: var(--r-row); background: var(--surface);
+}
+.input.slim { height: 36px; padding: 0 10px; border-radius: 10px; background: var(--field); }
+.activity-icon {
+  display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 2px solid transparent; border-radius: 10px;
+  background: transparent; color: var(--ink); cursor: pointer;
+}
+.activity-icon:hover, .activity-icon[aria-expanded="true"] { background: var(--surface-3); }
+.activity-icon svg { width: 20px; height: 20px; }
+.icon-grid { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; margin-top: -2px; border-radius: var(--r-row); border: 2px solid var(--line); }
+.icon-grid .activity-icon.on { border-color: var(--bz-tomate); }
 #blockedAppsFields.muted, #blockedSitesFields.muted { opacity: .55; }
 .app-row .site { font-size: 15px; font-weight: 600; padding: 10px 0; }
 .seg {
@@ -510,6 +598,31 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
 .seg label:hover span { color: var(--ink); }
 .seg input:checked + span { background: var(--blocked); color: var(--on-blocked); }
 .seg input:focus-visible + span { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+/* The same look as buttons, for choices that aren't settings of their own (renderActivityApps/Sites) */
+.seg button {
+  border: 0; background: none; cursor: pointer; font: inherit;
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 700; color: var(--muted);
+}
+.seg button:hover { color: var(--ink); }
+.seg button[aria-checked="true"] { background: var(--blocked); color: var(--on-blocked); }
+.seg button:focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+
+/* Apps and Websites: whose blocking is edited, the global settings or one activity's (renderScopes) */
+.scope-picker { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.scope {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px 0 10px;
+  border-radius: 999px; border: 2px solid var(--line); background: var(--bg);
+  font: inherit; font-size: 13px; font-weight: 700; color: var(--muted); cursor: pointer;
+}
+.scope:hover { color: var(--ink); }
+.scope[aria-pressed="true"] { background: var(--blocked); border-color: var(--blocked); color: var(--on-blocked); }
+.scope:focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+.scope svg { width: 16px; height: 16px; }
+.activity-fields.muted { opacity: .55; }
+.activity-fields h4 { margin-top: 16px; }
+.app-row .state { font-size: 12px; font-weight: 700; color: var(--muted); }
+.app-row.off .site, .app-row.off .switch > span:not(.knob) { color: var(--muted); }
+.preview { margin: 12px 0 0; padding: 10px 14px; border-radius: var(--r-row); background: var(--surface); }
 .extension-box {
   margin-top: 12px; padding: 14px 16px; border-radius: var(--r-card); background: var(--surface); display: grid; gap: 10px;
 }
@@ -678,6 +791,9 @@ body.instant .modal, body.instant .scrim { transition: none; }
   padding: 8px 12px; border-radius: var(--r-row); background: var(--surface); font-size: 14px;
 }
 .stat-host { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stat-activity { display: flex; align-items: center; gap: 8px; align-self: center; }
+.stat-activity svg { width: 18px; height: 18px; flex: none; color: var(--muted); }
+.stat-noicon { width: 18px; flex: none; }
 .stat-tile .help { margin-top: 2px; line-height: 1.35; }
 .stat-streak { font-size: 13.5px; color: var(--muted); margin: -4px 0 12px; }
 .stat-streak b { color: var(--ink); }

@@ -47,8 +47,9 @@ from buzyist.constants import (
     now_ms,
 )
 from buzyist.focus_server import FocusServer
-from buzyist.focus_stats import focus_stats
+from buzyist.focus_stats import SESSION_REASONS, focus_stats
 from buzyist.hotkey import GlobalHotkey
+from buzyist.plan import plan_session
 from buzyist.secrets_dpapi import SECRET_KEYS, unprotect_secrets
 from buzyist.session import SessionMixin
 from buzyist.storage import read_json
@@ -165,10 +166,22 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         if not self.cfg.get("use_todoist"):
             raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
+        cfg = self.cfg.view()
         if tasks is None:
-            tasks = self.todoist.tasks(active["query"])
+            tasks = self.todoist.tasks(active["query"], subtasks=cfg["offer_subtasks"])
         with self.lock:
             self.tasks.update((t["id"], t) for t in tasks)
+            # the subtasks the start picker offers, so start_task finds them too
+            self.tasks.update((s["id"], s) for t in tasks for s in t.get("subtasks", ()))
+        # The tomatoes a task's duration gives it, shown on its row as "3 x 15 min".
+        tasks = [
+            dict(
+                t,
+                plan=plan_session(t.get("minutes"), cfg),
+                subtasks=[dict(s, plan=plan_session(s.get("minutes"), cfg)) for s in t.get("subtasks", ())],
+            )
+            for t in tasks
+        ]
         return {"tasks": tasks, "filters": self.cfg["filters"], "active": active["name"]}
 
     def check_query(self, query: str) -> list[dict]:
@@ -281,7 +294,43 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""
         with self.lock:
             history, session = list(self.history), self.session and dict(self.session)
-        return focus_stats(history, session, date.today())
+        cfg = self.cfg.view()
+        return focus_stats(
+            history,
+            session,
+            date.today(),
+            skip_weekends=cfg.get("streak_skip_weekends"),
+            activities=cfg.get("activities"),
+        )
+
+    def recent_free(self, keep: int = 6) -> list[dict]:
+        """
+        The latest names of sessions with no task, newest first, for the
+        "What are you working on?" list: `{activity, detail}`, the activity's
+        id (or "" for a name typed in) and what came after it. An activity on
+        its own is left out (the list has it already), and so is one since
+        removed, whose name then comes back as typed text.
+        """
+        ids = {a["id"] for a in self.cfg["activities"]}
+        with self.lock:
+            history = list(self.history)
+        out, seen = [], set()
+        for h in reversed(history):
+            if h.get("task_id") or h.get("reason") not in SESSION_REASONS:
+                continue
+            activity = h.get("activity") if isinstance(h.get("activity"), dict) else {}
+            if activity.get("id") in ids:
+                item = {"activity": activity["id"], "detail": str(activity.get("detail") or "")}
+            else:
+                item = {"activity": "", "detail": str(h.get("content") or "")}
+            key = (item["activity"], item["detail"].casefold())
+            if not item["detail"] or item["detail"] == "Focus session" or key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+            if len(out) == keep:
+                break
+        return out
 
     def task_tomatoes(self) -> dict[str, int]:
         """Finished pomodoros per task id, from the history plus the running session."""
@@ -334,6 +383,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 "task_tomatoes": self.task_tomatoes(),
                 "blocks": self.blocks_view(),
                 "pomodoro": {k: self.cfg[k] for k in ("work_minutes", "rest_minutes", "cycles", "autostart")},
+                "activities": self.cfg["activities"],
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
                 "needs_setup": bool(self.cfg.get("use_todoist")) and not self.cfg.get("todoist_token"),
@@ -353,11 +403,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         (issues #1 and #2): active means an interval session, in a work phase,
         not paused, not finished. `ends_at_ms` is when the current work phase
         ends, so toasts and the block page can show "until 14:25".
+        `activity` is the id of our session's activity (and `activity_name`
+        its name), which picks what gets blocked; "" for anything else.
 
         Blocking fails open: a bar that can't be read for three polls in a row
         counts as "no focus", so a lost connection never leaves apps blocked.
         """
-        off = {"active": False, "task": "", "ends_at_ms": 0}
+        off = {"active": False, "task": "", "ends_at_ms": 0, "activity": "", "activity_name": ""}
         with self.lock:
             session, snap = self.session, self.snap
             if snap is None:
@@ -372,6 +424,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             if state.mode != "interval" or state.is_finished or state.phase != "work" or state.is_paused:
                 return off
             remote = None if session else self.remote_session()
+            activity = (session and session.get("activity")) or {}
             return {
                 "active": True,
                 # No session here: the timer was started on the bar itself
@@ -379,6 +432,8 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 # this PC still blocks.
                 "task": session["task"]["content"] if session else (remote["task"]["content"] if remote else ""),
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
+                "activity": activity.get("id", ""),
+                "activity_name": activity.get("name", ""),
             }
 
     def notify_focus(self) -> None:

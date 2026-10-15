@@ -31,12 +31,17 @@ const SYNC_URL = BASE + "/sync";
 // requests with this header may register this profile or get `sync`.
 const HEADERS = { "X-Buzyist": "1" };
 const BLOCKED = chrome.runtime.getURL("blocked.html");
-// Higher wins. Limits beat the allow rules, so a limited site stays blocked in
-// allow mode; focus blocks in "block" mode beat limits, so the focus page shows.
+// Higher wins; at equal priority Chrome prefers "allow" over "redirect".
+// An activity's exceptions (`except`) in block mode are allow rules at the focus
+// blocks' priority, so they get through them (mail.google.com inside
+// *.google.com). Limits beat everything, so a site out of budget stays blocked
+// even when it's allowed or excepted; a site both focus-blocked and over its
+// limit shows the limit page, and its pass falls through to the focus block.
 const CATCH_ALL_PRIORITY = 1;
 const ALLOW_PRIORITY = 2;
-const LIMIT_PRIORITY = 3;
 const FOCUS_PRIORITY = 4;
+const EXCEPT_PRIORITY = 4;
+const LIMIT_PRIORITY = 5;
 const LIMIT_RULE_BASE = 1000;
 const ALARM = "busyist-sync";
 const IDLE_SECONDS = 60; // no input for this long: the time isn't counted
@@ -144,19 +149,23 @@ function matches(pattern, url) {
   return !!re && re.test(url);
 }
 
-// buZyist versions before allowlists only send `sites` (domains to block).
+// buZyist versions before allowlists only send `sites` (domains to block), and
+// those before activities (2.5.0) no `except`: the patterns that go the other
+// way inside the mode's list (let through in "block", blocked in "allow").
 function rulesOf(focus) {
+  const carve = Array.isArray(focus.except) ? focus.except : [];
   if (Array.isArray(focus.patterns)) {
-    return { mode: focus.mode === "allow" ? "allow" : "block", patterns: focus.patterns };
+    return { mode: focus.mode === "allow" ? "allow" : "block", patterns: focus.patterns, except: carve };
   }
-  return { mode: "block", patterns: focus.sites || [] };
+  return { mode: "block", patterns: focus.sites || [], except: carve };
 }
 
 function focusBlocks(url, focus) {
   if (!focus.active || !/^https?:\/\//i.test(url)) return false;
-  const { mode, patterns } = rulesOf(focus);
+  const { mode, patterns, except } = rulesOf(focus);
   const hit = patterns.some((p) => matches(p, url));
-  return mode === "allow" ? !hit : hit;
+  const carved = except.some((p) => matches(p, url));
+  return mode === "allow" ? !hit || carved : hit && !carved;
 }
 
 // ---------------------------------------------------------------- limits
@@ -535,22 +544,30 @@ function redirectRule(id, priority, regexFilter, limitId) {
   };
 }
 
+function allowRule(id, priority, regexFilter) {
+  return {
+    id,
+    priority,
+    action: { type: "allow" },
+    condition: { regexFilter, isUrlFilterCaseSensitive: false, resourceTypes: ["main_frame"] },
+  };
+}
+
 // The declarativeNetRequest rules for this answer. Pure: the same answer (and
 // the same pending time and passes) always gives the same list, with ids in
 // the order of the patterns, so setRules can tell when nothing changed.
 function buildRules(focus, now) {
   const addRules = [];
-  const { mode, patterns } = rulesOf(focus);
+  const { mode, patterns, except } = rulesOf(focus);
+  // The exceptions' ids follow the patterns' (fewer than LIMIT_RULE_BASE: a
+  // few dozen of each at most, see MAX_BLOCKED_SITES).
   if (focus.active && mode === "allow") {
     addRules.push(redirectRule(1, CATCH_ALL_PRIORITY, "^(https?://.*)$"));
-    patterns.forEach((p, i) => addRules.push({
-      id: i + 2,
-      priority: ALLOW_PRIORITY,
-      action: { type: "allow" },
-      condition: { regexFilter: patternRegex(p), isUrlFilterCaseSensitive: false, resourceTypes: ["main_frame"] },
-    }));
+    patterns.forEach((p, i) => addRules.push(allowRule(i + 2, ALLOW_PRIORITY, patternRegex(p))));
+    except.forEach((p, i) => addRules.push(redirectRule(patterns.length + 2 + i, FOCUS_PRIORITY, patternRegex(p))));
   } else if (focus.active) {
     patterns.forEach((p, i) => addRules.push(redirectRule(i + 1, FOCUS_PRIORITY, patternRegex(p))));
+    except.forEach((p, i) => addRules.push(allowRule(patterns.length + 1 + i, EXCEPT_PRIORITY, patternRegex(p))));
   }
   let next = LIMIT_RULE_BASE;
   for (const rule of limitRules(focus)) {
@@ -752,7 +769,10 @@ async function blockPageData(msg) {
   const rule = limitRules(focus).find((r) => r.id === msg.limit);
   const state = rule && limitState(rule, now);
   return {
-    focus: { active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0 },
+    focus: {
+      active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0,
+      activity: focus.activity || "",
+    },
     limit: rule && state ? {
       reason: state.reason,
       until: state.until,
@@ -779,7 +799,7 @@ async function popupData() {
     known: !!lastGood,
     focus: {
       active: !!focus.active, task: focus.task || "", ends_at_ms: focus.ends_at_ms || 0,
-      mode: focus.mode || "block", sites: (focus.patterns || []).length,
+      activity: focus.activity || "", mode: focus.mode || "block", sites: (focus.patterns || []).length,
     },
     limits_on: !!focus.limits_on,
     blocks_today: blocksToday(now),

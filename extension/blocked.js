@@ -88,6 +88,9 @@ function render(status) {
   }
   if (!focus.active) { goBack(); return; }
   countBlock();
+  const eyebrow = $("eyebrow").lastChild;
+  const label = focus.activity ? `Blocked during ${focus.activity}` : "Focus";
+  if (eyebrow.textContent !== label) eyebrow.textContent = label;
   setText("task", focus.task || "");
   endsAt = focus.ends_at_ms || 0;
   renderCount();
