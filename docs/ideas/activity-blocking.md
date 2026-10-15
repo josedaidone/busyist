@@ -37,28 +37,112 @@ inherit everything, so existing configs stay valid.
  "sites": {"state": "inherit", "mode": "", "allow": ["mail.google.com"], "block": []}}
 ```
 
-## Extension
-
-`/focus` adds `except` (the carve-outs: allowed sites in block mode, blocked
-ones in allow mode) and `activity` (its name, for the block page: "Blocked
-during Email"). The extension turns `except` into rules one priority above its
-focus rules and below the limit redirects; bump `manifest.json`'s version.
-Extensions from before that get `patterns` without the entries equal to an
-exception (best effort) and the "Reload extension" chip.
-
-## UI
-
-A "Global / Email / Messages ..." picker at the top of the Apps and Websites
-tabs, reusing the editors. With an activity picked: the switch (as global /
-off / on), the mode, and the resolved list, inherited entries in grey.
-
 ## Presets
 
 New installs only (`DEFAULT_ACTIVITIES`, no migration): Email lets Outlook and
 webmail through, Messages lets WhatsApp, Slack and Teams through, Call blocks
 nothing, Programming and Reading inherit.
 
+## Status
+
+Branch `activities` (not pushed). Commit `0f8b9eb` is the earlier work
+(activities in free sessions, tomatoes from a task's duration); `220dd55` is
+the backend of this feature:
+
+- `activities.py`: `clean_app_rules` / `clean_site_rules`, called by
+  `clean_activities` (errors prefixed with the activity's name; at start-up a
+  broken rule set is dropped and the activity kept), the presets.
+- `site_rules.py`: `activity_rules(cfg, id, key)` and `site_blocking(cfg, id)`
+  -> `{on, mode, patterns, except}`. `blocker.py`: `app_blocking(cfg, id)` ->
+  the entries to close/hide. (They sit there and not in `activities.py`
+  because `activities.py` imports `blocker.py` for its validators.)
+- `App.focus()` carries `activity` (id) and `activity_name`; `AppBlocker._loop`
+  and `enforce(focus, apps)` use `app_blocking`; `site_focus` uses
+  `site_blocking` and sends `except` and `activity` (name, "" when not active).
+- Tests: `tests/test_activities.py` (section "what an activity blocks"), one
+  in `tests/test_app_blocker.py`. All 984 pass, ruff clean.
+
+Left: tickets 1 and 2 below (independent; either order), then 3.
+
+## Ticket 1: the extension
+
+`extension/background.js`, `buildRules` (around line 540) and the priorities
+at the top (`CATCH_ALL 1`, `ALLOW 2`, `LIMIT 3`, `FOCUS 4`).
+
+- **Allow mode**, `except` = sites blocked inside the allowed ones: a redirect
+  rule per pattern at `FOCUS_PRIORITY` (above the allow rules at 2). Easy.
+- **Block mode**, `except` = sites let through the blocked ones: an `allow`
+  rule per pattern that beats the focus redirects (4) but not the limit
+  redirects, so a site out of budget stays blocked. Not possible with today's
+  numbers (limit 3 < focus 4). Recommended: an `EXCEPT` allow rule at 4 (at
+  equal priority DNR prefers `allow` over `redirect`) and `LIMIT_PRIORITY`
+  moved to 5. Side effect: a site both focus-blocked and over its limit shows
+  the limit page instead of the focus page; the limit page's 2-minute pass
+  then falls through to the focus redirect, which is fine. Update the
+  CLAUDE.md sentence "Limit redirects (`?l=<ruleId>&u=`) sit at priority 3,
+  above allow rules, below focus blocks in block mode (4)".
+- Rule ids: `except` rules after the pattern ones, below `LIMIT_RULE_BASE`;
+  keep `buildRules` pure (same answer -> same list).
+- `matches`/`rulesOf` (around line 150, used for the popup and the badge):
+  take `except` into account too.
+- `blocked.js` `render`: with `focus.activity`, say "Blocked during Email"
+  (only the wording; keep the task line and countdown). Check `blocked.html`
+  for the element.
+- Popup (`popup.js`, from the worker's `popupData`): show the activity's name
+  next to the pomodoro if there is room; optional.
+- Bump `version` in `extension/manifest.json` (1.8.0 -> 1.9.0); CI fails a PR
+  that changes `extension/` without it. `EXTENSION_VERSION` follows the
+  manifest, so older extensions get the "Reload extension" chip.
+- Tests: `tests/js/` (node --test) if `buildRules` can be loaded there; see how
+  the existing JS tests import code. At least `node --check extension/*.js`.
+
+## Ticket 2: the UI
+
+`ui/main.html` (tabs `p_apps` line ~279, `p_sites` ~293) and `ui/main.js`
+(`blockedApps` ~1542 / `renderBlockedApps`, `siteLists` ~1713, the activity
+rows `activityRows` ~1319 / ~1447, save at ~2263 sends
+`activities: activityRows`, which already keeps `apps`/`sites` since rows are
+copied with `{...a}`).
+
+- A picker at the top of the Apps and Websites tabs: "Everything (global)" and
+  one entry per activity (icon + name), shared by both tabs.
+- Global picked: the tabs as today.
+- Activity picked: a three-way switch "Like the global setting / Don't block /
+  Block" (`state`). Apps: the global entries shown greyed with a per-app "let
+  through" toggle (writes `allow`), plus an "also block" input reusing
+  `addBlockedApp`'s suggestions (writes `block`; refuse `PROTECTED_EXES`, as
+  `addBlockedApp` does). Websites: mode "Like the global setting / Block these
+  / Allow only these" (`mode`); in the global mode, the global list greyed
+  plus "also block" and "let through" lists; in the other mode, a note that
+  nothing is inherited and one list. Mirror `site_blocking` in JS for the
+  resolved preview (or ask the backend: an `Api` method returning
+  `site_blocking`/`app_blocking` for a draft config is simpler than a mirror,
+  but the draft isn't saved yet; a mirror + shared JSON cases like
+  `tests/plan_cases.json` is the house pattern).
+- Pattern validation: `cleanSitePattern` already exists in `main.js`.
+- The activity rows edited in General and in these tabs are the same objects
+  (`activityRows`); a renamed or removed activity must update the picker.
+- Look: `ui/style.css` tokens (`--bz-*`, role variables), no shadows, see
+  CLAUDE.md "UI".
+
+## Ticket 3: wrap-up
+
+- CLAUDE.md: describe the extension's `except` rules (Site blocking
+  paragraph) and the UI picker (Activities paragraph).
+- Bump `__version__` in `busyist.py` (2.4.0 -> 2.5.0) when opening the PR;
+  merging publishes it. PR from `activities` into `main`.
+- Delete the stray `nul` file at the repo root (output of a `> nul` run in Git
+  Bash; untracked, not committed).
+
+## Open questions
+
+- Lock the activity lists (and the global ones) during a work phase, so they
+  can't be loosened mid-pomodoro? Today the global lists can be, so it was
+  left as is.
+- A free session with no activity uses the global settings; should there be a
+  configurable default activity instead?
+
 ## Later
 
 Todoist label -> activity; picking an activity when starting a task; changing
-the activity mid-session; locking the lists during a work phase.
+the activity mid-session.
