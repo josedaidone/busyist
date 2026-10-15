@@ -166,13 +166,22 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         if not self.cfg.get("use_todoist"):
             raise AppError("Todoist is turned off in Settings.")
         active = self.active_filter()
+        cfg = self.cfg.view()
         if tasks is None:
-            tasks = self.todoist.tasks(active["query"])
+            tasks = self.todoist.tasks(active["query"], subtasks=cfg["offer_subtasks"])
         with self.lock:
             self.tasks.update((t["id"], t) for t in tasks)
+            # the subtasks the start picker offers, so start_task finds them too
+            self.tasks.update((s["id"], s) for t in tasks for s in t.get("subtasks", ()))
         # The tomatoes a task's duration gives it, shown on its row as "3 x 15 min".
-        cfg = self.cfg.view()
-        tasks = [dict(t, plan=plan_session(t.get("minutes"), cfg)) for t in tasks]
+        tasks = [
+            dict(
+                t,
+                plan=plan_session(t.get("minutes"), cfg),
+                subtasks=[dict(s, plan=plan_session(s.get("minutes"), cfg)) for s in t.get("subtasks", ())],
+            )
+            for t in tasks
+        ]
         return {"tasks": tasks, "filters": self.cfg["filters"], "active": active["name"]}
 
     def check_query(self, query: str) -> list[dict]:

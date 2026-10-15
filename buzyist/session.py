@@ -178,7 +178,11 @@ class SessionMixin:
             with self.lock:
                 old, self.ended = self.session, None
                 self.session = {
-                    "task": {k: task[k] for k in ("id", "content", "project", "color", "priority", "url")},
+                    "task": {
+                        **{k: task[k] for k in ("id", "content", "project", "color", "priority", "url")},
+                        # a subtask's parent, offered for completion after its last subtask
+                        **{k: task[k] for k in ("parent_id", "parent") if task.get(k)},
+                    },
                     "stamp": stamp,
                     "started_at": datetime.now().strftime("%H:%M"),
                     "work_ms": work,
@@ -211,11 +215,16 @@ class SessionMixin:
         self.show_mini()
         return {"via": self.bar.via, "work_minutes": work_min, "rounds": cycles, "planned": bool(planned)}
 
-    def complete_task(self, task_id: str) -> None:
-        """Close the task in Todoist and count it in today's history."""
+    def complete_task(self, task_id: str, offer_parent: bool = False, content: str = "") -> dict:
+        """
+        Close the task in Todoist and count it in today's history (`content` names
+        a task the list doesn't hold). With `offer_parent`, a subtask that was its
+        parent's last open one returns that parent ({"parent": {id, content}}) so
+        the UI can offer to complete it too.
+        """
         self.todoist.close(task_id)
         with self.lock:
-            task = self.tasks.pop(task_id, None) or (self.ended and self.ended["task"]) or {}
+            task = self.tasks.pop(task_id, None) or (self.ended and self.ended["task"]) or {"content": content}
             if self.ended and self.ended["task"]["id"] == task_id:
                 self.ended = None
             self.history.append(
@@ -229,6 +238,16 @@ class SessionMixin:
             )
             self.history = self.history[-HISTORY_KEEP:]
             write_json(paths.HISTORY_PATH, self.history)
+        parent_id = task.get("parent_id")
+        if not (offer_parent and parent_id):
+            return {}
+        try:
+            if self.todoist.open_children(parent_id):
+                return {}
+        except AppError as err:
+            log.warning("couldn't check the parent's other subtasks: %s", err)
+            return {}
+        return {"parent": {"id": parent_id, "content": task.get("parent", "")}}
 
     def _label_task(self, session: dict) -> None:
         label = session["label"]

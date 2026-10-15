@@ -419,8 +419,16 @@ kbd {
 .task.done .t-title { text-decoration: line-through; color: var(--muted); }
 .t-body { flex: 1; min-width: 0; display: grid; gap: 4px; }
 .t-title { font-size: 15.5px; font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-title .t-parent { color: var(--muted); font-weight: 500; }
+/* The task's Todoist description: two lines, "more" for the rest. */
+.t-desc { display: flex; align-items: flex-end; gap: 6px; font-size: 13px; line-height: 1.35; color: var(--muted); }
+.t-desc-text { flex: 1; min-width: 0; white-space: pre-line; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.t-desc.open .t-desc-text { display: block; }
+.t-more { flex: none; border: 0; background: transparent; padding: 0; font: inherit; font-weight: 600; color: var(--primary-text); cursor: pointer; }
+.t-more:hover { text-decoration: underline; }
 .t-meta { display: flex; gap: 12px; align-items: center; font-size: 12.5px; font-weight: 600; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .t-meta .proj { display: inline-flex; align-items: center; gap: 5px; }
+.t-meta .subs { color: var(--muted); }
 .t-meta .proj i { width: 8px; height: 8px; border-radius: 3px; }
 .t-meta .late { color: var(--primary-text); }
 .t-meta .lbl { color: var(--faint); }
@@ -482,6 +490,13 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
 }
 .ctx-item svg { width: 18px; height: 18px; color: var(--muted); flex: none; }
 .ctx-item:hover, .ctx-item:focus { background: var(--surface); outline: none; }
+/* "Start on…": a task's subtasks (openSubtaskPicker in main.js) */
+.pick-menu { width: min(340px, calc(100vw - 8px)); max-height: min(420px, calc(100vh - 8px)); overflow-y: auto; }
+.pick-head { padding: 6px 12px 4px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.pick-item { flex: none; }
+.pick-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-plan { flex: none; font-size: 12.5px; color: var(--muted); }
+.pick-sep { flex: none; height: 2px; margin: 4px 6px; background: var(--line); }
 
 /* program names suggested under an app input (suggestApps in main.js) */
 .suggest-host { position: relative; }

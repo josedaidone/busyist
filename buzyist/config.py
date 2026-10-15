@@ -69,6 +69,7 @@ DEFAULTS = {
     "plan_target": 15,
     "plan_min": 10,
     "plan_max": 30,
+    "offer_subtasks": True,  # play on a task with subtasks asks which one to start on
     "poll_seconds": 5,
     "hotkey": "ctrl+alt+p",
     "focus_label": "pomodoro",
@@ -343,6 +344,7 @@ class Config(BaseModel):
     plan_target: Minutes = _default("plan_target")
     plan_min: Minutes = _default("plan_min")
     plan_max: Minutes = _default("plan_max")
+    offer_subtasks: bool = _default("offer_subtasks")
     poll_seconds: Annotated[int, Field(ge=POLL_MIN, le=POLL_MAX)] = _default("poll_seconds")
     hotkey: str = _default("hotkey")
     focus_label: Annotated[str, Field(max_length=MAX_LABEL)] = _default("focus_label")

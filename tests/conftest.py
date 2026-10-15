@@ -680,6 +680,7 @@ class FakeTodoist:
       and serves it for every query (or only ``query=`` if given).
     - ``labels[task_id]`` holds a task's labels (``set_label`` edits it).
     - ``comments`` and ``closed`` collect what was posted / completed.
+    - ``children[task_id]`` is what ``open_children`` answers.
     - ``errors["comment"] = AppError("boom")`` makes that method raise.
     """
 
@@ -691,6 +692,7 @@ class FakeTodoist:
         self.labels: dict[str, list[str]] = {}
         self.comments: list[tuple[str, str]] = []
         self.closed: list[str] = []
+        self.children: dict[str, list[dict]] = {}  # task id -> its open subtasks (open_children)
         self.errors: dict[str, BaseException] = {}
 
     def _record(self, name: str, *args) -> None:
@@ -733,9 +735,14 @@ class FakeTodoist:
         self._record("pages", path, params)
         return []
 
-    def tasks(self, query: str) -> list[dict]:
-        self._record("tasks", query)
-        return [dict(t) for t in self.tasks_by_query.get(query, self.default_tasks)]
+    def tasks(self, query: str, subtasks: bool = False) -> list[dict]:
+        self._record("tasks", query, subtasks)
+        found = [dict(t) for t in self.tasks_by_query.get(query, self.default_tasks)]
+        return found if subtasks else [{k: v for k, v in t.items() if k != "subtasks"} for t in found]
+
+    def open_children(self, task_id: str) -> list[dict]:
+        self._record("open_children", task_id)
+        return [dict(t) for t in self.children.get(task_id, [])]
 
     def set_label(self, task_id: str, label: str, present: bool) -> None:
         self._record("set_label", task_id, label, present)

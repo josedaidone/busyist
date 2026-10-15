@@ -573,7 +573,7 @@ function showEmpty(title, text, withSettings) {
 function renderTasks() {
   const q = $("search").value.trim().toLowerCase();
   shown = !q ? tasks : tasks.filter((t) =>
-    (t.content + " " + t.project + " " + t.labels.join(" ")).toLowerCase().includes(q));
+    [t.content, t.parent, t.project, ...t.labels].join(" ").toLowerCase().includes(q));
   sel = Math.min(sel, Math.max(0, shown.length - 1));
   // The filter's Todoist durations added up (tasks without one count nothing).
   const planned = tasks.reduce((sum, t) => sum + (t.minutes || 0), 0);
@@ -588,7 +588,13 @@ function renderTasks() {
     const li = el("li", "task");
     li.dataset.id = t.id;
     const body = el("div", "t-body");
-    body.append(el("div", "t-title", t.content));
+    const title = el("div", "t-title");
+    // A subtask carries its parent's name in front: "parent › subtask".
+    if (t.parent) title.append(el("span", "t-parent", t.parent + " › "));
+    title.append(t.content);
+    title.title = t.parent ? `${t.parent} › ${t.content}` : t.content;
+    body.append(title);
+    if (t.description) body.append(taskDescription(t));
     const meta = el("div", "t-meta");
     if (t.project && !t.inbox) {
       const proj = el("span", "proj");
@@ -608,6 +614,14 @@ function renderTasks() {
       meta.append(chip);
     }
     for (const l of t.labels) meta.append(el("span", "lbl" + (l === state?.label ? " mine" : ""), "@" + l));
+    if (t.subtasks && t.subtasks.length) {
+      // Play asks which one to start on (openSubtaskPicker).
+      const n = t.subtasks.length;
+      const chip = el("span", "subs", `${n} subtask${n === 1 ? "" : "s"}`);
+      chip.title = "Play lets you pick one of them, or the whole task";
+      meta.append(chip);
+      li.dataset.subs = t.subtasks.map((s) => s.id).join(" ");
+    }
     const dots = el("span", "t-dots");
     meta.prepend(dots);
     // Priority: a pill (filled flag, P1-P3 and a word) first in the meta line,
@@ -650,6 +664,35 @@ function renderTasks() {
   markCurrentTask();
 }
 
+// The description under the title, cut to two lines; "more" opens it (the row's
+// click still opens the task menu, so the toggle stops it).
+const openDescriptions = new Set();
+function taskDescription(t) {
+  const wrap = el("div", "t-desc");
+  const text = el("div", "t-desc-text", t.description);
+  const more = el("button", "t-more");
+  more.type = "button";
+  more.tabIndex = -1;
+  const set = (open) => {
+    wrap.classList.toggle("open", open);
+    more.textContent = open ? "less" : "more";
+    more.setAttribute("aria-expanded", open);
+  };
+  more.onclick = (e) => {
+    e.stopPropagation();
+    const open = !wrap.classList.contains("open");
+    if (open) openDescriptions.add(t.id); else openDescriptions.delete(t.id);
+    set(open);
+  };
+  set(openDescriptions.has(t.id));
+  wrap.append(text, more);
+  // Only long texts get the toggle: measured once the row is on the page.
+  requestAnimationFrame(() => {
+    more.hidden = !wrap.classList.contains("open") && text.scrollHeight <= text.clientHeight + 1;
+  });
+  return wrap;
+}
+
 function markSelection(scroll) {
   [...$("list").querySelectorAll(".task")].forEach((li, i) => {
     li.classList.toggle("sel", i === sel);
@@ -665,7 +708,8 @@ function markCurrentTask() {
   const word = !t ? "Wrapping up" : t.paused ? "Paused" : t.phase === "rest" ? "Break" : "In focus";
   const counts = (state && state.task_tomatoes) || {};
   for (const li of $("list").querySelectorAll(".task")) {
-    const on = li.dataset.id === id;
+    // a session on one of its subtasks marks the row too
+    const on = !!id && (li.dataset.id === id || (li.dataset.subs || "").split(" ").includes(id));
     li.classList.toggle("in-focus", on);
     let badge = li.querySelector(".badge");
     if (on && !badge) {
@@ -690,7 +734,10 @@ function markCurrentTask() {
 }
 
 // fixed: the usual tomato settings even when the task's duration would set them.
-async function startTask(task, li, fixed) {
+// A task with open subtasks first asks which one (direct: start this one, no asking;
+// at: where to open the question, see openSubtaskPicker).
+async function startTask(task, li, fixed, direct, at) {
+  if (!direct && task.subtasks && task.subtasks.length) return openSubtaskPicker(task, li, fixed, at);
   if (state && state.session && state.session.task.id === task.id) {
     toast("That task is already in focus.");
     return;
@@ -748,8 +795,10 @@ function openTaskMenu(task, li, x, y) {
     b.onclick = (e) => { e.stopPropagation(); closeTaskMenu(); fn(); };
     menu.append(b);
   };
-  item("play", "Start pomodoro", () => startTask(task, li));
-  if (task.plan) item("play", `Start with your usual ${pomo.work_minutes}-min tomatoes`, () => startTask(task, li, true));
+  item("play", "Start pomodoro", () => startTask(task, li, false, false, { x, y }));
+  if (task.plan || task.subtasks?.length) {
+    item("play", `Start with your usual ${pomo.work_minutes}-min tomatoes`, () => startTask(task, li, true, false, { x, y }));
+  }
   item("check", "Mark as done", () => completeTask(task, li));
   if (task.url) item("eye", "See on Todoist", () => api.open_url(task.url));
   document.body.append(menu);
@@ -757,6 +806,53 @@ function openTaskMenu(task, li, x, y) {
   menu.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
   menu.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
   menu.querySelector("button").focus();
+}
+
+// "Start on…": the task's open subtasks (all depths, indented, in Todoist's order), then the
+// task itself. Shares #taskMenu with the task menu, so its keys and closing work the same.
+// at: {x, y} to open there; else under the row's play button.
+function openSubtaskPicker(task, li, fixed, at) {
+  closeTaskMenu();
+  const menu = el("div", "ctx-menu pick-menu");
+  menu.id = "taskMenu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Start on");
+  menu.append(el("div", "pick-head", "Start on…"));
+  const item = (t, depth, label) => {
+    const b = el("button", "ctx-item pick-item");
+    b.setAttribute("role", "menuitem");
+    b.style.paddingLeft = 12 + (depth - 1) * 16 + "px";
+    b.append(el("span", "pick-name", label || t.content));
+    // the tomatoes it would get (unless shift+click asked for the usual ones)
+    if (t.plan && !fixed) b.append(el("span", "pick-plan", t.plan[1] === 1 ? `${t.plan[0]} min` : `${t.plan[1]} × ${t.plan[0]}`));
+    b.title = t.content;
+    b.onclick = (e) => { e.stopPropagation(); closeTaskMenu(); startTask(t, li, fixed, true); };
+    menu.append(b);
+  };
+  for (const s of task.subtasks) item(s, s.depth);
+  menu.append(el("div", "pick-sep"));
+  item(task, 1, "The whole task");
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  const play = li && li.querySelector(".play");
+  const anchor = play ? play.getBoundingClientRect() : null;
+  const x = at ? at.x : anchor ? anchor.right - r.width : 4;
+  // under the play button, or above it when there is no room below
+  let y = at ? at.y : anchor ? anchor.bottom + 4 : 4;
+  if (!at && anchor && y + r.height > innerHeight - 4) y = anchor.top - r.height - 4;
+  menu.style.left = Math.max(4, Math.min(x, innerWidth - r.width - 4)) + "px";
+  menu.style.top = Math.max(4, Math.min(y, innerHeight - r.height - 4)) + "px";
+  menu.querySelector("button").focus();
+}
+
+// A task of the list or one of its subtasks, by id.
+function findTask(id) {
+  for (const t of tasks) {
+    if (t.id === id) return t;
+    const sub = (t.subtasks || []).find((s) => s.id === id);
+    if (sub) return sub;
+  }
+  return null;
 }
 
 document.addEventListener("mousedown", (e) => { if (!e.target.closest("#taskMenu")) closeTaskMenu(); });
@@ -1132,22 +1228,34 @@ window.addEventListener("resize", () => { if (free.open) placeFreeList(); });
 $("endedClose").onclick = async () => { await api.dismiss_ended(); poll(); };
 $("endedComplete").onclick = async () => {
   const e = state.ended;
-  const result = await api.complete(e.task.id);
+  const result = await api.complete(e.task.id, true);
   if (!result.ok) return toast(result.error, true);
   toast("Done in Todoist.");
   // drop it at once, then reload so the filter shows what Todoist now has
-  tasks = tasks.filter((t) => t.id !== e.task.id);
-  renderTasks();
+  const gone = new Set([e.task.id]);
+  const dropGone = () => {
+    tasks = tasks.filter((t) => !gone.has(t.id))
+      .map((t) => t.subtasks ? { ...t, subtasks: t.subtasks.filter((s) => !gone.has(s.id)) } : t);
+    renderTasks();
+  };
+  dropGone();
   await poll();
+  // That was the last open subtask: offer to close its parent too.
+  const parent = result.parent;
+  if (parent && confirm(`That was the last subtask of “${parent.content || "its parent"}”. Complete it too?`)) {
+    const closed = await api.complete(parent.id, false, parent.content);
+    if (!closed.ok) toast(closed.error, true);
+    else { toast("Both done in Todoist."); gone.add(parent.id); dropGone(); }
+  }
   loadTasks(true);
 };
 $("endedAgain").onclick = async () => {
   const e = state.ended;
-  const task = tasks.find((t) => t.id === e.task.id);
+  const task = findTask(e.task.id);
   await api.dismiss_ended();
   if (!e.task.id) return e.activity ? startFree(e.activity.detail, e.activity.id) : startFree(e.task.content);
   if (!task) return toast("That task is no longer in the list.", true);
-  startTask(task);
+  startTask(task, null, false, true);  // the same one again, no picker
 };
 
 // ------------------------------------------------------------- settings
