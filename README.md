@@ -101,8 +101,9 @@ menu, and starts it.
   every few minutes it stays there (5 by default; set it per limit). New installs start with
   limits for WhatsApp (30 min a day) and Slack (1 hour a day), set to beep; switch app limits on
   to use them. App limits stay on this PC; they aren't shared through Chrome.
-- **Stats** (Settings → Stats): how often websites were blocked, during focus or over a limit:
-  totals for today, 7 and 30 days, a bar per day, and the most blocked sites.
+- **Stats** (Settings → Stats): your focus time, tomatoes, sessions, tasks worked on and done for
+  today, 7 and 30 days, your streak, focus per day and the tasks that got the most; then how often
+  websites were blocked, during focus or over a limit, with the most blocked sites.
 - **The extension's toolbar button**: its badge shows the time left on the current site's limit
   (otherwise the pomodoro minutes left). Click it to see the current pomodoro, your limits and
   how many times a site was blocked today.

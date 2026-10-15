@@ -701,6 +701,18 @@ def test_a_restart_without_the_bar_carries_on_from_the_saved_timer(engine, defer
     assert (again.history[-1]["pomodoros"], again.history[-1]["reason"]) == (2, "finished")
 
 
+def test_turning_the_bar_off_while_it_is_out_of_reach(engine, deferred_threads, device):
+    app = engine({**BAR_CONFIG, "use_todoist": False})
+    lose_the_bar(app, device)
+    with app.cfg.edit() as c:  # under save_settings' back: Bar.reset isn't called
+        c["use_busybar"] = False
+    with pytest.raises(constants.AppError, match="turned off"):
+        app.bar.run(lambda bar: bar.busy_snapshot(), device=True)
+    app.step(seconds=constants.BAR_PROBE_S)
+    assert not app.bar.offline
+    assert app.bar.is_local
+
+
 def test_stop_ends_the_session_with_no_timer_to_carry_on(engine, deferred_threads, device):
     """Started before a restart, the bar gone since: no snapshot to run, a stop still ends it."""
     first = engine({**BAR_CONFIG, "use_todoist": False})

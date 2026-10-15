@@ -47,6 +47,7 @@ from buzyist.constants import (
     now_ms,
 )
 from buzyist.focus_server import FocusServer
+from buzyist.focus_stats import focus_stats
 from buzyist.hotkey import GlobalHotkey
 from buzyist.secrets_dpapi import SECRET_KEYS, unprotect_secrets
 from buzyist.session import SessionMixin
@@ -275,6 +276,12 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             count += self.session.get("done", 0)
             minutes += self.session.get("done", 0) * self.session["work_ms"] // 60000
         return {"pomodoros": count, "minutes": minutes, "completed": completed}
+
+    def focus_stats(self) -> dict:
+        """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""
+        with self.lock:
+            history, session = list(self.history), self.session and dict(self.session)
+        return focus_stats(history, session, date.today())
 
     def task_tomatoes(self) -> dict[str, int]:
         """Finished pomodoros per task id, from the history plus the running session."""
