@@ -104,7 +104,10 @@ Ticket 2 (the UI) is done:
   modes, Everything), and driven: toggles, adds, the protected refusal,
   focus kept, rename/remove updating the picker, the save payload.
 
-Left: ticket 3 (wrap-up).
+Ticket 3: CLAUDE.md describes the `except` rules (Site blocking) and the
+picker (Activities); the stray `nul` is deleted. Left on purpose: the
+`__version__` bump (2.4.0 -> 2.5.0) and the PR into `main`, for when the
+branch is to be published.
 
 ## Ticket 1: the extension (done)
 
