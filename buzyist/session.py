@@ -13,8 +13,10 @@ from datetime import date, datetime
 from busylib.features import timer_state
 
 from buzyist import paths
+from buzyist.activities import session_name
 from buzyist.bar import BarUnreachable
 from buzyist.constants import APP, HISTORY_KEEP, AppError
+from buzyist.plan import plan_session
 from buzyist.storage import write_json
 
 log = logging.getLogger(APP)
@@ -115,13 +117,21 @@ class SessionMixin:
                     "minutes": minutes,
                     "reason": reason,
                     "ended_at": datetime.now().isoformat(timespec="seconds"),
+                    **({"activity": session["activity"]} if session.get("activity") else {}),
                 }
             )
             self.history = self.history[-HISTORY_KEEP:]
             write_json(paths.HISTORY_PATH, self.history)
             if reason == "replaced" or silent:
                 return
-            self.ended = {"task": task, "done": done, "minutes": minutes, "reason": reason, "problems": problems}
+            self.ended = {
+                "task": task,
+                "done": done,
+                "minutes": minutes,
+                "reason": reason,
+                "problems": problems,
+                "activity": session.get("activity"),  # so "Again" starts the same one
+            }
         self.update_tray()
         if reason == "finished":
             self.notify("Great focus!", f"Session complete: {done} pomodoro{'s' * (done != 1)} on {task['content']}.")
@@ -131,12 +141,23 @@ class SessionMixin:
         if reason == "stopped":
             self.show_main()  # after hiding the mini timer, which may hold the focus
 
-    def start_task(self, task_id: str | None = None, name: str = "") -> dict:
-        """Start a session on a task, or (task_id None) one with no task, optionally named."""
+    def start_task(
+        self, task_id: str | None = None, name: str = "", activity_id: str = "", fixed: bool = False
+    ) -> dict:
+        """
+        Start a session on a task, or (task_id None) one with no task: on one of
+        the `activities` (by id; one since removed is ignored) and/or named.
+        A task with a duration sets its own tomatoes (plan_session) unless
+        `fixed` asks for the usual settings.
+        """
+        activity = None
         if task_id is None:
+            found = next((a for a in self.cfg["activities"] if activity_id and a["id"] == activity_id), None)
+            if found:
+                activity = {"id": found["id"], "name": found["name"], "detail": " ".join((name or "").split())}
             task = {
                 "id": "",
-                "content": (name or "").strip()[:80] or "Focus session",
+                "content": session_name(found, name),
                 "project": "",
                 "color": "",
                 "priority": 1,
@@ -147,9 +168,11 @@ class SessionMixin:
                 task = self.tasks.get(task_id)
             if task is None:
                 raise AppError("That task is no longer in the list. Refresh and try again.")
-        work = int(self.cfg["work_minutes"]) * 60000
-        rest = int(self.cfg["rest_minutes"]) * 60000
-        cycles = int(self.cfg["cycles"])
+        cfg = self.cfg.view()
+        planned = None if fixed else plan_session(task.get("minutes"), cfg)
+        work_min, cycles = planned or (int(cfg["work_minutes"]), int(cfg["cycles"]))
+        work = work_min * 60000
+        rest = int(cfg["rest_minutes"]) * 60000
         with self.bar.lock:  # nothing reads the bar between the start and our bookkeeping
             stamp = self._on_bar(lambda: self.bar.start(work, rest, cycles, bool(self.cfg["autostart"])))
             with self.lock:
@@ -165,6 +188,7 @@ class SessionMixin:
                     "label_added": False,
                     "local": self.bar.standalone,
                     "rounds": cycles,  # the bar may run more (BAR_CYCLES_MIN)
+                    "activity": activity,  # {id, name, detail} for the Stats tab, or None
                 }
                 write_json(paths.SESSION_PATH, self.session)
                 self.recovering = False
@@ -185,7 +209,7 @@ class SessionMixin:
         # Out of the way for the focus block; the mini timer takes over.
         self.hide_main()
         self.show_mini()
-        return {"via": self.bar.via}
+        return {"via": self.bar.via, "work_minutes": work_min, "rounds": cycles, "planned": bool(planned)}
 
     def complete_task(self, task_id: str) -> None:
         """Close the task in Todoist and count it in today's history."""

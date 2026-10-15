@@ -47,8 +47,9 @@ from buzyist.constants import (
     now_ms,
 )
 from buzyist.focus_server import FocusServer
-from buzyist.focus_stats import focus_stats
+from buzyist.focus_stats import SESSION_REASONS, focus_stats
 from buzyist.hotkey import GlobalHotkey
+from buzyist.plan import plan_session
 from buzyist.secrets_dpapi import SECRET_KEYS, unprotect_secrets
 from buzyist.session import SessionMixin
 from buzyist.storage import read_json
@@ -169,6 +170,9 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             tasks = self.todoist.tasks(active["query"])
         with self.lock:
             self.tasks.update((t["id"], t) for t in tasks)
+        # The tomatoes a task's duration gives it, shown on its row as "3 x 15 min".
+        cfg = self.cfg.view()
+        tasks = [dict(t, plan=plan_session(t.get("minutes"), cfg)) for t in tasks]
         return {"tasks": tasks, "filters": self.cfg["filters"], "active": active["name"]}
 
     def check_query(self, query: str) -> list[dict]:
@@ -281,7 +285,43 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""
         with self.lock:
             history, session = list(self.history), self.session and dict(self.session)
-        return focus_stats(history, session, date.today())
+        cfg = self.cfg.view()
+        return focus_stats(
+            history,
+            session,
+            date.today(),
+            skip_weekends=cfg.get("streak_skip_weekends"),
+            activities=cfg.get("activities"),
+        )
+
+    def recent_free(self, keep: int = 6) -> list[dict]:
+        """
+        The latest names of sessions with no task, newest first, for the
+        "What are you working on?" list: `{activity, detail}`, the activity's
+        id (or "" for a name typed in) and what came after it. An activity on
+        its own is left out (the list has it already), and so is one since
+        removed, whose name then comes back as typed text.
+        """
+        ids = {a["id"] for a in self.cfg["activities"]}
+        with self.lock:
+            history = list(self.history)
+        out, seen = [], set()
+        for h in reversed(history):
+            if h.get("task_id") or h.get("reason") not in SESSION_REASONS:
+                continue
+            activity = h.get("activity") if isinstance(h.get("activity"), dict) else {}
+            if activity.get("id") in ids:
+                item = {"activity": activity["id"], "detail": str(activity.get("detail") or "")}
+            else:
+                item = {"activity": "", "detail": str(h.get("content") or "")}
+            key = (item["activity"], item["detail"].casefold())
+            if not item["detail"] or item["detail"] == "Focus session" or key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+            if len(out) == keep:
+                break
+        return out
 
     def task_tomatoes(self) -> dict[str, int]:
         """Finished pomodoros per task id, from the history plus the running session."""
@@ -334,6 +374,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 "task_tomatoes": self.task_tomatoes(),
                 "blocks": self.blocks_view(),
                 "pomodoro": {k: self.cfg[k] for k in ("work_minutes", "rest_minutes", "cycles", "autostart")},
+                "activities": self.cfg["activities"],
                 "label": self.cfg["focus_label"],
                 "hotkey": self.cfg["hotkey"],
                 "needs_setup": bool(self.cfg.get("use_todoist")) and not self.cfg.get("todoist_token"),

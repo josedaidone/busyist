@@ -55,8 +55,15 @@ class Api:
     def preview_filter(self, query):
         return self._do(lambda: {"count": len(self._app.check_query(str(query)))})
 
-    def start(self, task_id=None, name=""):
-        return self._do(self._app.start_task, None if task_id is None else str(task_id), str(name or ""))
+    def start(self, task_id=None, name="", activity="", fixed=False):
+        """`fixed`: the usual tomato settings even when the task has a duration."""
+        return self._do(
+            self._app.start_task,
+            None if task_id is None else str(task_id),
+            str(name or ""),
+            str(activity or ""),
+            bool(fixed),
+        )
 
     def control(self, action):
         return self._do(self._app.control, str(action))
@@ -117,6 +124,10 @@ class Api:
         return self._do(
             lambda: {"on": bool(self._app.cfg.get("app_limits_on")), "rules": self._app.app_limiter.status()}
         )
+
+    def recent_free(self):
+        """The latest names of sessions with no task, for the "What are you working on?" list."""
+        return self._do(lambda: {"recent": self._app.recent_free()})
 
     def focus_stats(self):
         """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""

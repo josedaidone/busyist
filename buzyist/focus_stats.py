@@ -17,7 +17,14 @@ def _task_key(entry: dict) -> str:
     return entry.get("task_id") or "name:" + (entry.get("content") or "")
 
 
-def focus_stats(history: list[dict], session: dict | None, today: date, span: int = 30) -> dict:
+def focus_stats(
+    history: list[dict],
+    session: dict | None,
+    today: date,
+    span: int = 30,
+    skip_weekends: bool = False,
+    activities: list[dict] | None = None,
+) -> dict:
     """
     One {day, minutes, pomodoros} per day for the last `span` days (oldest
     first, today last); totals for today, 7 and `span` days ({minutes,
@@ -27,7 +34,12 @@ def focus_stats(history: list[dict], session: dict | None, today: date, span: in
     Minutes count finished work phases only, as the history does. A
     session counts once it has a finished tomato (one stopped before that,
     or brought back by a restart and ended at once, is noise). The running
-    session counts today with its tomatoes so far.
+    session counts today with its tomatoes so far. With `skip_weekends`, a
+    Saturday or Sunday without a tomato doesn't break the streak.
+
+    `activities` (the setting) names the groups of the time per activity
+    over `span` days: one per activity used, plus "_task" (Todoist tasks)
+    and "_other" (sessions with only a typed name); see _by_activity.
     """
     days = [(today - timedelta(days=i)).isoformat() for i in range(span - 1, -1, -1)]
     first = days[0]
@@ -41,6 +53,7 @@ def focus_stats(history: list[dict], session: dict | None, today: date, span: in
                 "pomodoros": session.get("done", 0),
                 "minutes": session.get("done", 0) * session["work_ms"] // 60000,
                 "reason": "running",
+                **({"activity": session["activity"]} if session.get("activity") else {}),
             }
         )
     sessions = [h for h in entries if h.get("reason") in (*SESSION_REASONS, "running")]
@@ -76,9 +89,40 @@ def focus_stats(history: list[dict], session: dict | None, today: date, span: in
         "span": span,
         "days": list(per_day.values()),
         "totals": {"today": total(days[-1]), "week": total(days[-7]), "span": total(first)},
-        "streak": _streak({h["date"] for h in sessions if h.get("pomodoros")}, today),
+        "streak": _streak({h["date"] for h in sessions if h.get("pomodoros")}, today, skip_weekends),
         "tasks": top,
+        "activities": _by_activity([h for h in sessions if h["date"] >= first], activities or []),
     }
+
+
+def _by_activity(sessions: list[dict], activities: list[dict]) -> list[dict]:
+    """
+    Focus per activity, most first: `{id, name, icon, minutes, pomodoros,
+    sessions}`. An activity takes its name and icon from the setting, or
+    for one since removed the name the history kept. Sessions on a Todoist
+    task are "_task", those with no activity "_other" (icon "" for both).
+    """
+    known = {a["id"]: a for a in activities}
+    groups: dict[str, dict] = {}
+    for h in sessions:
+        if not h.get("pomodoros"):
+            continue
+        activity = h.get("activity") if isinstance(h.get("activity"), dict) else {}
+        if h.get("task_id"):
+            key, name, icon = "_task", "Todoist tasks", ""
+        elif activity.get("id"):
+            key = str(activity["id"])
+            current = known.get(key, {})
+            name, icon = current.get("name") or activity.get("name") or key, current.get("icon") or "dot"
+        else:
+            key, name, icon = "_other", "Other", ""
+        group = groups.setdefault(
+            key, {"id": key, "name": name, "icon": icon, "minutes": 0, "pomodoros": 0, "sessions": 0}
+        )
+        group["minutes"] += int(h.get("minutes") or 0)
+        group["pomodoros"] += int(h.get("pomodoros") or 0)
+        group["sessions"] += 1
+    return sorted(groups.values(), key=lambda g: (-g["minutes"], -g["pomodoros"], g["name"]))
 
 
 def _is_day(value) -> bool:
@@ -89,15 +133,28 @@ def _is_day(value) -> bool:
     return True
 
 
-def _streak(active: set[str], today: date) -> dict:
-    """Days in a row with a tomato: up to today (or yesterday, today may still come), and the longest."""
+def _streak(active: set[str], today: date, skip_weekends: bool = False) -> dict:
+    """
+    Days in a row with a tomato: up to today (or yesterday, today may still
+    come), and the longest. With `skip_weekends` a weekend day without one
+    is passed over instead of ending the run.
+    """
+
+    def skipped(d: date) -> bool:
+        return skip_weekends and d.weekday() >= 5 and d.isoformat() not in active
+
     current, day = 0, today if today.isoformat() in active else today - timedelta(days=1)
-    while day.isoformat() in active:
-        current, day = current + 1, day - timedelta(days=1)
+    while day.isoformat() in active or skipped(day):
+        current += day.isoformat() in active
+        day -= timedelta(days=1)
     best = run = 0
     previous = None
     for iso in sorted(active):
         d = date.fromisoformat(iso)
-        run = run + 1 if previous and d - previous == timedelta(days=1) else 1
+        if previous:
+            gap = previous + timedelta(days=1)
+            while gap < d and skipped(gap):
+                gap += timedelta(days=1)
+        run = run + 1 if previous and gap == d else 1
         best, previous = max(best, run), d
     return {"current": current, "best": best}

@@ -11,6 +11,7 @@ import urllib.request
 from datetime import date, datetime
 
 from buzyist.constants import TODOIST_API, AppError
+from buzyist.plan import duration_minutes
 
 TODOIST_COLORS = {
     "berry_red": "#b8256f",
@@ -106,6 +107,7 @@ class Todoist:
                     "time": clock,
                     "overdue": bool(day and day < today),
                     "order": item.get("day_order", 0),
+                    "minutes": duration_minutes(item.get("duration")),  # None: no duration, or one in days
                     "url": f"https://app.todoist.com/app/task/{item['id']}",
                 }
             )

@@ -1,0 +1,28 @@
+{
+  "_": "Task durations and the tomatoes they give, for plan_session (tests/test_plan.py) and planSession in ui/main.js (tests/js/plan.test.mjs). cfg is merged over the defaults; out is [minutes per tomato, tomatoes] or null.",
+  "defaults": {"plan_from_duration": true, "plan_single_max": 20, "plan_target": 15, "plan_min": 10, "plan_max": 30},
+  "cases": [
+    {"minutes": null, "out": null},
+    {"minutes": 0, "out": null},
+    {"minutes": -5, "out": null},
+    {"minutes": 45, "cfg": {"plan_from_duration": false}, "out": null},
+    {"minutes": 3, "out": [5, 1]},
+    {"minutes": 15, "out": [15, 1]},
+    {"minutes": 20, "out": [20, 1]},
+    {"minutes": 21, "out": [21, 1]},
+    {"minutes": 25, "out": [13, 2]},
+    {"minutes": 30, "out": [15, 2]},
+    {"minutes": 45, "out": [15, 3]},
+    {"minutes": 50, "out": [17, 3]},
+    {"minutes": 60, "out": [15, 4]},
+    {"minutes": 90, "out": [15, 6]},
+    {"minutes": 240, "out": [15, 16]},
+    {"minutes": 1000, "out": [29, 35]},
+    {"minutes": 45, "cfg": {"plan_single_max": 60}, "out": [45, 1]},
+    {"minutes": 600, "cfg": {"plan_single_max": 600}, "out": [480, 1]},
+    {"minutes": 10, "cfg": {"plan_single_max": 0, "plan_target": 25, "plan_min": 20, "plan_max": 50}, "out": [10, 1]},
+    {"minutes": 100, "cfg": {"plan_single_max": 0, "plan_target": 25, "plan_min": 20, "plan_max": 50}, "out": [25, 4]},
+    {"minutes": 120, "cfg": {"plan_target": 50, "plan_min": 25, "plan_max": 50}, "out": [40, 3]},
+    {"minutes": 25, "cfg": {"plan_single_max": 0, "plan_target": 13, "plan_min": 13, "plan_max": 13}, "out": [13, 2]}
+  ]
+}
