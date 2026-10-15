@@ -1318,6 +1318,7 @@ async function openSettings(tab) {
   renderBlockedApps();
   activityRows = (s.activities || []).map((a) => ({ ...a }));
   iconPicker = -1;
+  blockScope = "";
   $("addActivity").value = "";
   renderActivities();
   siteLists = { block: [...(s.blocked_sites || [])], allow: [...(s.allowed_sites || [])] };
@@ -1335,6 +1336,7 @@ async function openSettings(tab) {
   $("extDir").title = s.extension_dir || "";
   for (const n of document.querySelectorAll(".browser-name")) n.textContent = s.extension_browser || "Chrome";
   renderBlockedSites();
+  renderBlocking();
   $("extOldVersion").textContent = s.extension_version ? "version " + s.extension_version : "an older version";
   $("extNewVersion").textContent = s.extension_latest || "";
   renderExtension(s.extension_connected, s.extension_outdated);
@@ -1471,7 +1473,7 @@ function renderActivities() {
     name.maxLength = 30;
     name.spellcheck = false;
     name.setAttribute("aria-label", "Activity name");
-    name.oninput = () => { a.name = name.value; };
+    name.oninput = () => { a.name = name.value; renderScopes(); };
 
     const move = (d) => {
       const j = i + d;
@@ -1518,6 +1520,7 @@ function renderActivities() {
   });
   if (!activityRows.length) list.append(el("div", "help", "No activities: the field takes only what you type."));
   $("addActivity").disabled = $("addActivityBtn").disabled = activityRows.length >= MAX_ACTIVITIES;
+  renderBlocking();  // the picker in Apps and Websites
 }
 
 function addActivity() {
@@ -1781,6 +1784,364 @@ function cleanSitePattern(raw) {
   if (path === "/" || path === "/*") path = "";
   return host + path;
 }
+// ---------------------------------------------------- blocking per activity
+//
+// The Apps and Websites tabs edit either the global settings ("Everything") or
+// what one activity changes in them during its work phases: its `apps` and
+// `sites` rules, kept on its row in activityRows and saved with it.
+// appBlocking and siteBlocking mirror app_blocking (blocker.py) and
+// site_blocking (site_rules.py) for the summary under the lists; Python has the
+// last word (tests/activity_blocking_cases.json feeds both).
+let blockScope = "";  // "" for the global settings, else an activity's id
+const scopeActivity = () => activityRows.find((a) => a.id === blockScope) || null;
+const appKey = (n) => n.trim().toLowerCase().replace(/\.exe$/, "");  // app_key in blocker.py
+const BLOCK_STATES = [["inherit", "Like global"], ["off", "Don't block"], ["on", "Block"]];
+const RULE_DEFAULTS = {
+  apps: { state: "inherit", allow: [], block: [] },
+  sites: { state: "inherit", mode: "", allow: [], block: [] },
+};
+// An activity's rules, or a fresh copy of the defaults when it has none:
+// editActivityRules stores them on the first change, so looking changes nothing.
+const activityRules = (a, key) => a[key] || structuredClone(RULE_DEFAULTS[key]);
+
+function editActivityRules(a, key, change) {
+  const rules = activityRules(a, key);
+  change(rules);
+  a[key] = rules;
+  renderBlocking();
+}
+
+function appBlocking(cfg, id, protect = PROTECTED_EXES) {
+  const key = (n) => n.trim().toLowerCase().replace(/\.exe$/, "");
+  const label = (exe) => exe.replace(/\.exe$/i, "").split(".")[0] || exe;
+  const activity = id ? (cfg.activities || []).find((a) => a.id === id) : null;
+  const rules = (activity && activity.apps) || {};
+  const state = rules.state || "inherit";
+  if (state === "off" || (state === "inherit" && !cfg.block_apps)) return [];
+  const skip = new Set([...(rules.allow || []).map(key), ...protect]);
+  const entries = cfg.blocked_apps || [];
+  const out = [];
+  const taken = new Set();
+  for (const entry of entries) {
+    const exes = entry.on ? entry.exes.filter((e) => !skip.has(key(e))) : [];
+    if (exes.length) {
+      out.push({ ...entry, exes });
+      for (const e of exes) taken.add(key(e));
+    }
+  }
+  for (const exe of rules.block || []) {
+    const k = key(exe);
+    if (taken.has(k) || skip.has(k)) continue;
+    taken.add(k);
+    const owner = entries.find((e) => e.exes.some((x) => key(x) === k));
+    out.push(owner ? { ...owner, exes: [exe], on: true }
+      : { id: "activity:" + k, name: label(exe), exes: [exe], on: true, action: "close", custom: true });
+  }
+  return out;
+}
+
+function siteBlocking(cfg, id) {
+  const activity = id ? (cfg.activities || []).find((a) => a.id === id) : null;
+  const rules = (activity && activity.sites) || {};
+  const state = rules.state || "inherit";
+  const globalMode = cfg.site_mode || "block";
+  const mode = rules.mode || globalMode;
+  if (state === "off" || (state === "inherit" && !cfg.block_sites)) return { on: false, mode, patterns: [], except: [] };
+  const base = mode === globalMode ? [...(cfg[mode === "allow" ? "allowed_sites" : "blocked_sites"] || [])] : [];
+  const carve = [...(rules[mode === "allow" ? "block" : "allow"] || [])];
+  const patterns = [];
+  for (const p of [...base, ...(rules[mode] || [])]) {
+    if (!patterns.includes(p) && !carve.includes(p)) patterns.push(p);
+  }
+  return { on: true, mode, patterns, except: carve };
+}
+
+// The settings as edited here, in the shape the mirrors take.
+const draftBlocking = () => ({
+  block_apps: $("s_block_apps").checked, blocked_apps: blockedApps,
+  block_sites: $("s_block_sites").checked, site_mode: siteMode(),
+  blocked_sites: siteLists.block, allowed_sites: siteLists.allow, activities: activityRows,
+});
+
+// The picker at the top of both tabs: Everything, then each activity. Drawn
+// again when an activity is added, renamed or removed in General.
+function renderScopes() {
+  if (blockScope && !scopeActivity()) blockScope = "";
+  for (const id of ["appsScope", "sitesScope"]) {
+    const box = $(id);
+    box.classList.toggle("hidden", !activityRows.length);
+    box.replaceChildren();
+    const choice = (value, name, iconName) => {
+      const b = el("button", "scope");
+      b.type = "button";
+      b.setAttribute("aria-pressed", blockScope === value);
+      if (iconName) b.append(activityIcon(iconName));
+      b.append(el("span", "", name));
+      b.onclick = () => {
+        blockScope = value;
+        renderBlocking();
+        $(id).querySelector('[aria-pressed="true"]').focus();
+      };
+      box.append(b);
+    };
+    choice("", "Everything");
+    for (const a of activityRows) choice(a.id, a.name.trim() || "Unnamed", a.icon);
+  }
+}
+
+function renderBlocking() {
+  renderScopes();
+  const a = scopeActivity();
+  for (const [global, own] of [["appsGlobal", "appsActivity"], ["sitesGlobal", "sitesActivity"]]) {
+    $(global).classList.toggle("hidden", !!a);
+    $(own).classList.toggle("hidden", !a);
+  }
+  if (!a) return;
+  renderActivityApps(a);
+  renderActivitySites(a);
+}
+
+// A row of choices that looks like .seg's radios without being a setting of
+// its own (formValues reads every named input).
+function segButtons(label, options, value, onpick) {
+  const seg = el("div", "seg");
+  seg.setAttribute("role", "radiogroup");
+  seg.setAttribute("aria-label", label);
+  for (const [v, text] of options) {
+    const b = el("button", "", text);
+    b.type = "button";
+    b.setAttribute("role", "radio");
+    b.setAttribute("aria-checked", v === value);
+    b.onclick = () => {
+      onpick(v);
+      const again = [...document.querySelectorAll(".seg")].find((s) => s.getAttribute("aria-label") === label);
+      if (again) again.querySelector('[aria-checked="true"]').focus();
+    };
+    seg.append(b);
+  }
+  return seg;
+}
+
+// A list of program names or websites with an input to add one. `suggest`
+// (apps only) is suggestApps' skip.
+function editableList(box, { title, label, help, items, placeholder, add, remove, suggest }) {
+  box.append(el("h4", "", title));
+  if (help) box.append(el("div", "help", help));
+  const list = el("div", "app-list");
+  items.forEach((item, i) => {
+    const row = el("div", "app-row");
+    row.append(el("span", "site", item), el("span"), removeButton(() => remove(i), "Remove " + item));
+    list.append(row);
+  });
+  const line = el("div", "input-row");
+  const input = el("input", "input");  // no name: formValues() leaves it alone
+  input.spellcheck = false;
+  input.placeholder = placeholder;
+  input.setAttribute("aria-label", label);
+  const btn = el("button", "btn", "Add");
+  btn.type = "button";
+  line.append(input, btn);
+  box.append(list, line);
+  const go = () => {
+    const value = input.value;
+    input.value = "";
+    add(value);
+    const again = [...document.querySelectorAll("#appsActivity input, #sitesActivity input")]
+      .find((n) => n.getAttribute("aria-label") === label);
+    if (again) again.focus();
+  };
+  if (suggest) suggestApps(input, { skip: suggest, picked: go });  // before the Enter handler, as above
+  btn.onclick = go;
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); go(); } });
+}
+
+// One global entry under an activity, with a switch that takes it out (or
+// puts it back) for that activity. `key` finds the switch again after a render.
+function inheritedRow(boxId, key, text, exe, kept, state, toggle) {
+  const row = el("div", "app-row" + (kept ? "" : " off"));
+  row.dataset.key = key;
+  const label = el("label", "switch");
+  const check = el("input");  // no name: formValues() leaves it alone
+  check.type = "checkbox";
+  check.checked = kept;
+  check.onchange = () => {
+    toggle(check.checked);
+    const again = $(boxId).querySelector(`[data-key="${CSS.escape(key)}"] input`);
+    if (again) again.focus();
+  };
+  label.append(check, el("span", "knob"), el("span", exe ? "" : "site", text));
+  if (exe) label.append(el("span", "exe", exe));
+  row.append(label, el("span", "state", state), el("span"));
+  return row;
+}
+
+const activityName = (a) => a.name.trim() || "this activity";
+
+function renderActivityApps(a) {
+  const box = $("appsActivity");
+  box.replaceChildren();
+  const rules = activityRules(a, "apps");
+  const name = activityName(a);
+  const globalOn = $("s_block_apps").checked;
+  box.append(el("div", "help", `What work phases on ${name} do with apps. Todoist tasks and names you type use Everything.`));
+  box.append(segButtons(`Apps during ${name}`, BLOCK_STATES, rules.state, (v) => editActivityRules(a, "apps", (r) => { r.state = v; })));
+  box.append(el("div", "help", {
+    inherit: globalOn ? "Keeps away the apps of the global list, with the changes below."
+      : "The global switch is off, so no app is blocked. Pick Block to block these anyway.",
+    off: `Leaves every app alone during ${name}.`,
+    on: "Keeps these apps away even when the global switch is off.",
+  }[rules.state]));
+  if (rules.state === "off") return;
+  const fields = el("div", "activity-fields" + (rules.state === "inherit" && !globalOn ? " muted" : ""));
+  box.append(fields);
+
+  fields.append(el("h4", "", "From the global list"));
+  const allowed = new Set(rules.allow.map(appKey));
+  const shown = blockedApps.filter((e) => e.on);
+  const list = el("div", "app-list");
+  for (const entry of shown) {
+    const kept = !entry.exes.some((e) => allowed.has(appKey(e)));
+    list.append(inheritedRow("appsActivity", entry.id, entry.name, entry.exes[0], kept,
+      kept ? (entry.action === "hide" ? "Hidden" : "Closed") : "Let through",
+      (keep) => editActivityRules(a, "apps", (r) => {
+        const keys = new Set(entry.exes.map(appKey));
+        r.allow = r.allow.filter((e) => !keys.has(appKey(e)));
+        if (!keep) r.allow.push(...entry.exes);
+      })));
+  }
+  if (!shown.length) list.append(el("div", "help", "The global list blocks no app."));
+  fields.append(list);
+
+  const listed = new Set(shown.flatMap((e) => e.exes.map(appKey)));
+  const extra = rules.allow.filter((e) => !listed.has(appKey(e)));
+  editableList(fields, {
+    title: "Also let through", label: "Also let through (apps)",
+    help: "Left alone even if the global list blocks them later.",
+    items: extra, placeholder: "Add a program, e.g. Teams.exe",
+    add: (raw) => addActivityApp(a, "allow", raw),
+    remove: (i) => editActivityRules(a, "apps", (r) => { r.allow = r.allow.filter((e) => e !== extra[i]); }),
+    suggest: (app) => allowed.has(appKey(app.exe)),
+  });
+  editableList(fields, {
+    title: "Also block", label: "Also block (apps)",
+    help: `Closed during work phases on ${name}, on top of the global list.`,
+    items: rules.block, placeholder: "Add a program, e.g. Spotify.exe",
+    add: (raw) => addActivityApp(a, "block", raw),
+    remove: (i) => editActivityRules(a, "apps", (r) => { r.block.splice(i, 1); }),
+    suggest: (app) => app.protected || rules.block.some((e) => appKey(e) === appKey(app.exe)),
+  });
+  const names = [...new Set(appBlocking(draftBlocking(), a.id).map((e) => e.name))];
+  fields.append(el("div", "help preview", names.length
+    ? `During ${name}: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} kept away.`
+    : `During ${name}: no app is blocked.`));
+}
+
+function addActivityApp(a, field, raw) {
+  const name = raw.trim().replace(/[,;\s]+$/, "");
+  if (!name) return;
+  if (/[\\/]/.test(name)) return toast("App names are just the program, like WhatsApp.exe.", true);
+  if (field === "block" && PROTECTED_EXES.has(appKey(name))) {
+    return toast(`buZyist won't close ${name}: Windows or your browser needs it.`, true);
+  }
+  const rules = activityRules(a, "apps");
+  if (rules[field].some((e) => appKey(e) === appKey(name))) return;
+  if (rules[field].length >= MAX_BLOCKED_APPS) {
+    return toast(`Keep the ${field === "allow" ? "allowed" : "blocked"} apps under ${MAX_BLOCKED_APPS}.`, true);
+  }
+  const exe = /\.exe$/i.test(name) ? name : name + ".exe";
+  const other = field === "allow" ? "block" : "allow";
+  editActivityRules(a, "apps", (r) => {
+    r[other] = r[other].filter((e) => appKey(e) !== appKey(exe));  // one or the other
+    r[field].push(exe);
+  });
+}
+
+function renderActivitySites(a) {
+  const box = $("sitesActivity");
+  box.replaceChildren();
+  const rules = activityRules(a, "sites");
+  const name = activityName(a);
+  const globalOn = $("s_block_sites").checked;
+  const globalMode = siteMode();
+  box.append(el("div", "help", `What work phases on ${name} do with websites. Todoist tasks and names you type use Everything.`));
+  box.append(segButtons(`Websites during ${name}`, BLOCK_STATES, rules.state, (v) => editActivityRules(a, "sites", (r) => { r.state = v; })));
+  box.append(el("div", "help", {
+    inherit: globalOn ? "Uses the global websites, with the changes below."
+      : "The global switch is off, so no website is blocked. Pick Block to block these anyway.",
+    off: `Leaves every website open during ${name}.`,
+    on: "Limits these websites even when the global switch is off.",
+  }[rules.state]));
+  if (rules.state === "off") return;
+  const fields = el("div", "activity-fields" + (rules.state === "inherit" && !globalOn ? " muted" : ""));
+  box.append(fields);
+
+  fields.append(segButtons(`Website mode during ${name}`, [["", `Like global (${globalMode === "allow" ? "allow only" : "block"})`], ["block", "Block these"], ["allow", "Allow only these"]],
+    rules.mode, (v) => editActivityRules(a, "sites", (r) => { r.mode = v; })));
+  const mode = rules.mode || globalMode;
+  const carve = mode === "allow" ? "block" : "allow";  // site_blocking's `except`
+  const inherited = mode === globalMode;
+  if (inherited) {
+    fields.append(el("h4", "", mode === "allow" ? "Allowed by the global list" : "Blocked by the global list"));
+    const list = el("div", "app-list");
+    for (const site of siteLists[mode]) {
+      const kept = !rules[carve].includes(site);
+      list.append(inheritedRow("sitesActivity", site, site, "", kept,
+        mode === "allow" ? (kept ? "Allowed" : "Blocked") : (kept ? "Blocked" : "Let through"),
+        (keep) => editActivityRules(a, "sites", (r) => {
+          r[carve] = r[carve].filter((p) => p !== site);
+          if (!keep) r[carve].push(site);
+        })));
+    }
+    if (!siteLists[mode].length) {
+      list.append(el("div", "help", mode === "allow" ? "The global list allows no website." : "The global list blocks no website."));
+    }
+    fields.append(list);
+  } else {
+    fields.append(el("div", "help", `The global setting ${globalMode === "allow" ? "allows only its list" : "blocks its list"}, so nothing is inherited: ${name} uses only the websites below.`));
+  }
+  editableList(fields, {
+    title: inherited ? (mode === "allow" ? "Also allow" : "Also block") : (mode === "allow" ? "Allow only these" : "Block these"),
+    label: (mode === "allow" ? "Allowed" : "Blocked") + " websites",
+    items: rules[mode],
+    placeholder: mode === "allow" ? "Add an allowed website, e.g. github.com" : "Add a website, e.g. youtube.com",
+    add: (raw) => addActivitySite(a, mode, raw),
+    remove: (i) => editActivityRules(a, "sites", (r) => { r[mode].splice(i, 1); }),
+  });
+  const base = new Set(inherited ? siteLists[mode] : []);
+  const extra = rules[carve].filter((p) => !base.has(p));
+  editableList(fields, {
+    title: mode === "allow" ? "Still block" : "Let through",
+    label: (mode === "allow" ? "Still blocked" : "Let through") + " websites",
+    help: mode === "allow"
+      ? "Blocked even inside an allowed website, e.g. youtube.com/shorts/* inside youtube.com."
+      : "Open even inside a blocked website, e.g. mail.google.com inside *.google.com.",
+    items: extra,
+    placeholder: mode === "allow" ? "e.g. youtube.com/shorts/*" : "e.g. mail.google.com",
+    add: (raw) => addActivitySite(a, carve, raw),
+    remove: (i) => editActivityRules(a, "sites", (r) => { r[carve] = r[carve].filter((p) => p !== extra[i]); }),
+  });
+  const b = siteBlocking(draftBlocking(), a.id);
+  const n = b.patterns.length;
+  const m = b.except.length;
+  fields.append(el("div", "help preview", b.mode === "allow"
+    ? (n ? `During ${name}: only ${plural(n, "website")} open${m ? `, with ${m} blocked inside them` : ""}.` : `During ${name}: every website is blocked.`)
+    : (n ? `During ${name}: ${plural(n, "website")} blocked${m ? `, with ${m} let through inside them` : ""}.` : `During ${name}: no website is blocked.`)));
+}
+
+function addActivitySite(a, field, raw) {
+  const site = cleanSitePattern(raw);
+  if (site === "") return;
+  if (site === null) return toast("Type a website like youtube.com or *.google.com.", true);
+  const rules = activityRules(a, "sites");
+  if (rules[field].includes(site)) return;
+  if (rules[field].length >= 50) return toast("Keep the list under 50 websites.", true);
+  const other = field === "allow" ? "block" : "allow";
+  editActivityRules(a, "sites", (r) => {
+    r[other] = r[other].filter((p) => p !== site);  // one or the other
+    r[field].push(site);
+  });
+}
+
 // ------------------------------------------------------- website and app limits
 //
 // Time budgets and blocked hours that apply all day (the Limits tab), for

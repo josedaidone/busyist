@@ -1,5 +1,6 @@
 """The activities of the "What are you working on?" field: the setting, the sessions on them, the recent names."""
 
+import json
 import re
 from pathlib import Path
 
@@ -314,3 +315,24 @@ def test_an_activity_that_blocks_no_site_turns_the_extension_off(make_app):
     assert app.focus()["active"]
     assert app.site_focus()["active"] is False
     assert app.site_focus()["patterns"] == []
+
+
+# The same cases feed the UI's mirrors (tests/js/activity_blocking.test.mjs).
+BLOCKING_CASES = json.loads((Path(__file__).parent / "activity_blocking_cases.json").read_text(encoding="utf-8"))
+
+
+def _case_config(case: dict, key: str) -> dict:
+    cfg = {**BLOCKING_CASES["base"], **case.get("cfg", {})}
+    if "rules" in case:
+        cfg["activities"] = [{"id": "x", "name": "X", "icon": "dot", key: case["rules"]}]
+    return cfg
+
+
+@pytest.mark.parametrize("case", BLOCKING_CASES["apps"], ids=lambda c: c["name"])
+def test_app_blocking_cases(case):
+    assert blocker.app_blocking(_case_config(case, "apps"), "x") == case["out"]
+
+
+@pytest.mark.parametrize("case", BLOCKING_CASES["sites"], ids=lambda c: c["name"])
+def test_site_blocking_cases(case):
+    assert site_rules.site_blocking(_case_config(case, "sites"), "x") == case["out"]

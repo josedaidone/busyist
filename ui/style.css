@@ -583,6 +583,31 @@ body[data-phase="paused"] .badge { background: var(--bz-barro); }
 .seg label:hover span { color: var(--ink); }
 .seg input:checked + span { background: var(--blocked); color: var(--on-blocked); }
 .seg input:focus-visible + span { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+/* The same look as buttons, for choices that aren't settings of their own (renderActivityApps/Sites) */
+.seg button {
+  border: 0; background: none; cursor: pointer; font: inherit;
+  padding: 8px 14px; border-radius: 999px; font-size: 13px; font-weight: 700; color: var(--muted);
+}
+.seg button:hover { color: var(--ink); }
+.seg button[aria-checked="true"] { background: var(--blocked); color: var(--on-blocked); }
+.seg button:focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+
+/* Apps and Websites: whose blocking is edited, the global settings or one activity's (renderScopes) */
+.scope-picker { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.scope {
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px 0 10px;
+  border-radius: 999px; border: 2px solid var(--line); background: var(--bg);
+  font: inherit; font-size: 13px; font-weight: 700; color: var(--muted); cursor: pointer;
+}
+.scope:hover { color: var(--ink); }
+.scope[aria-pressed="true"] { background: var(--blocked); border-color: var(--blocked); color: var(--on-blocked); }
+.scope:focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 1px; }
+.scope svg { width: 16px; height: 16px; }
+.activity-fields.muted { opacity: .55; }
+.activity-fields h4 { margin-top: 16px; }
+.app-row .state { font-size: 12px; font-weight: 700; color: var(--muted); }
+.app-row.off .site, .app-row.off .switch > span:not(.knob) { color: var(--muted); }
+.preview { margin: 12px 0 0; padding: 10px 14px; border-radius: var(--r-row); background: var(--surface); }
 .extension-box {
   margin-top: 12px; padding: 14px 16px; border-radius: var(--r-card); background: var(--surface); display: grid; gap: 10px;
 }

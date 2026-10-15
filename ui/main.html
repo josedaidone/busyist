@@ -277,6 +277,8 @@
     </div>
 
     <div class="section" role="tabpanel" id="p_apps" data-panel="apps">
+      <div class="scope-picker" id="appsScope" role="group" aria-label="Whose app blocking to edit"></div>
+      <div id="appsGlobal">
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="block_apps" id="s_block_apps"><span class="knob"></span>Keep these apps away during focus</label>
       </div>
@@ -288,9 +290,13 @@
         </div>
         <div class="help"><b>Close</b> quits the app. <b>Hide to tray</b> closes its window like its X does, so it keeps running and you stay online. Only during work phases; breaks, pauses and the end of a session leave apps alone.</div>
       </div>
+      </div>
+      <div class="hidden" id="appsActivity"></div>
     </div>
 
     <div class="section" role="tabpanel" id="p_sites" data-panel="sites">
+      <div class="scope-picker" id="sitesScope" role="group" aria-label="Whose website blocking to edit"></div>
+      <div id="sitesGlobal">
       <div class="toggles">
         <label class="switch"><input type="checkbox" name="block_sites" id="s_block_sites"><span class="knob"></span>Limit websites during focus</label>
       </div>
@@ -307,6 +313,8 @@
         <div class="help" id="sitesHelp"></div>
         <div class="help">Subdomains are included (<code>youtube.com</code> also covers <code>m.youtube.com</code>). Use <code>*</code> as a wildcard anywhere: <code>*.google.com</code>, <code>google.*</code>, <code>youtube.com/shorts/*</code>. A path covers the pages below it (<code>reddit.com/r/python</code>).</div>
       </div>
+      </div>
+      <div class="hidden" id="sitesActivity"></div>
       <div class="extension-box" id="extBox">
         <div class="extension-status" id="extStatus">Browser extension: not connected</div>
         <div id="extSetup">

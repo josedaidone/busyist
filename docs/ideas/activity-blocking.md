@@ -77,7 +77,34 @@ Ticket 1 (the extension) is done, extension 1.9.0:
 - Tests: `tests/js/rules.test.mjs` (limit priority 5; exceptions in both
   modes, limits over exceptions, `focusBlocks`).
 
-Left: ticket 2 (the UI), then 3.
+Ticket 2 (the UI) is done:
+
+- `ui/main.html`: a picker (`#appsScope`, `#sitesScope`) at the top of the
+  Apps and Websites tabs; the global fields sit in `#appsGlobal` /
+  `#sitesGlobal`, an activity's in `#appsActivity` / `#sitesActivity`.
+- `ui/main.js`, section "blocking per activity": `blockScope` (shared by both
+  tabs, reset when Settings open), `renderScopes` (also from
+  `renderActivities` and a rename), `renderBlocking`, `renderActivityApps` /
+  `renderActivitySites`. The rules are created on the first edit
+  (`editActivityRules`), so looking at an activity doesn't change its config.
+  Apps: the switch (`segButtons`, buttons, not named inputs, so `formValues`
+  ignores them), the global entries switched on with a per-app switch
+  (writes `allow`), "Also let through" for the `allow` names not in the list,
+  "Also block" with the running-app suggestions (refuses `PROTECTED_EXES`).
+  Websites: the switch, the mode ("Like global (block)" / "Block these" /
+  "Allow only these"); in the global mode the global list with a switch per
+  entry (writes the carve-out list), "Also block"/"Also allow" and "Let
+  through"/"Still block"; in the other mode a note that nothing is inherited.
+  The other carve-out list stays visible there too, since `site_blocking`
+  still uses it. A name added to one list leaves the other.
+- `appBlocking` / `siteBlocking` mirror the Python for the summary line
+  under the lists; `tests/activity_blocking_cases.json` feeds
+  `tests/test_activities.py` and `tests/js/activity_blocking.test.mjs`.
+- Looked at in Edge headless with a stubbed `pywebview.api` (both tabs, both
+  modes, Everything), and driven: toggles, adds, the protected refusal,
+  focus kept, rename/remove updating the picker, the save payload.
+
+Left: ticket 3 (wrap-up).
 
 ## Ticket 1: the extension (done)
 
@@ -111,7 +138,7 @@ at the top (`CATCH_ALL 1`, `ALLOW 2`, `LIMIT 3`, `FOCUS 4`).
 - Tests: `tests/js/` (node --test) if `buildRules` can be loaded there; see how
   the existing JS tests import code. At least `node --check extension/*.js`.
 
-## Ticket 2: the UI
+## Ticket 2: the UI (done)
 
 `ui/main.html` (tabs `p_apps` line ~279, `p_sites` ~293) and `ui/main.js`
 (`blockedApps` ~1542 / `renderBlockedApps`, `siteLists` ~1713, the activity
