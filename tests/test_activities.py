@@ -7,6 +7,7 @@ import pytest
 
 import busyist
 from buzyist import activities as act
+from buzyist import blocker, site_rules
 from buzyist.config import Config
 from buzyist.constants import AppError
 
@@ -134,3 +135,182 @@ def test_settings_save_the_activities(app):
     assert app.state()["activities"] == app.cfg["activities"]
     with pytest.raises(AppError, match="two activities"):
         app.save_settings({"activities": [{"id": "a", "name": "X"}, {"id": "b", "name": "x"}]})
+
+
+# ------------------------------------------------- what an activity blocks
+
+WHATSAPP = {
+    "id": "whatsapp",
+    "name": "WhatsApp",
+    "exes": ["WhatsApp.Root.exe", "WhatsApp.exe"],
+    "on": True,
+    "action": "close",
+}
+SLACK = {"id": "slack", "name": "Slack", "exes": ["Slack.exe"], "on": False, "action": "hide"}
+
+
+def blocking_cfg(apps=None, sites=None, **cfg):
+    activity = {"id": "a", "name": "Work", "icon": "dot"}
+    if apps is not None:
+        activity["apps"] = {"state": "inherit", "allow": [], "block": [], **apps}
+    if sites is not None:
+        activity["sites"] = {"state": "inherit", "mode": "", "allow": [], "block": [], **sites}
+    return {
+        "block_apps": True,
+        "blocked_apps": [WHATSAPP, SLACK],
+        "block_sites": True,
+        "site_mode": "block",
+        "blocked_sites": ["youtube.com", "*.google.com", "gmail.com"],
+        "allowed_sites": ["docs.python.org"],
+        "activities": [activity],
+        **cfg,
+    }
+
+
+def exes(entries):
+    return [(e["exes"], e["action"]) for e in entries]
+
+
+def test_rules_are_cleaned_with_the_activity():
+    (out,) = act.clean_activities(
+        [
+            {
+                "id": "a",
+                "name": "Mail",
+                "apps": {"allow": [" Outlook.exe ", "outlook.EXE"]},
+                "sites": {"block": ["X.com"]},
+            }
+        ]
+    )
+    assert out["apps"] == {"state": "inherit", "allow": ["Outlook.exe"], "block": []}
+    assert out["sites"] == {"state": "inherit", "mode": "", "allow": [], "block": ["x.com"]}
+
+
+@pytest.mark.parametrize(
+    ("rules", "message"),
+    [
+        ({"apps": {"block": ["chrome.exe"]}}, "Mail: buZyist won't close chrome.exe"),
+        ({"apps": {"block": ["C:\\x\\a.exe"]}}, "Mail: App names are just the program"),
+        ({"apps": {"state": "maybe"}}, "Mail: Pick whether the activity blocks apps."),
+        ({"apps": {"allow": [f"a{i}.exe" for i in range(21)]}}, "Mail: Keep the allowed apps under 20."),
+        ({"sites": {"mode": "both"}}, "Mail: Pick whether to block the listed websites"),
+        ({"sites": {"allow": "x.com"}}, "Mail: The site list didn't come through"),
+        ({"sites": "on"}, "Mail: The activity's websites didn't come through"),
+    ],
+)
+def test_bad_rules_are_refused(rules, message):
+    with pytest.raises(AppError, match=re.escape(message)):
+        act.clean_activities([{"id": "a", "name": "Mail", **rules}])
+
+
+def test_loading_keeps_an_activity_whose_rules_are_broken():
+    raw = [{"id": "a", "name": "Mail", "apps": {"state": "maybe"}, "sites": {"allow": ["mail.google.com"]}}]
+    (out,) = Config.load({"activities": raw})["activities"]
+    assert "apps" not in out
+    assert out["sites"]["allow"] == ["mail.google.com"]
+
+
+def test_without_an_activity_the_global_apps_are_blocked():
+    cfg = blocking_cfg(apps={"state": "off"})
+    assert exes(blocker.app_blocking(cfg)) == [(["WhatsApp.Root.exe", "WhatsApp.exe"], "close")]
+    assert exes(blocker.app_blocking(cfg, "gone")) == exes(blocker.app_blocking(cfg))
+    assert blocker.app_blocking({**cfg, "block_apps": False}) == []
+
+
+def test_an_activity_lets_apps_through_and_blocks_more():
+    cfg = blocking_cfg(apps={"allow": ["whatsapp.root.EXE"], "block": ["Slack.exe", "Notion.exe"]})
+    assert exes(blocker.app_blocking(cfg, "a")) == [
+        (["WhatsApp.exe"], "close"),
+        (["Slack.exe"], "hide"),  # a preset switched off keeps its action
+        (["Notion.exe"], "close"),
+    ]
+    assert blocker.app_blocking(cfg, "a")[2]["name"] == "Notion"
+
+
+def test_the_activity_switch_for_apps():
+    assert blocker.app_blocking(blocking_cfg(apps={"state": "off"}), "a") == []
+    assert blocker.app_blocking(blocking_cfg(apps={}, block_apps=False), "a") == []  # inherits the switch
+    on = blocking_cfg(apps={"state": "on", "block": ["Notion.exe"]}, block_apps=False)
+    assert [e["exes"] for e in blocker.app_blocking(on, "a")] == [["WhatsApp.Root.exe", "WhatsApp.exe"], ["Notion.exe"]]
+
+
+def test_protected_programs_are_never_blocked_even_from_a_hand_edited_config():
+    cfg = blocking_cfg(apps={"block": ["explorer.exe"]})
+    assert ["explorer.exe"] not in [e["exes"] for e in blocker.app_blocking(cfg, "a")]
+
+
+def test_without_an_activity_the_global_sites_are_blocked():
+    cfg = blocking_cfg(sites={"state": "off"})
+    assert site_rules.site_blocking(cfg) == {
+        "on": True,
+        "mode": "block",
+        "patterns": ["youtube.com", "*.google.com", "gmail.com"],
+        "except": [],
+    }
+    assert site_rules.site_blocking({**cfg, "block_sites": False})["on"] is False
+
+
+def test_an_activity_carves_sites_out_of_the_global_list():
+    cfg = blocking_cfg(sites={"allow": ["mail.google.com", "gmail.com"], "block": ["x.com", "youtube.com"]})
+    assert site_rules.site_blocking(cfg, "a") == {
+        "on": True,
+        "mode": "block",
+        "patterns": ["youtube.com", "*.google.com", "x.com"],  # gmail.com left out for old extensions
+        "except": ["mail.google.com", "gmail.com"],
+    }
+
+
+def test_an_activity_in_the_other_mode_has_its_own_list():
+    cfg = blocking_cfg(sites={"mode": "allow", "allow": ["kindle.amazon.com"], "block": ["amazon.com/gp/*"]})
+    assert site_rules.site_blocking(cfg, "a") == {
+        "on": True,
+        "mode": "allow",
+        "patterns": ["kindle.amazon.com"],  # not the global allowed_sites: those belong to the other mode
+        "except": ["amazon.com/gp/*"],
+    }
+    same = blocking_cfg(sites={"mode": "allow", "allow": ["kindle.amazon.com"]}, site_mode="allow")
+    assert site_rules.site_blocking(same, "a")["patterns"] == ["docs.python.org", "kindle.amazon.com"]
+
+
+def test_the_activity_switch_for_sites():
+    assert site_rules.site_blocking(blocking_cfg(sites={"state": "off"}), "a")["on"] is False
+    assert site_rules.site_blocking(blocking_cfg(sites={}, block_sites=False), "a")["on"] is False
+    on = site_rules.site_blocking(blocking_cfg(sites={"state": "on"}, block_sites=False), "a")
+    assert on["on"] and on["patterns"] == ["youtube.com", "*.google.com", "gmail.com"]
+
+
+def test_the_presets():
+    cfg = {**blocking_cfg(), "activities": act.DEFAULT_ACTIVITIES, "blocked_sites": ["web.whatsapp.com", "x.com"]}
+    assert blocker.app_blocking(cfg, "messages") == []  # WhatsApp let through, Slack is off
+    assert site_rules.site_blocking(cfg, "messages")["patterns"] == ["x.com"]
+    assert blocker.app_blocking(cfg, "call") == [] and not site_rules.site_blocking(cfg, "call")["on"]
+    assert exes(blocker.app_blocking(cfg, "programming")) == exes(blocker.app_blocking(cfg))
+
+
+def in_work_phase(make_app, activity="a", **cfg):
+    app = make_app({"use_todoist": False, **blocking_cfg(sites={"allow": ["mail.google.com"]}), **cfg})
+    app.start_task(None, "Inbox", activity)
+    app.engine_step()
+    return app
+
+
+def test_the_extension_gets_the_activitys_sites(make_app):
+    app = in_work_phase(make_app)
+    assert app.focus()["activity"] == "a"
+    focus = app.site_focus()
+    assert focus["active"] and focus["activity"] == "Work"
+    assert focus["except"] == ["mail.google.com"]
+    assert focus["sites"] == ["youtube.com", "gmail.com"]  # plain domains, for the oldest extensions
+
+
+def test_a_session_with_no_activity_gets_the_global_sites(make_app):
+    app = in_work_phase(make_app, activity=None)
+    focus = app.site_focus()
+    assert focus["active"] and focus["activity"] == "" and focus["except"] == []
+
+
+def test_an_activity_that_blocks_no_site_turns_the_extension_off(make_app):
+    app = in_work_phase(make_app, activities=[{"id": "a", "name": "Call", "sites": {"state": "off"}}])
+    assert app.focus()["active"]
+    assert app.site_focus()["active"] is False
+    assert app.site_focus()["patterns"] == []

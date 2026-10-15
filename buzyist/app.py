@@ -394,11 +394,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         (issues #1 and #2): active means an interval session, in a work phase,
         not paused, not finished. `ends_at_ms` is when the current work phase
         ends, so toasts and the block page can show "until 14:25".
+        `activity` is the id of our session's activity (and `activity_name`
+        its name), which picks what gets blocked; "" for anything else.
 
         Blocking fails open: a bar that can't be read for three polls in a row
         counts as "no focus", so a lost connection never leaves apps blocked.
         """
-        off = {"active": False, "task": "", "ends_at_ms": 0}
+        off = {"active": False, "task": "", "ends_at_ms": 0, "activity": "", "activity_name": ""}
         with self.lock:
             session, snap = self.session, self.snap
             if snap is None:
@@ -413,6 +415,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             if state.mode != "interval" or state.is_finished or state.phase != "work" or state.is_paused:
                 return off
             remote = None if session else self.remote_session()
+            activity = (session and session.get("activity")) or {}
             return {
                 "active": True,
                 # No session here: the timer was started on the bar itself
@@ -420,6 +423,8 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 # this PC still blocks.
                 "task": session["task"]["content"] if session else (remote["task"]["content"] if remote else ""),
                 "ends_at_ms": now_ms() + (state.time_left_ms or 0),
+                "activity": activity.get("id", ""),
+                "activity_name": activity.get("name", ""),
             }
 
     def notify_focus(self) -> None:

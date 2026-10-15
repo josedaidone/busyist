@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from buzyist import paths
 from buzyist.constants import APP, AppError
+from buzyist.site_rules import activity_rules
 from buzyist.win32.processes import (
     list_processes,
     process_path,
@@ -176,6 +177,50 @@ def clean_blocked_apps(values) -> list[dict]:
     return normalize_blocked_apps(values)
 
 
+def app_blocking(cfg, activity_id: str | None = None) -> list[dict]:
+    """
+    The blocked_apps entries a work phase on this activity closes or hides
+    ([] when it blocks no app). No activity (a Todoist task, a name typed
+    in) means the global settings.
+
+    The global entries switched on, minus the activity's `allow` program
+    names, plus its `block` ones: those keep the action of the entry they
+    belong to (a preset switched off), else "close".
+    """
+    rules = activity_rules(cfg, activity_id, "apps")
+    state = rules.get("state", "inherit")
+    if state == "off" or (state == "inherit" and not cfg.get("block_apps")):
+        return []
+    skip = {app_key(e) for e in rules.get("allow", [])} | PROTECTED_EXES
+    entries = cfg.get("blocked_apps") or []
+    out, taken = [], set()
+    for entry in entries:
+        exes = [e for e in entry["exes"] if app_key(e) not in skip] if entry.get("on") else []
+        if exes:
+            out.append({**entry, "exes": exes})
+            taken |= {app_key(e) for e in exes}
+    for exe in rules.get("block", []):
+        key = app_key(exe)
+        if key in taken or key in skip:
+            continue
+        taken.add(key)
+        owner = next((e for e in entries if key in {app_key(x) for x in e["exes"]}), None)
+        if owner:
+            out.append({**owner, "exes": [exe], "on": True})
+        else:
+            out.append(
+                {
+                    "id": "activity:" + key,
+                    "name": exe_label(exe),
+                    "exes": [exe],
+                    "on": True,
+                    "action": "close",
+                    "custom": True,
+                }
+            )
+    return out
+
+
 def exe_label(image: str) -> str:
     """'WhatsApp.Root.exe' -> 'WhatsApp': what Settings and toasts call an app."""
     stem = image[:-4] if image.lower().endswith(".exe") else image
@@ -261,11 +306,11 @@ class AppBlocker:
 
     def _loop(self) -> None:
         while not self.app.quitting:
-            cfg = self.app.cfg
-            focus = self.app.focus() if cfg.get("block_apps") else {"active": False}
-            if focus["active"]:
+            focus = self.app.focus()
+            apps = app_blocking(self.app.cfg, focus.get("activity")) if focus["active"] else []
+            if apps:
                 try:
-                    self.enforce(focus)
+                    self.enforce(focus, apps)
                 except Exception:
                     log.exception("app blocker")
                 self._first_sweep = False
@@ -287,13 +332,15 @@ class AppBlocker:
                 log.info("reopened %s after focus", target)
         self._closed.clear()
 
-    def enforce(self, focus: dict) -> None:
+    def enforce(self, focus: dict, apps: list[dict] | None = None) -> None:
+        """One sweep over the running programs; `apps` is app_blocking() for this focus."""
+        if apps is None:
+            apps = app_blocking(self.app.cfg, focus.get("activity"))
         wanted: dict[str, dict] = {}
-        for entry in self.app.cfg.get("blocked_apps") or []:
-            if entry.get("on"):
-                for exe in entry["exes"]:
-                    if app_key(exe) not in PROTECTED_EXES:  # also checked on save and load
-                        wanted[app_key(exe)] = entry
+        for entry in apps:
+            for exe in entry["exes"]:
+                if app_key(exe) not in PROTECTED_EXES:  # also checked on save and load, and by app_blocking
+                    wanted[app_key(exe)] = entry
         if not wanted:
             return
         alive: set[int] = set()

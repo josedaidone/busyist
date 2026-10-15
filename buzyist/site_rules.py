@@ -72,6 +72,48 @@ def _sanitize_sites(values) -> list[str]:
     return out
 
 
+def activity_rules(cfg, activity_id: str | None, key: str) -> dict:
+    """
+    An activity's `apps` or `sites` rules (activities.py), what app_blocking
+    and site_blocking adjust the global settings with; {} for no activity, one
+    without rules, or one since removed.
+    """
+    if not activity_id:
+        return {}
+    activity = next((a for a in cfg.get("activities") or [] if a.get("id") == activity_id), None)
+    return (activity or {}).get(key) or {}
+
+
+def site_blocking(cfg, activity_id: str | None = None) -> dict:
+    """
+    What a work phase on this activity blocks on the web: `{on, mode,
+    patterns, except}`. `patterns` is the list of the mode (blocked sites in
+    "block", allowed ones in "allow"); `except` are the patterns that go the
+    other way inside it: allowed in "block" mode (mail.google.com through
+    *.google.com), blocked in "allow" mode. No activity means the global
+    settings.
+
+    In the global mode the activity's list for that mode adds to the global
+    one, and its other list is `except`. In the other mode there is nothing
+    to inherit, so the list is the activity's own. `patterns` never holds an
+    entry equal to an exception, so extensions that don't know `except`
+    still let those through.
+    """
+    rules = activity_rules(cfg, activity_id, "sites")
+    state = rules.get("state", "inherit")
+    global_mode = cfg.get("site_mode", "block")
+    mode = rules.get("mode") or global_mode
+    if state == "off" or (state == "inherit" and not cfg.get("block_sites")):
+        return {"on": False, "mode": mode, "patterns": [], "except": []}
+    base = list(cfg.get("allowed_sites" if mode == "allow" else "blocked_sites") or []) if mode == global_mode else []
+    carve = list(rules.get("block" if mode == "allow" else "allow", []))
+    patterns: list[str] = []
+    for p in base + list(rules.get(mode, [])):
+        if p not in patterns and p not in carve:
+            patterns.append(p)
+    return {"on": True, "mode": mode, "patterns": patterns, "except": carve}
+
+
 # ------------------------------------------------------------ site limits ---
 #
 # A rule is {"id", "patterns", "enabled", "budgets": [...], "windows": [...]}:
