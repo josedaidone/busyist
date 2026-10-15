@@ -62,9 +62,24 @@ the backend of this feature:
 - Tests: `tests/test_activities.py` (section "what an activity blocks"), one
   in `tests/test_app_blocker.py`. All 984 pass, ruff clean.
 
-Left: tickets 1 and 2 below (independent; either order), then 3.
+Ticket 1 (the extension) is done, extension 1.9.0:
 
-## Ticket 1: the extension
+- `background.js`: `rulesOf` carries `except` ([] from older buZyists),
+  `focusBlocks` (popup, badge, tab sweep) honours it. `buildRules`: in block
+  mode an `allow` rule per exception at `EXCEPT_PRIORITY` 4 (wins the tie
+  with the focus redirects), in allow mode a redirect per exception at
+  `FOCUS_PRIORITY` 4 (above the allow rules); ids follow the patterns'.
+  `LIMIT_PRIORITY` moved 3 -> 5, so limits beat exceptions and allow rules.
+  CLAUDE.md's priority sentence updated.
+- `blocked.js`: the eyebrow says "Blocked during Email" when the session has
+  an activity (`activity` passed through `blockPageData`). Popup: the
+  blocking line is prefixed with the activity's name (`popupData` passes it).
+- Tests: `tests/js/rules.test.mjs` (limit priority 5; exceptions in both
+  modes, limits over exceptions, `focusBlocks`).
+
+Left: ticket 2 (the UI), then 3.
+
+## Ticket 1: the extension (done)
 
 `extension/background.js`, `buildRules` (around line 540) and the priorities
 at the top (`CATCH_ALL 1`, `ALLOW 2`, `LIMIT 3`, `FOCUS 4`).

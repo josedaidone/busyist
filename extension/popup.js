@@ -59,9 +59,11 @@ function renderFocus(data) {
     const mins = Math.max(0, Math.ceil((f.ends_at_ms - Date.now()) / 60000));
     box.append(el("div", "big bad", `${mins} min left`));
     box.append(el("div", "small", f.task ? `Focusing on ${f.task}` : "Work phase running"));
-    box.append(el("div", "small muted", f.mode === "allow"
+    // An activity's own blocking rules (the session's name already carries it).
+    const during = f.activity ? `${f.activity}: ` : "";
+    box.append(el("div", "small muted", during + (f.mode === "allow"
       ? "Only your allowed websites open until it ends."
-      : f.sites ? `${f.sites} website${f.sites === 1 ? " is" : "s are"} blocked until it ends.` : "No websites are blocked during focus."));
+      : f.sites ? `${f.sites} website${f.sites === 1 ? " is" : "s are"} blocked until it ends.` : "No websites are blocked during focus.")));
   } else if (data.offline && !data.known) {
     box.append(el("div", "small muted", "Unknown: buZyist hasn't answered yet."));
   } else if (data.offline) {
