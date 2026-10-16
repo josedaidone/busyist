@@ -272,7 +272,8 @@ class AppBlocker:
 
     A "blocked" toast only fires when the user opens a blocked app *during*
     focus (not for apps already running when focus began, which are swept away
-    silently on the first tick). Every app that was already open when focus
+    silently on the first tick, nor for windowless processes started in the
+    background, which the user didn't open). Every app that was already open when focus
     began *with a window on screen* is remembered with its exe path and
     started (or shown) again when focus ends (pause, break, stop or finish),
     so the desktop is left as it was found. An app first opened during focus,
@@ -376,6 +377,7 @@ class AppBlocker:
         listed = {pid for pid, *_ in found}
         self._closing = {pid: deadline for pid, deadline in self._closing.items() if pid in listed}
         to_close: dict[str, list[tuple[int, str]]] = {}  # app_key -> processes to ask to close now
+        opened: dict[str, dict] = {}  # app_key -> entry: not open when focus began, may deserve a toast
         for pid, image, key, entry in found:
             if pid in self._closing:
                 if now >= self._closing[pid]:  # asked, and still running after the grace time
@@ -394,17 +396,21 @@ class AppBlocker:
                 self._closed.setdefault(key, target)  # reopen it when focus ends
             to_close.setdefault(key, []).append((pid, image))
             if not self._first_sweep and key not in self._preexisting:
-                # The app wasn't open when the pomodoro started, so the user
-                # just tried to open it: that's when the "blocked" popup fits.
-                self._toast(entry, focus)
+                opened[key] = entry
         if to_close:
             # Ask first, like the X button, so the app can save a draft or its
             # state; end it if it's still there after CLOSE_GRACE. An app's
             # windowless helper processes wait with it. An app with no window
             # at all (only in the tray) can't be asked, so it's ended now.
             asked = close_windows({pid for procs in to_close.values() for pid, _ in procs})
-            for procs in to_close.values():
+            for key, procs in to_close.items():
                 if any(pid in asked for pid, _ in procs):
+                    if key in opened:
+                        # It wasn't open when the pomodoro started and it has a
+                        # window: the user just opened it, so the popup fits. One
+                        # with no window was started in the background (WhatsApp
+                        # is, by Windows, for its notifications): ended quietly.
+                        self._toast(opened[key], focus)
                     for pid, image in procs:
                         self._closing[pid] = now + self.CLOSE_GRACE
                         if pid in asked:
