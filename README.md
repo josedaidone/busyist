@@ -52,6 +52,16 @@ menu, and starts it.
 - **No task?** **Start without a task** runs a session with an optional name. It's logged in your
   history, and nothing is sent to Todoist. With **Use Todoist** off, the task list is hidden and the
   window gets narrower.
+- **Activities**: the "What are you working on?" field offers your activities (Email, Messages,
+  Programming, Reading... edit them in Settings → General). Pick one, then type a detail after it
+  if you like ("Email · inbox zero"). The Stats tab adds up focus time per activity, and an
+  activity can block different apps and websites (see below).
+- **Tasks with a duration**: a Todoist task with a duration gets its own tomatoes, that much focus
+  time in all with your usual breaks on top: up to 20 minutes is one tomato, longer tasks are split
+  into tomatoes of about 15 minutes (between 10 and 30). The row shows the plan. **Shift+click**
+  play to use your usual settings instead. Change or turn this off in Settings → Todoist.
+- **Subtasks**: playing a task with open subtasks asks what to start on: one of the subtasks, or
+  the whole task. Completing the last open subtask offers to complete its parent too.
 - **The hotkey cycles**: window → mini timer only → everything in the tray → window again. If the
   window is open but behind other apps, the hotkey brings it to the front first.
 - **Saved filters**: the tabs above the list are Todoist filter queries you name yourself
@@ -76,6 +86,20 @@ menu, and starts it.
     to block everything else. A plain domain also covers its subdomains, and `*` is a wildcard
     (`*.google.com`, `google.*`, `youtube.com/shorts/*`). A blocked site shows a "back to work"
     page during work phases and returns to itself when focus ends.
+  - **Per activity**: the picker at the top of both tabs switches between **Everything** (the
+    rules for Todoist tasks and names you type) and one activity, which can turn blocking off or
+    on, or allow or block a few more apps and sites. Out of the box, **Email** keeps Outlook and
+    Gmail open and **Messages** keeps WhatsApp, Slack and Teams open.
+- **Calls** (Settings → General, off by default): when an app has your microphone or camera on
+  for 15 seconds and nothing is running, buZyist starts a session with no timer and ends it when
+  the call does. It counts as focus under the activity you pick (**Call** by default) and blocks
+  what that activity blocks; the app you're calling with is never closed. List apps that keep the
+  microphone on outside calls (dictation, voice effects) under **Not calls**.
+- **Bar screens** (Settings → BUSY Bar, on by default): choose what the bar's front screen shows
+  during focus and during calls (the bar's usual timer card, one of the bar's themes, or a text of
+  yours such as the task's name, with the minutes left in the corner), and what it shows when a
+  session is done. An activity can show something else while you focus. Breaks and pauses always
+  show the bar's own REST and PAUSED.
 - **Website limits** (Settings → Limits): time budgets for websites, enforced all day,
   with or without a pomodoro running.
   - Give a site (or a group of sites that share the time) one or more limits, such as *30 min
@@ -102,8 +126,12 @@ menu, and starts it.
   limits for WhatsApp (30 min a day) and Slack (1 hour a day), set to beep; switch app limits on
   to use them. App limits stay on this PC; they aren't shared through Chrome.
 - **Stats** (Settings → Stats): your focus time, tomatoes, sessions, tasks worked on and done for
-  today, 7 and 30 days, your streak, focus per day and the tasks that got the most; then how often
-  websites were blocked, during focus or over a limit, with the most blocked sites.
+  today, 7 and 30 days, your streak, focus per day, the tasks that got the most and focus per
+  activity; then how often websites were blocked, during focus or over a limit, with the most
+  blocked sites.
+  - **Time in apps** (off by default): turn on **Count the time I spend in each app** to see how
+    long each program was in front, and each website was the active tab, split into during and
+    outside focus. It stays on this PC.
 - **The extension's toolbar button**: its badge shows the time left on the current site's limit
   (otherwise the pomodoro minutes left). Click it to see the current pomodoro, your limits and
   how many times a site was blocked today.
@@ -124,16 +152,20 @@ menu, and starts it.
   no account.
 - For website blocking and limits, buZyist answers the browser extension on `127.0.0.1:47616` (your
   PC only). It only replies to the buZyist extension itself, so web pages can't read what you're
-  working on. The extension reports only the time spent on the sites you set limits for, and only
-  to buZyist on your PC. It doesn't send your browsing anywhere else.
+  working on. The extension reports the time spent on the sites you set limits for and, only with
+  **Time in apps** on, the time per website (its host name, not the page), and only to buZyist on
+  your PC. It doesn't send your browsing anywhere else.
+- **Calls** reads Windows' own record of which apps are using the microphone or camera. buZyist
+  never listens or records; it only notes which app it is, on your PC.
 - Only if you turn on **Share limits and time with my other PCs**: your website limits and the
   time spent on each (per minute today, per day before that), plus your PC's name, are stored in
   Chrome sync, that is with your Google account. Nothing else goes there: not the Todoist token,
   the bar PIN or your other settings.
-- Your settings live in `%APPDATA%\Busyist`: `config.json` (including your Todoist token and bar
-  PIN, unencrypted), the session, your history, the time spent on limited sites and apps (`usage.json`, `app_usage.json`)
-  and a log. **Settings → About → Open data folder**
-  takes you there.
+- Your settings live in `%APPDATA%\Busyist`: `config.json` (your Todoist token and bar PIN are
+  encrypted with Windows' DPAPI, readable only by your Windows account), the session, your
+  history, the time spent on limited sites and apps (`usage.json`, `app_usage.json`), the time in
+  apps and websites (`app_time.json`, `site_time.json`) and a log. **Settings → About → Open data
+  folder** takes you there.
 - Uninstalling asks whether to delete that folder too.
 
 ## Troubleshooting
