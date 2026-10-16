@@ -189,10 +189,12 @@ def closed_text(rule: dict, status: dict) -> tuple[str, str]:
 
 class AppLimiter:
     """
-    Counts the time the limited apps spend in front and acts on their limits.
+    Counts the time the limited apps spend in front and acts on their limits,
+    and, while app_time_on is set, the time of every app in front (AppTime,
+    app_time.json, for the Stats tab; split by whether a work phase runs).
 
-    The thread sleeps on an Event while app limits are off or there are none;
-    save_settings() pokes it. Otherwise, every TICK seconds, the program whose
+    The thread sleeps on an Event while app limits are off or there are none
+    and app_time_on is off; save_settings() pokes it. Otherwise, every TICK seconds, the program whose
     window is in front gets the time since the last tick, unless nobody has
     touched the keyboard or mouse for APP_IDLE_S (time goes to every enabled
     rule that lists it, into app_usage.json). Then each reached limit acts:
@@ -241,10 +243,14 @@ class AppLimiter:
         now = datetime.now()
         return [app_limit_status(r, self.app.app_usage, now) for r in self.app.cfg.get("app_limits") or []]
 
+    def tracking(self) -> bool:
+        """Whether every app's time is counted for the Stats tab."""
+        return bool(self.app.cfg.get("app_time_on"))
+
     def _loop(self) -> None:
         while not self.app.quitting:
             rules = self.rules()
-            if rules:
+            if rules or self.tracking():
                 try:
                     self.step(rules)
                 except Exception:
@@ -255,6 +261,7 @@ class AppLimiter:
                 self._closing.clear()
                 self._denied.clear()
                 self.app.app_usage.flush(force=True)
+                self.app.app_time.flush(force=True)
                 self.wake.wait()  # idle until the settings change
             self.wake.clear()
 
@@ -272,7 +279,10 @@ class AppLimiter:
             for r in rules:
                 if r["id"] in focused:
                     usage.add(r["id"], minute, elapsed)
+            if front and self.tracking():
+                self.app.app_time.add(exe, elapsed, elapsed if self.app.focus()["active"] else 0.0)
         usage.flush()
+        self.app.app_time.flush()
         now = datetime.now()
         to_close: dict[str, tuple[dict, dict]] = {}  # app_key -> (rule, status) of the rule that closes it
         for r in rules:

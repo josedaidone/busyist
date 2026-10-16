@@ -12,6 +12,22 @@ from datetime import date, timedelta
 SESSION_REASONS = ("finished", "stopped", "replaced")
 
 
+def session_minutes(session: dict) -> int:
+    """
+    A session's focus minutes so far: its finished tomatoes, or for a call
+    (kind "call" in the history) the time its devices were in use.
+    """
+    call = session.get("call")
+    if call:
+        return max(0, call["seen_ms"] - call["started_ms"]) // 60000
+    return session.get("done", 0) * session["work_ms"] // 60000
+
+
+def _counted(entry: dict) -> bool:
+    """A session that counts: one with a finished tomato, or a call of a minute or more."""
+    return bool(entry.get("pomodoros")) or (entry.get("kind") == "call" and int(entry.get("minutes") or 0) > 0)
+
+
 def _task_key(entry: dict) -> str:
     """A task's id, or for a session with no task its name."""
     return entry.get("task_id") or "name:" + (entry.get("content") or "")
@@ -31,10 +47,12 @@ def focus_stats(
     pomodoros, sessions, tasks: worked on, completed}); the streak; and the
     10 tasks with the most focus over `span` days.
 
-    Minutes count finished work phases only, as the history does. A
-    session counts once it has a finished tomato (one stopped before that,
-    or brought back by a restart and ended at once, is noise). The running
-    session counts today with its tomatoes so far. With `skip_weekends`, a
+    Minutes count finished work phases only, as the history does, plus the
+    time on calls (calls.py). A session counts once it has a finished tomato
+    (one stopped before that, or brought back by a restart and ended at once,
+    is noise), a call once it lasted a minute; calls add to the minutes, the
+    sessions and the activities, not to the tasks or the streak. The running
+    session counts today with its tomatoes (or call minutes) so far. With `skip_weekends`, a
     Saturday or Sunday without a tomato doesn't break the streak.
 
     `activities` (the setting) names the groups of the time per activity
@@ -51,9 +69,10 @@ def focus_stats(
                 "task_id": session["task"]["id"],
                 "content": session["task"]["content"],
                 "pomodoros": session.get("done", 0),
-                "minutes": session.get("done", 0) * session["work_ms"] // 60000,
+                "minutes": session_minutes(session),
                 "reason": "running",
                 **({"activity": session["activity"]} if session.get("activity") else {}),
+                **({"kind": "call"} if session.get("call") else {}),
             }
         )
     sessions = [h for h in entries if h.get("reason") in (*SESSION_REASONS, "running")]
@@ -69,14 +88,14 @@ def focus_stats(
         return {
             "minutes": sum(int(h.get("minutes") or 0) for h in mine),
             "pomodoros": sum(int(h.get("pomodoros") or 0) for h in mine),
-            "sessions": sum(1 for h in mine if h.get("pomodoros")),
-            "tasks": len({_task_key(h) for h in mine if h.get("pomodoros")}),
+            "sessions": sum(1 for h in mine if _counted(h)),
+            "tasks": len({_task_key(h) for h in mine if h.get("pomodoros") and h.get("kind") != "call"}),
             "completed": sum(1 for h in entries if h.get("completed") and h["date"] >= since),
         }
 
     tasks: dict[str, dict] = {}
     for h in sessions:
-        if h["date"] < first or not h.get("pomodoros"):
+        if h["date"] < first or not h.get("pomodoros") or h.get("kind") == "call":
             continue
         task = tasks.setdefault(_task_key(h), {"content": "", "minutes": 0, "pomodoros": 0, "sessions": 0})
         task["content"] = h.get("content") or "Focus session"  # the latest name wins
@@ -105,7 +124,7 @@ def _by_activity(sessions: list[dict], activities: list[dict]) -> list[dict]:
     known = {a["id"]: a for a in activities}
     groups: dict[str, dict] = {}
     for h in sessions:
-        if not h.get("pomodoros"):
+        if not _counted(h):
             continue
         activity = h.get("activity") if isinstance(h.get("activity"), dict) else {}
         if h.get("task_id"):

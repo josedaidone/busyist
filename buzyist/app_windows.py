@@ -121,6 +121,8 @@ class WindowsMixin:
         self.site_server.stop()
         self.usage.flush(force=True)
         self.app_usage.flush(force=True)
+        self.app_time.flush(force=True)
+        self.site_time.flush(force=True)
         if self.hotkey:
             self.hotkey.stop()
         if self.tray:

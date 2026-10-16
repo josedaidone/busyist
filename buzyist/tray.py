@@ -32,7 +32,7 @@ def _font(size: int):
 
 
 def tray_image(view: dict | None) -> Image.Image:
-    """The tomato when idle; a progress ring with the minutes left otherwise."""
+    """The tomato when idle; a progress ring with the minutes left otherwise (a call: full, its minutes so far)."""
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
@@ -44,7 +44,7 @@ def tray_image(view: dict | None) -> Image.Image:
         d.ellipse((14, 10, 32, 20), fill=LEAF_RGB)
         d.ellipse((32, 10, 50, 20), fill=LEAF_RGB)
         return img
-    color = PAUSE_RGB if view["paused"] else (FOCUS_RGB if view["phase"] == "work" else REST_RGB)
+    color = PAUSE_RGB if view["paused"] else (FOCUS_RGB if view["phase"] in ("work", "call") else REST_RGB)
     d.ellipse((2, 2, 62, 62), fill=TERRA_RGB)
     d.arc((2, 2, 62, 62), 0, 360, fill=TRACK_RGB, width=7)
     sweep = 360 * max(0.0, min(1.0, view["fraction"]))
@@ -92,7 +92,11 @@ class TrayMixin:
             self._tray_key = key
             self.tray.icon = tray_image(view)
             self.tray.update_menu()
-        if view:
+        if view and view["phase"] == "call":
+            title = f"On a call · {view['minutes']} min"
+            if task:
+                title += f"\n{task}"
+        elif view:
             phase = "Paused" if view["paused"] else ("Focus" if view["phase"] == "work" else "Break")
             title = f"{phase} · {view['minutes']} min left · round {view['round']}/{view['rounds']}"
             if task:
@@ -104,6 +108,11 @@ class TrayMixin:
     def make_tray(self) -> pystray.Icon:
         def running(_=None):
             return self.timer_view() is not None
+
+        def timed(_=None):
+            """Running with a timer: a call has no pause or skip."""
+            view = self.timer_view()
+            return view is not None and view["phase"] != "call"
 
         def paused(_=None):
             view = self.timer_view()
@@ -156,9 +165,9 @@ class TrayMixin:
             pystray.MenuItem(lambda it: f"Pick a task ({self.cfg['hotkey']})", lambda i, it: self.show_main(True)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(now_line, nothing, enabled=False),
-            pystray.MenuItem("Pause", act("pause"), visible=lambda it: running() and not paused()),
+            pystray.MenuItem("Pause", act("pause"), visible=lambda it: timed() and not paused()),
             pystray.MenuItem("Resume", act("resume"), visible=lambda it: paused()),
-            pystray.MenuItem("Skip to next phase", act("skip"), visible=lambda it: running()),
+            pystray.MenuItem("Skip to next phase", act("skip"), visible=lambda it: timed()),
             pystray.MenuItem("Stop", act("stop"), visible=lambda it: running()),
             pystray.MenuItem("Mini timer", toggle_mini, checked=lambda it: self.mini_shown),
             pystray.Menu.SEPARATOR,

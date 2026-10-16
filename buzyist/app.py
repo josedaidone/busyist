@@ -26,11 +26,14 @@ from buzyist.api import Api
 from buzyist.app_limits import AppLimiter
 from buzyist.app_sites import SitesMixin
 from buzyist.app_sync import SyncMixin
+from buzyist.app_time import AppTime, site_key
 from buzyist.app_updates import UpdatesMixin
 from buzyist.app_windows import WindowsMixin
 from buzyist.bar import Bar, BarUnreachable
+from buzyist.bar_display import BarScreens
 from buzyist.blocker import AppBlocker
 from buzyist.blocks import BlockLog
+from buzyist.calls import CallWatcher
 from buzyist.config import CONFIG_VERSION, DEFAULTS, Config, ConfigStore, migrate_config
 from buzyist.constants import (
     APP,
@@ -47,7 +50,7 @@ from buzyist.constants import (
     now_ms,
 )
 from buzyist.focus_server import FocusServer
-from buzyist.focus_stats import SESSION_REASONS, focus_stats
+from buzyist.focus_stats import SESSION_REASONS, focus_stats, session_minutes
 from buzyist.hotkey import GlobalHotkey
 from buzyist.plan import plan_session
 from buzyist.secrets_dpapi import SECRET_KEYS, unprotect_secrets
@@ -86,6 +89,8 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.cfg.save()  # also encrypts a token saved in plain text by an older version
         self.usage = SiteUsage(paths.USAGE_PATH)
         self.app_usage = SiteUsage(paths.APP_USAGE_PATH)  # time on the limited Windows apps
+        self.app_time = AppTime(paths.APP_TIME_PATH)  # time in every app, for the Stats tab (app_time_on)
+        self.site_time = AppTime(paths.SITE_TIME_PATH, site_key, str)  # and on every website, from the extension
         self.blocks = BlockLog(paths.BLOCKS_PATH)  # websites the extension blocked, for the Stats tab
         self.sync_lock = threading.Lock()  # guards self.shared
         self.shared = load_shared()
@@ -136,8 +141,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         self.blocker = AppBlocker(self)
         self.focus_hooks.append(self.blocker.poke)
         # Counts time on the apps with a limit and acts on those limits, all
-        # day; idle while app limits are off.
+        # day, and the time in every app while app_time_on is set; idle while
+        # both are off.
         self.app_limiter = AppLimiter(self)
+        # Starts a call session while the mic or camera is in use; idle while call_detect is off.
+        self.calls = CallWatcher(self)
+        # The bar's front screen during our sessions (bar_screens); the engine pokes it every poll.
+        self.bar_screens = BarScreens(self)
         # Tells the Chrome extension whether to block sites (issue #2).
         self.extension_last = 0  # now_ms() of the last request the extension made
         self.extension_version = ""  # what it said it is; "" for ones from before it said
@@ -245,7 +255,23 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
     # ------------------------------------------------------------ timer view
 
     def timer_view(self) -> dict | None:
-        """What the bar's timer is doing now, in plain terms, or None."""
+        """What the bar's timer is doing now, in plain terms, or None. A call counts up (phase "call")."""
+        session = self.session
+        if session and session.get("call"):
+            elapsed = max(0, now_ms() - session["call"]["started_ms"])
+            return {
+                "phase": "call",
+                "paused": False,
+                "left_ms": 0,
+                "elapsed_ms": elapsed,
+                "total_ms": 0,
+                "fraction": 1.0,
+                "minutes": elapsed // 60000,
+                "round": 1,
+                "rounds": 1,
+                "work_ms": 0,
+                "rest_ms": 0,
+            }
         snap = self.snap
         if snap is None:
             return None
@@ -287,13 +313,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         completed = sum(1 for h in done if h.get("completed"))
         if self.session:
             count += self.session.get("done", 0)
-            minutes += self.session.get("done", 0) * self.session["work_ms"] // 60000
+            minutes += session_minutes(self.running_session())
         return {"pomodoros": count, "minutes": minutes, "completed": completed}
 
     def focus_stats(self) -> dict:
         """Focus time, tomatoes, sessions and tasks over the last 30 days, for the Stats tab."""
         with self.lock:
-            history, session = list(self.history), self.session and dict(self.session)
+            history, session = list(self.history), self.running_session()
         cfg = self.cfg.view()
         return focus_stats(
             history,
@@ -302,6 +328,13 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             skip_weekends=cfg.get("streak_skip_weekends"),
             activities=cfg.get("activities"),
         )
+
+    def running_session(self) -> dict | None:
+        """A copy of the running session; a call's counts until now."""
+        session = self.session
+        if session and session.get("call"):
+            return dict(session, call=dict(session["call"], seen_ms=now_ms()))
+        return session and dict(session)
 
     def recent_free(self, keep: int = 6) -> list[dict]:
         """
@@ -316,7 +349,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             history = list(self.history)
         out, seen = [], set()
         for h in reversed(history):
-            if h.get("task_id") or h.get("reason") not in SESSION_REASONS:
+            if h.get("task_id") or h.get("reason") not in SESSION_REASONS or h.get("kind") == "call":
                 continue
             activity = h.get("activity") if isinstance(h.get("activity"), dict) else {}
             if activity.get("id") in ids:
@@ -368,7 +401,11 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             return {
                 "now": now_ms(),
                 "timer": view,
-                "session": self.session and {k: self.session[k] for k in ("task", "started_at", "done", "label_added")},
+                "session": self.session
+                and {
+                    **{k: self.session[k] for k in ("task", "started_at", "done", "label_added")},
+                    "call": bool(self.session.get("call")),
+                },
                 # Started on another PC (only when this one runs nothing).
                 "remote": self._remote_view(),
                 "ended": self.ended,
@@ -406,10 +443,14 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         `activity` is the id of our session's activity (and `activity_name`
         its name), which picks what gets blocked; "" for anything else.
 
+        A call (calls.py) is active while its open-ended timer runs, with no
+        end (`ends_at_ms` 0); `spare` names the apps on the call, which the
+        app blocker leaves alone whatever the activity blocks.
+
         Blocking fails open: a bar that can't be read for three polls in a row
         counts as "no focus", so a lost connection never leaves apps blocked.
         """
-        off = {"active": False, "task": "", "ends_at_ms": 0, "activity": "", "activity_name": ""}
+        off = {"active": False, "task": "", "ends_at_ms": 0, "activity": "", "activity_name": "", "spare": []}
         with self.lock:
             session, snap = self.session, self.snap
             if snap is None:
@@ -421,7 +462,12 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             if session and snap.snapshot_timestamp_ms < session["stamp"]:
                 return off  # a reading from before our own start
             state = timer_state(snap)
-            if state.mode != "interval" or state.is_finished or state.phase != "work" or state.is_paused:
+            call = session and session.get("call")
+            if call:
+                running = state.mode == "infinite" and not state.is_paused
+            else:
+                running = state.mode == "interval" and not state.is_finished and state.phase == "work"
+            if not running or state.is_paused:
                 return off
             remote = None if session else self.remote_session()
             activity = (session and session.get("activity")) or {}
@@ -431,9 +477,10 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                 # (or from another PC, which may have shared its task), but
                 # this PC still blocks.
                 "task": session["task"]["content"] if session else (remote["task"]["content"] if remote else ""),
-                "ends_at_ms": now_ms() + (state.time_left_ms or 0),
+                "ends_at_ms": 0 if call else now_ms() + (state.time_left_ms or 0),
                 "activity": activity.get("id", ""),
                 "activity_name": activity.get("name", ""),
+                "spare": list(call.get("keys") or []) if call else [],
             }
 
     def notify_focus(self) -> None:
@@ -493,6 +540,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.notify_focus()
             self.pause_reminder()
             self.update_tray()
+            self.bar_screens.poke()
         except Exception:
             log.exception("engine")
         # Reading the local clock costs nothing, so follow it closely.
@@ -595,7 +643,7 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
                     value = int(value)
                 except (TypeError, ValueError):
                     raise AppError(f"{key.replace('_', ' ')} must be a number.")
-            elif kind is not list:
+            elif kind not in (list, dict):
                 value = str(value).strip()
             clean[key] = value
         # One transaction from the checks to the sync stamps, so an apply_sync
@@ -637,6 +685,8 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
             self.wake.set()
         self.blocker.poke()  # pick up a changed list or switch straight away
         self.app_limiter.poke()
+        self.calls.poke()
+        self.bar_screens.poke()
         if self.tray:
             self.tray.update_menu()
 
@@ -705,6 +755,8 @@ class App(SessionMixin, SitesMixin, SyncMixin, UpdatesMixin, WindowsMixin, TrayM
         threading.Thread(target=self.engine, daemon=True).start()
         self.blocker.start()
         self.app_limiter.start()
+        self.calls.start()
+        self.bar_screens.start()
         self.site_server.start()
         if paths.FROZEN:  # from source, git is the updater
             threading.Thread(target=self.updater, daemon=True, name="updater").start()

@@ -91,6 +91,14 @@ SITE_MODES = ("block", "allow")
 
 MINI_W, MINI_H = 340, 108
 PAUSE_REMIND_S = 5 * 60  # a pause this long (and each multiple) flashes the mini timer and beeps
+
+# Calls (calls.py): a microphone or camera in use this long starts a call
+# session (a voice message doesn't), and one released this long ends it (a
+# call app switching devices doesn't). The devices are looked at every CALL_POLL_S.
+CALL_START_S = 15
+CALL_END_S = 10
+CALL_POLL_S = 2
+MAX_CALL_IGNORE = 20
 SOLO_W, SOLO_H = 580, 740  # main window size without the task list
 
 

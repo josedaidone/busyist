@@ -23,6 +23,7 @@ RES_DIR = Path(getattr(sys, "_MEIPASS", SOURCE_DIR))
 UI = RES_DIR / "ui"
 EXTENSION_SRC = RES_DIR / "extension"  # the Chrome extension, loaded unpacked (issue #2)
 ICON_PATH = RES_DIR / "busyist.ico"
+BAR_FONTS = UI / "fonts" / "bar"  # the pixel fonts the bar's text screens are drawn in (bar_display)
 # Everything the app writes is per user, never next to the program: an
 # installed app cannot write to its own folder.
 DATA_DIR = Path(os.environ.get("APPDATA") or Path.home()) / APP
@@ -37,6 +38,8 @@ HISTORY_PATH = DATA_DIR / "history.json"  # finished sessions and completed task
 TIMER_PATH = DATA_DIR / "timer.json"  # the timer, when it runs on this PC instead of a bar
 USAGE_PATH = DATA_DIR / "usage.json"  # time spent per limited website (site limits)
 APP_USAGE_PATH = DATA_DIR / "app_usage.json"  # time spent per limited Windows app (app limits)
+APP_TIME_PATH = DATA_DIR / "app_time.json"  # time spent in every app, for the Stats tab (app_time_on)
+SITE_TIME_PATH = DATA_DIR / "site_time.json"  # time spent on every website, measured by the extension (app_time_on)
 BLOCKS_PATH = DATA_DIR / "blocks.json"  # how often websites were blocked, for the Stats tab
 SYNC_PATH = DATA_DIR / "sync.json"  # sharing the limits and their time with other PCs
 LOG_PATH = DATA_DIR / "busyist.log"

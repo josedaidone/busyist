@@ -13,9 +13,10 @@ from datetime import date, datetime
 from busylib.features import timer_state
 
 from buzyist import paths
-from buzyist.activities import session_name
+from buzyist.activities import MAX_DETAIL, session_name
 from buzyist.bar import BarUnreachable
-from buzyist.constants import APP, HISTORY_KEEP, AppError
+from buzyist.constants import APP, HISTORY_KEEP, AppError, now_ms
+from buzyist.focus_stats import session_minutes
 from buzyist.plan import plan_session
 from buzyist.storage import write_json
 
@@ -43,7 +44,13 @@ class SessionMixin:
             # The bar may run more work phases than the session asked for
             # (BAR_CYCLES_MIN); what it ran past ours never counts.
             rounds = session.get("rounds")
-            if state.mode != "interval":
+            if session.get("call"):
+                # Its end comes from the devices (end_call); the bar only
+                # ends it when the call's timer was stopped or replaced there.
+                reason = None if state.mode == "infinite" else "stopped"
+                if reason:
+                    session["call"]["seen_ms"] = now_ms()
+            elif state.mode != "interval":
                 reason = "stopped"
             elif state.is_finished:
                 reason = "finished"
@@ -90,7 +97,8 @@ class SessionMixin:
     def finish(self, session: dict, reason: str, silent: bool = False) -> None:
         """Log the session to Todoist and history, then offer to complete it."""
         task, done = session["task"], session["done"]
-        minutes = done * session["work_ms"] // 60000
+        minutes = session_minutes(session)
+        call = session.get("call")
         problems = []
         linked = bool(task["id"]) and self.todoist_on  # a free session has no task
         if linked and done and self.cfg["log_comments"]:
@@ -118,12 +126,19 @@ class SessionMixin:
                     "reason": reason,
                     "ended_at": datetime.now().isoformat(timespec="seconds"),
                     **({"activity": session["activity"]} if session.get("activity") else {}),
+                    **({"kind": "call"} if call else {}),
                 }
             )
             self.history = self.history[-HISTORY_KEEP:]
             write_json(paths.HISTORY_PATH, self.history)
             if reason == "replaced" or silent:
                 return
+        if call:  # no summary to read: it started and ended on its own
+            self.update_tray()
+            self.hide_mini()
+            self.notify("Call over", f"{minutes} min on {task['content']}, counted as focus.")
+            return
+        with self.lock:
             self.ended = {
                 "task": task,
                 "done": done,
@@ -215,6 +230,109 @@ class SessionMixin:
         self.show_mini()
         return {"via": self.bar.via, "work_minutes": work_min, "rounds": cycles, "planned": bool(planned)}
 
+    # A call (calls.py) is a session with no timer: an open-ended (INFINITE)
+    # timer on the bar, `call` = {apps: names, keys, started_ms, seen_ms} in
+    # the session (keys as calls.call_app gives them).
+    # It counts from started_ms (the devices first seen in use) to seen_ms
+    # (last seen in use), on the call_activity, and blocks what it blocks.
+
+    def start_call(self, apps: list[dict], since_ms: int) -> bool:
+        """
+        Start a call session on `apps` (calls.call_app's), counted from `since_ms`.
+        False when something else runs: a session, or a timer started on the
+        bar or from another PC, which a call doesn't take over.
+        """
+        cfg = self.cfg.view()
+        found = next((a for a in cfg["activities"] if a["id"] == cfg["call_activity"]), None)
+        detail = ", ".join(a["name"] for a in apps)
+        activity = {"id": found["id"], "name": found["name"], "detail": detail} if found else None
+        content = session_name(found, detail) if found else f"Call · {detail}"[:MAX_DETAIL]
+        with self.bar.lock:
+            with self.lock:
+                if self.session or self.timer_view():
+                    return False
+            stamp = self._on_bar(self.bar.start_open)
+            now = now_ms()
+            with self.lock:
+                self.session = {
+                    "task": {"id": "", "content": content, "project": "", "color": "", "priority": 1, "url": ""},
+                    "stamp": stamp,
+                    "started_at": datetime.fromtimestamp(since_ms / 1000).strftime("%H:%M"),
+                    "work_ms": 0,
+                    "done": 0,
+                    "interval": 0,
+                    "label": "",
+                    "label_added": False,
+                    "local": self.bar.standalone,
+                    "rounds": 0,
+                    "activity": activity,
+                    "call": {
+                        "apps": [a["name"] for a in apps],
+                        "keys": [a["key"] for a in apps],
+                        "started_ms": min(since_ms, now),
+                        "seen_ms": now,
+                        "saved_ms": now,
+                    },
+                }
+                write_json(paths.SESSION_PATH, self.session)
+                self.recovering = False
+        self.wake.set()
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
+        except AppError:
+            pass
+        self.notify_focus()
+        # Silent: it comes up while the call is starting, where Windows' chime would be heard.
+        self.notify(
+            "On a call",
+            f"Counting {content} as focus until it ends. Stop it from the timer if it isn't a call.",
+            quiet=True,
+        )
+        self.show_mini()
+        return True
+
+    def note_call(self, apps: list[dict], when_ms: int) -> None:
+        """The running call's devices are still in use: it counts until `when_ms` (saved about once a minute)."""
+        with self.lock:
+            call = self.session and self.session.get("call")
+            if not call:
+                return
+            call["seen_ms"] = when_ms
+            for app in apps:  # one more app may join (camera in another)
+                if app["key"] not in call["keys"]:
+                    call["keys"].append(app["key"])
+                    call["apps"].append(app["name"])
+            if when_ms - call.get("saved_ms", 0) >= 60_000:
+                call["saved_ms"] = when_ms
+                write_json(paths.SESSION_PATH, self.session)
+
+    def end_call(self) -> None:
+        """The call is over: log it (up to when its devices were last in use) and stop its timer."""
+        with self.bar.lock:
+            with self.lock:
+                session = self.session
+                if not (session and session.get("call")):
+                    return
+                self.session = None
+                paths.SESSION_PATH.unlink(missing_ok=True)
+                silent = self.recovering
+                self.recovering = False
+            try:
+                self._on_bar(self.bar.stop)
+            except AppError as err:
+                log.warning("couldn't stop the bar after the call: %s", err)
+        threading.Thread(target=self.finish, args=(session, "finished", silent), daemon=True).start()
+        self.wake.set()
+        try:
+            snap = self.bar.snapshot()
+            with self.lock:
+                self.snap, self.bar_ok, self.bar_fails = snap, True, 0
+        except AppError:
+            pass
+        self.notify_focus()
+
     def complete_task(self, task_id: str, offer_parent: bool = False, content: str = "") -> dict:
         """
         Close the task in Todoist and count it in today's history (`content` names
@@ -272,6 +390,10 @@ class SessionMixin:
             return call()
 
     def control(self, action: str) -> None:
+        with self.lock:
+            on_call = bool(self.session and self.session.get("call"))
+        if on_call and action != "stop":
+            raise AppError("A call has no pause or break: it ends with the call, or stop it.")
         try:
             if action == "stop":
                 self._on_bar(self.bar.stop)

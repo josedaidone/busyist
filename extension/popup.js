@@ -57,7 +57,8 @@ function renderFocus(data) {
   const f = data.focus;
   if (f.active) {
     const mins = Math.max(0, Math.ceil((f.ends_at_ms - Date.now()) / 60000));
-    box.append(el("div", "big bad", `${mins} min left`));
+    // No end time: a call, which lasts as long as it does.
+    box.append(el("div", "big bad", f.ends_at_ms ? `${mins} min left` : "In focus"));
     box.append(el("div", "small", f.task ? `Focusing on ${f.task}` : "Work phase running"));
     // An activity's own blocking rules (the session's name already carries it).
     const during = f.activity ? `${f.activity}: ` : "";

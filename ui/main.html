@@ -274,6 +274,18 @@
         </div>
         <button type="button" class="btn" id="testBar">Test connection</button>
         <div class="test-result" id="testResult"></div>
+        <h4 class="bar-screens-title">Bar screens</h4>
+        <div class="toggles">
+          <label class="switch"><input type="checkbox" name="bar_screens_on" id="s_bar_screens_on"><span class="knob"></span>Choose what the bar shows during sessions</label>
+        </div>
+        <div id="barScreenFields">
+          <div class="help" id="barThemesNote"></div>
+          <div id="barScreens"></div>
+          <h4>Focus by activity</h4>
+          <div class="help">Sessions on an activity can show something else while you focus. Todoist tasks and names you type use Focus; calls use Call.</div>
+          <div id="barActivityScreens"></div>
+          <div class="help">The break and the pause are the bar's own: it shows REST and PAUSED whatever you pick here. A text of yours replaces the time left on the bar, so its minutes go in the corner, updated every minute.</div>
+        </div>
       </div>
     </div>
 
@@ -400,6 +412,27 @@
       <div class="stat-sites" id="focusTasks"></div>
       <div class="help">Focus time counts finished tomatoes. Sessions count once they have a finished tomato; tasks worked on got at least one tomato, tasks done were completed in buZyist.</div>
 
+      <!-- Time in apps: see buzyist/app_time.py. app_time_on is saved at once, like the streak switch. -->
+      <h4>Time in apps</h4>
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="app_time_on" id="s_app_time_on"><span class="knob"></span>Count the time I spend in each app</label>
+      </div>
+      <div id="appTimeBody">
+        <div class="stat-tiles" id="appTimeTiles"></div>
+        <div class="stat-legend" aria-hidden="true">
+          <span><i class="stat-sw stat-f"></i>During focus</span><span><i class="stat-sw stat-l"></i>Outside focus</span>
+        </div>
+        <div class="stat-chart" id="appTimeChart" role="img"></div>
+        <div class="stat-axis"><span id="appTimeFirst"></span><span>Today</span></div>
+        <h4>Most used apps, last 30 days</h4>
+        <div class="stat-sites" id="appTimeApps"></div>
+        <button type="button" class="btn sm ghost hidden" id="appTimeMore"></button>
+        <h4>Most used websites, last 30 days</h4>
+        <div class="stat-sites" id="siteTimeSites"></div>
+        <button type="button" class="btn sm ghost hidden" id="siteTimeMore"></button>
+      </div>
+      <div class="help">The app in front gets the time, pomodoro or not, unless you haven't touched the keyboard or mouse for a minute. Websites are timed by the Chrome extension: the active tab of the browser window you're in, so they are part of your browser's time above. It all stays on this PC, in app_time.json and site_time.json.</div>
+
       <h4>Websites blocked</h4>
       <div class="stat-tiles" id="statTiles"></div>
       <div class="stat-legend" aria-hidden="true">
@@ -421,6 +454,22 @@
           <button type="button" class="btn" id="addActivityBtn">Add</button>
         </div>
         <div class="help">Offered under “What are you working on?” for a tomato with no task. Pick one, then type a detail after it if you like. Click an icon to change it. The Stats tab adds up focus time per activity, and renaming one keeps its time.</div>
+      </div>
+      <!-- Calls: see buzyist/calls.py. call_activity and call_ignore_apps are sent by the Save button. -->
+      <div class="toggles">
+        <label class="switch"><input type="checkbox" name="call_detect" id="s_call_detect"><span class="knob"></span>Start a session when I'm on a call</label>
+      </div>
+      <div class="help">When an app has your microphone or camera on for 15 seconds, buZyist starts a session with no timer, and ends it when the call does. The call counts as focus under the activity below, and blocks the apps and websites that activity blocks. The app you're calling with is never closed.</div>
+      <div id="callFields">
+        <div class="field">
+          <label for="s_call_activity">Count calls as</label>
+          <select class="input" id="s_call_activity"></select>
+        </div>
+        <div class="field">
+          <label for="s_call_ignore">Not calls</label>
+          <input class="input" id="s_call_ignore" spellcheck="false" placeholder="e.g. Voicenotes.exe, NVIDIA Broadcast">
+          <div class="help">Apps that keep the microphone or camera on outside calls (dictation, voice effects), separated by commas; the ones running now are suggested as you type.</div>
+        </div>
       </div>
       <div class="field">
         <label for="s_hotkey">Global hotkey</label>

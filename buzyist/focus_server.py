@@ -152,6 +152,8 @@ class FocusServer:
                     if route == "/usage":
                         app.record_usage(data.get("usage"))
                         app.blocks.add(data.get("blocks"))
+                        if trusted:  # the pages you visit: only for the extension itself
+                            app.record_site_time(data.get("site_time"))
                     elif route == "/sync":
                         if trusted:
                             app.apply_sync(data, instance)

@@ -12,6 +12,7 @@ from buzyist import app_limits as limits_mod
 from buzyist import constants, paths
 from buzyist.api import Api
 from buzyist.app_limits import AppLimiter, clean_app_limit, clean_app_limits
+from buzyist.app_time import AppTime, app_name
 from buzyist.constants import APP_IDLE_S, DEFAULT_APP_LIMITS, AppError
 from buzyist.storage import read_json
 
@@ -383,3 +384,56 @@ def test_the_api_lists_them_with_their_usage(make_app):
     assert out["ok"] and out["on"] is True
     assert out["rules"][0]["pattern"] == "WhatsApp" and out["rules"][0]["action"] == "beep"
     assert out["rules"][0]["remaining_s"] == 30 * 60
+
+
+# ---------------------------------------------- every app's time (app_time_on)
+
+
+def test_app_time_counts_every_app_in_front_with_no_limit(make_app, desktop, clock, monkeypatch):
+    app = make_app({"app_time_on": True})
+    assert app.app_limiter.rules() == []  # no limit in force: the time is still counted
+    focus = {"active": False}
+    monkeypatch.setattr(app, "focus", lambda: focus)
+    desktop.front = (100, "slack.exe")
+    run(app, clock, 61)
+    focus["active"] = True
+    run(app, clock, 30)
+    desktop.front = (200, "winword.exe")
+    run(app, clock, 120)
+    desktop.idle = APP_IDLE_S
+    run(app, clock, 60)
+    stats = Api(app).app_time_stats()
+    assert stats["ok"] and stats["on"] is True
+    assert {a["name"]: a["span"] for a in stats["apps"]} == {"Word": 2, "Slack": 2}  # 120 s and 90 s, in minutes
+    assert stats["totals"]["today"] == {"focus": 3, "other": 1}  # 150 s during focus, 60 s outside
+    app.app_time.flush(force=True)
+    saved = read_json(paths.APP_TIME_PATH, {})["days"]
+    assert list(saved.values()) == [{"slack": [90.0, 30.0], "winword": [120.0, 120.0]}]  # one day, the clock's
+
+
+def test_app_time_is_off_by_default(make_app, desktop, clock):
+    app = make_app()
+    assert app.cfg["app_time_on"] is False
+    desktop.front = (100, "slack.exe")
+    run(app, clock, 30)
+    assert app.app_time.stats()["apps"] == []
+
+
+def test_app_time_skips_buzyist_itself(make_app, desktop, clock):
+    app = make_app({"app_time_on": True})
+    desktop.front = (os.getpid(), "python.exe")
+    run(app, clock, 60)
+    assert app.app_time.stats()["apps"] == []
+
+
+def test_app_time_keeps_days_and_drops_unreadable_entries(tmp_path):
+    path = tmp_path / "app_time.json"
+    path.write_text('{"days": {"2026-10-15": {"slack": [600, 900], "x": [0, 0]}, "nope": {"a": [1, 1]}}}')
+    t = AppTime(path)
+    assert t.days == {"2026-10-15": {"slack": [600.0, 600.0]}}  # focus can't be more than the total
+    assert [app_name(n) for n in ("slack.exe", "WhatsApp.Root.exe", "msedge.exe", "MyTool.exe")] == [
+        "Slack",
+        "WhatsApp",
+        "Microsoft Edge",
+        "MyTool",
+    ]

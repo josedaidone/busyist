@@ -54,7 +54,12 @@ let lastGood = null; // the last answer from buZyist, kept across restarts
 let pending = {}; // {ruleId: {epochMinute: seconds}} measured, not yet sent
 let passes = {}; // {ruleId: untilMs} granted from the block page while buZyist was out
 let blocks = []; // [{id, at, kind, host}] sites the block page showed, not yet sent (the Stats tab)
-let counting = { ids: [], since: 0 }; // the rules being timed right now
+// {host: {epochMinute: [seconds, seconds during focus]}} on every website, not yet
+// sent; measured only while buZyist says track_sites (its Stats tab's "Time in apps").
+let siteTime = {};
+// The rules being timed right now, and the website (host, "" for none) and
+// whether a work phase runs, for siteTime.
+let counting = { ids: [], host: "", focus: false, since: 0 };
 let timer = null;
 let cache = { at: 0, data: null };
 // This browser profile: a random id kept for good, and its Google account (""
@@ -62,9 +67,10 @@ let cache = { at: 0, data: null };
 // shares limits through Chrome sync, and to name it in Settings.
 const me = { id: "", account: "" };
 
-const ready = chrome.storage.local.get(["lastGood", "pending", "passes", "blocks", "instanceId"]).then(async (s) => {
+const ready = chrome.storage.local.get(["lastGood", "pending", "passes", "blocks", "siteTime", "instanceId"]).then(async (s) => {
   lastGood = s.lastGood || null;
   pending = s.pending || {};
+  siteTime = s.siteTime && typeof s.siteTime === "object" ? s.siteTime : {};
   passes = s.passes || {};
   blocks = Array.isArray(s.blocks) ? s.blocks : [];
   me.id = s.instanceId || "";
@@ -95,10 +101,10 @@ const focusUrl = () => FOCUS_URL + "&i=" + me.id + "&a=" + encodeURIComponent(me
 // Written only when something changed: most ticks change nothing.
 let savedSig = null;
 function saveState() {
-  const sig = canon({ lastGood, pending, passes, blocks });
+  const sig = canon({ lastGood, pending, passes, blocks, siteTime });
   if (sig === savedSig) return Promise.resolve();
   savedSig = sig;
-  return chrome.storage.local.set({ lastGood, pending, passes, blocks }).catch((e) => {
+  return chrome.storage.local.set({ lastGood, pending, passes, blocks, siteTime }).catch((e) => {
     savedSig = null; // try again next time
     throw e;
   });
@@ -234,6 +240,26 @@ function addPending(ids, seconds, now) {
   }
 }
 
+// The time on the website in front, for buZyist's Stats tab.
+function addSiteTime(host, seconds, focus, now) {
+  const minute = Math.floor(now / 60000);
+  for (const [h, per] of Object.entries(siteTime)) {  // buZyist ignores anything older than 3 days
+    for (const m of Object.keys(per)) if (Number(m) < minute - 3 * 1440) delete per[m];
+    if (!Object.keys(per).length) delete siteTime[h];
+  }
+  if (!host || seconds <= 0) return;
+  const per = (siteTime[host] = siteTime[host] || {});
+  const [s, f] = per[minute] || [0, 0];
+  const add = Math.min(seconds, 60 - s);
+  per[minute] = [s + add, f + (focus ? add : 0)];
+}
+
+// "www.youtube.com" for http(s) pages, "" for anything else (new tab, chrome://, files).
+function hostOf(url) {
+  const m = /^https?:\/\/(?:[^@\/?#]*@)?([^\/:?#]+)/i.exec(url || "");
+  return m ? m[1].toLowerCase().replace(/^www\./, "") : "";
+}
+
 // The page the user is looking at: the active tab of the last browser window
 // they used. With `needFocus` only while that window has the keyboard focus
 // (that's what counts as using it); without it also while the toolbar popup
@@ -257,12 +283,10 @@ function secondsLeft(rule, now) {
   return Math.max(0, rule.remaining_s - pendingSeconds(rule.id));
 }
 
-// Which limited rules is the user using right now? Their current page, while
-// they're at the PC.
-async function currentIds(focus, now, url) {
+// Which limited rules is the user using right now? Their current page (`url`
+// is "" while they're away from the PC).
+function currentIds(focus, now, url) {
   if (!url || !limitRules(focus).length) return [];
-  const idle = await chrome.idle.queryState(IDLE_SECONDS);
-  if (idle !== "active") return [];
   return rulesFor(focus, url).filter((r) => !limitState(r, now)).map((r) => r.id);
 }
 
@@ -282,15 +306,27 @@ async function post(url, body) {
 // (not running, or an old one with no /usage) fall back to what we last knew:
 // focus blocking lets go, limits keep being enforced.
 async function fetchState(force) {
-  const hasPending = Object.keys(pending).length > 0 || blocks.length > 0;
+  const hasPending = Object.keys(pending).length > 0 || blocks.length > 0 || Object.keys(siteTime).length > 0;
   if (!force && !hasPending && cache.data && Date.now() - cache.at < TICK_MS) return cache.data;
   let data = null;
   const sent = JSON.parse(JSON.stringify(pending));
+  const sentSites = JSON.parse(JSON.stringify(siteTime));
   const sentBlocks = new Set(blocks.map((b) => b.id));
   try {
-    data = await post(USAGE_URL, Object.assign({ usage: sent, blocks: blocks.slice() }, who()));
+    data = await post(USAGE_URL, Object.assign({ usage: sent, blocks: blocks.slice(), site_time: sentSites }, who()));
     if (data) {
       blocks = blocks.filter((b) => !sentBlocks.has(b.id));
+      // The same for the website time. An older buZyist ignores it, but it only
+      // asks for it (track_sites) once it reads it.
+      for (const [host, per] of Object.entries(sentSites)) {
+        for (const [minute, [s, f]] of Object.entries(per)) {
+          const kept = (siteTime[host] || {})[minute];
+          if (!kept) continue;
+          if (kept[0] - s > 0.01) siteTime[host][minute] = [kept[0] - s, Math.max(0, kept[1] - f)];
+          else delete siteTime[host][minute];
+        }
+        if (siteTime[host] && !Object.keys(siteTime[host]).length) delete siteTime[host];
+      }
       // What we sent is now in buZyist's totals; anything measured while the
       // request was out stays pending.
       for (const [id, per] of Object.entries(sent)) {
@@ -695,18 +731,26 @@ const sync = (force) => exclusive(() => tick(force));
 async function tick(force) {
   await ready;
   const started = Date.now();
-  if (counting.ids.length) {
-    addPending(counting.ids, Math.min((started - counting.since) / 1000, MAX_GAP_S), started);
-  }
+  const gap = Math.min((started - counting.since) / 1000, MAX_GAP_S);
+  if (counting.ids.length) addPending(counting.ids, gap, started);
+  if (counting.host) addSiteTime(counting.host, gap, counting.focus, started);
   const focus = await fetchState(force);
   const now = Date.now();
   if (await setRules(focus, now)) await sweepTabs(focus, now);
   // Counted from the start of this tick, so the time spent talking to buZyist isn't lost.
-  counting = { ids: await currentIds(focus, now, await activeUrl(true)), since: started };
+  const front = await activeUrl(true);
+  const url = front && (await chrome.idle.queryState(IDLE_SECONDS)) === "active" ? front : "";
+  counting = {
+    ids: currentIds(focus, now, url),
+    host: focus.track_sites ? hostOf(url) : "",
+    focus: !!focus.in_focus && !focus.offline,
+    since: started,
+  };
   updateBadge(focus, Date.now(), await activeUrl(false));
   // While something is being timed, keep ticking (and keep the worker awake).
-  if (counting.ids.length && !timer) timer = setInterval(() => sync(false), TICK_MS);
-  if (!counting.ids.length && timer) { clearInterval(timer); timer = null; }
+  const timing = counting.ids.length > 0 || !!counting.host;
+  if (timing && !timer) timer = setInterval(() => sync(false), TICK_MS);
+  if (!timing && timer) { clearInterval(timer); timer = null; }
 }
 
 function ensureAlarm() {
