@@ -24,7 +24,9 @@ from pydantic_core import PydanticCustomError
 
 from buzyist.activities import DEFAULT_ACTIVITIES, clean_activities
 from buzyist.app_limits import _sanitize_app_limits, clean_app_limits
+from buzyist.bar_screens import DEFAULT_BAR_SCREENS, clean_bar_screens
 from buzyist.blocker import clean_blocked_apps, normalize_blocked_apps
+from buzyist.calls import clean_call_ignore
 from buzyist.constants import (
     APP,
     CYCLES_MAX,
@@ -57,6 +59,11 @@ DEFAULTS = {
     "busybar_ip": "",
     "busybar_pin": "",
     "usb_fallback": True,
+    # What the bar's front screen shows during our sessions (see
+    # buzyist/bar_screens.py): a theme of the bar's or a text of ours per
+    # screen; an activity may replace the focus one (its `bar`).
+    "bar_screens_on": True,
+    "bar_screens": copy.deepcopy(DEFAULT_BAR_SCREENS),
     "work_minutes": 25,
     "rest_minutes": 5,
     "cycles": 4,
@@ -85,6 +92,14 @@ DEFAULTS = {
     # What the "What are you working on?" field offers for a session with no
     # task (see buzyist/activities.py); the Stats tab adds up time per activity.
     "activities": copy.deepcopy(DEFAULT_ACTIVITIES),
+    # Calls (see buzyist/calls.py): while an app has the mic or camera open, a
+    # session with no timer runs on call_activity (an activity id; one not in
+    # the list gives a session on no activity) and ends with the call.
+    # call_ignore_apps holds apps that keep a device open without a call. Off
+    # by default: it starts sessions on its own.
+    "call_detect": False,
+    "call_activity": "call",
+    "call_ignore_apps": [],
     # Keep distracting apps away while a work phase runs (issue #1). Off by
     # default for other users. The list is APP_PRESETS (each switchable)
     # plus apps added by hand; normalize_blocked_apps() fills it in.
@@ -108,6 +123,9 @@ DEFAULTS = {
     # see clean_app_limit. They stay on this PC (not shared through Chrome).
     "app_limits_on": False,
     "app_limits": copy.deepcopy(DEFAULT_APP_LIMITS),  # WhatsApp and Slack, beeping
+    # Count the time every app spends in front, pomodoro or not, for the Stats
+    # tab (app_time.json, this PC only). Off by default.
+    "app_time_on": False,
     # Share the limits and the time spent on them with your other PCs, through
     # Chrome sync. One browser profile per PC does it: sync_owner is its
     # extension instance id, taken by the first one to connect when empty.
@@ -335,6 +353,8 @@ class Config(BaseModel):
     busybar_ip: str = _default("busybar_ip")
     busybar_pin: str = _default("busybar_pin")
     usb_fallback: bool = _default("usb_fallback")
+    bar_screens_on: bool = _default("bar_screens_on")
+    bar_screens: dict = _default("bar_screens")  # kept as a dict: clean_bar_screens is the schema
     work_minutes: Minutes = _default("work_minutes")
     rest_minutes: Minutes = _default("rest_minutes")
     cycles: Annotated[int, Field(ge=CYCLES_MIN, le=CYCLES_MAX)] = _default("cycles")
@@ -364,11 +384,15 @@ class Config(BaseModel):
     site_limits: list[dict] = _default("site_limits")  # kept as dicts: clean_site_limit is the schema
     app_limits_on: bool = _default("app_limits_on")
     app_limits: list[dict] = _default("app_limits")  # kept as dicts: clean_app_limit is the schema
+    app_time_on: bool = _default("app_time_on")
     sync_limits: bool = _default("sync_limits")
     sync_owner: str = _default("sync_owner")
     sync_session: bool = _default("sync_session")
     streak_skip_weekends: bool = _default("streak_skip_weekends")
     activities: list[dict] = _default("activities")  # kept as dicts: clean_activities is the schema
+    call_detect: bool = _default("call_detect")
+    call_activity: Annotated[str, Field(max_length=24)] = _default("call_activity")
+    call_ignore_apps: list[str] = _default("call_ignore_apps")
 
     @field_validator("filters", mode="before")
     @classmethod
@@ -431,6 +455,16 @@ class Config(BaseModel):
     def _activities(cls, value, info: ValidationInfo):
         return _app_error(clean_activities, value, _loading(info, value))
 
+    @field_validator("bar_screens", mode="before")
+    @classmethod
+    def _bar_screens(cls, value, info: ValidationInfo):
+        return _app_error(clean_bar_screens, value, _loading(info, value))
+
+    @field_validator("call_ignore_apps", mode="before")
+    @classmethod
+    def _call_ignore(cls, value):
+        return _app_error(clean_call_ignore, value)
+
     @field_validator("sync_owner")
     @classmethod
     def _owner(cls, value: str) -> str:
@@ -490,7 +524,16 @@ FIELD_ERRORS = {
     "poll_seconds": f"Check the bar every {POLL_MIN} to {POLL_MAX} seconds.",
     "focus_label": f"Keep the label to {MAX_LABEL} characters or fewer.",
 }
-LIST_KEYS = ("filters", "blocked_apps", "blocked_sites", "allowed_sites", "site_limits", "app_limits", "activities")
+LIST_KEYS = (
+    "filters",
+    "blocked_apps",
+    "blocked_sites",
+    "allowed_sites",
+    "site_limits",
+    "app_limits",
+    "activities",
+    "call_ignore_apps",
+)
 ERROR_ORDER = [
     "blocked_apps",
     "blocked_sites",
@@ -498,6 +541,7 @@ ERROR_ORDER = [
     "site_limits",
     "app_limits",
     "activities",
+    "call_ignore_apps",
     *FIELD_ERRORS,
 ]
 

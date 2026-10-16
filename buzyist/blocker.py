@@ -14,6 +14,7 @@ from buzyist.constants import APP, AppError
 from buzyist.site_rules import activity_rules
 from buzyist.win32.processes import (
     list_processes,
+    process_aumid,
     process_path,
     process_session,
     relaunch_app,
@@ -343,6 +344,9 @@ class AppBlocker:
                     wanted[app_key(exe)] = entry
         if not wanted:
             return
+        # The apps on a call (App.focus's `spare`): never closed under it.
+        spare = set(focus.get("spare") or ())
+        packages = {k.removeprefix("pkg:") for k in spare if k.startswith("pkg:")}
         alive: set[int] = set()
         alive_keys: set[str] = set()  # blocked apps seen running this tick
         to_hide: dict[int, dict] = {}
@@ -351,7 +355,9 @@ class AppBlocker:
             alive.add(pid)
             key = app_key(image)
             entry = wanted.get(key)
-            if entry is None or pid in self._denied or pid in self._own_pids:
+            if entry is None or pid in self._denied or pid in self._own_pids or key in spare:
+                continue
+            if packages and (process_aumid(pid) or "").split("!")[0].lower() in packages:
                 continue
             alive_keys.add(key)
             if self._session is not None and process_session(pid) != self._session:
@@ -433,5 +439,8 @@ class AppBlocker:
         if now - self._toasted.get(entry["id"], -self.TOAST_EVERY) < self.TOAST_EVERY:
             return
         self._toasted[entry["id"]] = now
+        if not focus["ends_at_ms"]:  # a call: no end time
+            self.app.notify(f"{entry['name']} can wait", "You're on a call. It'll be back after.")
+            return
         until = datetime.fromtimestamp(focus["ends_at_ms"] / 1000).strftime("%H:%M")
         self.app.notify(f"{entry['name']} can wait", f"You're focusing until {until}. It'll be back after.")

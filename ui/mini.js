@@ -14,20 +14,22 @@ function clock(ms) {
 function render() {
   if (!state) return;
   const t = state.timer, s = state.session;
-  const phase = !t ? "idle" : t.paused ? "paused" : t.phase === "work" ? "work" : "rest";
+  const phase = !t ? "idle" : t.phase === "call" ? "call" : t.paused ? "paused" : t.phase === "work" ? "work" : "rest";
   document.body.dataset.phase = phase;
+  const call = phase === "call";  // no timer: the time so far, on a full ring
   const left = t ? Math.max(0, t.paused ? t.left_ms : t.left_ms - (Date.now() - state.now)) : 0;
-  $("mTime").textContent = t ? clock(left) : "--:--";
+  $("mTime").textContent = call ? clock(t.elapsed_ms + (Date.now() - state.now)) : t ? clock(left) : "--:--";
   $("mProgress").style.strokeDasharray = RING;
-  $("mProgress").style.strokeDashoffset = t ? RING * (1 - left / t.total_ms) : RING;
-  $("mPhase").textContent = { idle: "Ready", paused: "Paused", work: "Focus", rest: "Break" }[phase];
-  $("mRound").textContent = t ? `Tomato ${t.round} of ${t.rounds}` : "";
+  $("mProgress").style.strokeDashoffset = call ? 0 : t ? RING * (1 - left / t.total_ms) : RING;
+  $("mPhase").textContent = { idle: "Ready", paused: "Paused", work: "Focus", rest: "Break", call: "Call" }[phase];
+  $("mRound").textContent = call ? "until it ends" : t ? `Tomato ${t.round} of ${t.rounds}` : "";
   const r = !s && t && state.remote;  // started on another PC
   $("mTask").textContent = s ? s.task.content : r ? r.task.content : t ? (state.bar.local || state.bar.offline ? "Timer running" : "Running on the bar") : "No session";
   $("mProject").textContent = s ? s.task.project : r ? r.task.project || `on ${r.by}` : "";
   $("mPauseIcon").setAttribute("href", t && t.paused ? "#i-play" : "#i-pause");
   $("mPause").title = t && t.paused ? "Resume" : "Pause";
-  $("mPause").style.display = $("mStop").style.display = t ? "" : "none";
+  $("mStop").style.display = t ? "" : "none";
+  $("mPause").style.display = t && !call ? "" : "none";
   if (phase !== "paused") $("mini").classList.remove("alert");
 }
 

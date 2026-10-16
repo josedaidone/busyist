@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import threading
@@ -9,6 +10,8 @@ import webbrowser
 from typing import TYPE_CHECKING
 
 from buzyist import paths
+from buzyist.bar_display import png, render
+from buzyist.bar_screens import fill_text
 from buzyist.blocker import running_apps
 from buzyist.config import DEFAULTS
 from buzyist.constants import APP, EXTENSION_ID, REPO_URL, SOLO_H, SOLO_W, AppError, app_version
@@ -75,6 +78,7 @@ class Api:
     def dismiss_ended(self):
         with self._app.lock:
             self._app.ended = None
+        self._app.bar_screens.poke()  # takes the done screen off the bar
         return {"ok": True}
 
     def set_pomodoro(self, work, rest, cycles, autostart):
@@ -138,6 +142,21 @@ class Api:
         """How often websites were blocked over the last 30 days, for the Stats tab."""
         return self._do(self._app.blocks.stats)
 
+    def app_time_stats(self):
+        """Time in each app and on each website over the last 30 days, focus or not, for the Stats tab."""
+
+        def stats():
+            sites = self._app.site_time.stats()
+            return {
+                "on": bool(self._app.cfg.get("app_time_on")),
+                **self._app.app_time.stats(),
+                "sites": sites["apps"],
+                "site_totals": sites["totals"],
+                "extension": self._app.extension_connected(),
+            }
+
+        return self._do(stats)
+
     def running_apps(self):
         """The programs running now, for the app names Settings suggests."""
         return self._do(lambda: {"apps": running_apps()})
@@ -196,6 +215,22 @@ class Api:
             self._app.bar.reset()
             version = self._app.bar.run(lambda bar: bar.version(), device=True)
             return {"via": self._app.bar.via, "version": getattr(version, "version", "")}
+
+        return self._do(go)
+
+    def bar_themes(self):
+        """The themes the bar has, for the screen pickers (the card's first)."""
+        return self._do(lambda: {"themes": self._app.bar.themes()})
+
+    def bar_preview(self, text, color, minutes=18):
+        """A text screen as the bar would show it: a PNG data URL (bar_display.render)."""
+
+        def go():
+            values = {"task": "Write the Q4 plan", "activity": "Email", "apps": "Teams", "round": 2, "rounds": 4}
+            values |= {"tomatoes": 3, "minutes": 75}
+            shown = fill_text(str(text or ""), values)
+            picture = png(render(shown, str(color), None if minutes is None else int(minutes)))
+            return {"url": "data:image/png;base64," + base64.b64encode(picture).decode()}
 
         return self._do(go)
 

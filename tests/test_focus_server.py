@@ -384,3 +384,37 @@ def test_concurrent_polling_and_usage(focus_server, limits):
     minutes = saved["minutes"]["abc123"]
     assert len(minutes) == 10  # the ten POSTing threads
     assert sum(minutes.values()) == pytest.approx(counts["post"] * 0.01, abs=0.1 * 10)
+
+
+def test_post_usage_adds_website_time_while_app_time_is_on(focus_server, app):
+    minute = minute_now()
+    sites = {"www.YouTube.com": {str(minute): [40, 10]}, "mail.google.com": {str(minute - 1): [60, 0]}}
+    assert focus_server.get().json["track_sites"] is False
+    focus_server.post("/usage", {"site_time": sites}, headers=TRUSTED)
+    assert app.site_time.days == {}  # off: nothing kept
+    app.cfg["app_time_on"] = True
+    assert focus_server.get().json["track_sites"] is True
+    focus_server.post("/usage", {"site_time": sites})  # no X-Buzyist: not the extension for sure
+    assert app.site_time.days == {}
+    focus_server.post("/usage", {"site_time": sites}, headers=TRUSTED)
+    rows = {host: slot for day in app.site_time.days.values() for host, slot in day.items()}
+    assert rows == {"youtube.com": [40.0, 10.0], "mail.google.com": [60.0, 0.0]}
+    assert focus_server.get().json["in_focus"] is False
+
+
+def test_post_usage_ignores_bad_website_time(focus_server, app):
+    app.cfg["app_time_on"] = True
+    minute = minute_now()
+    sites = {
+        "bad host!": {str(minute): [30, 0]},
+        "a.com": {
+            str(minute - 3 * 1440 - 1): [30, 0],  # older than 3 days
+            str(minute + 2): [30, 0],  # in the future
+            str(minute): [90, 0],  # more than a minute
+            "soon": [5, 0],
+            str(minute - 5): "x",
+        },
+        "b.com": "x",
+    }
+    assert focus_server.post("/usage", {"site_time": sites}, headers=TRUSTED).status == 200
+    assert app.site_time.days == {}

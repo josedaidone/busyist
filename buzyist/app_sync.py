@@ -68,8 +68,8 @@ class SyncMixin:
         """This PC's running session, as other PCs on the same bar get it (see remote_session)."""
         with self.lock:
             session, snap = self.session, self.snap
-            if not session or session.get("local"):
-                return None  # a clock on this PC: no other PC can see it
+            if not session or session.get("local") or session.get("call"):
+                return None  # a clock on this PC (no other PC can see it), or a call (not a pomodoro)
             seen = snap.snapshot_timestamp_ms if snap is not None else 0
             return {
                 "stamp": session["stamp"],

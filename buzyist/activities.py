@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 
+from buzyist.bar_screens import clean_activity_screen
 from buzyist.blocker import MAX_BLOCKED_APPS, PROTECTED_EXES, app_key
 from buzyist.constants import AppError
 from buzyist.site_rules import clean_blocked_sites
@@ -125,6 +126,14 @@ def clean_activities(value, tidy: bool = False) -> list[dict]:
                 if not tidy:
                     raise AppError(f"{name}: {e}") from None
                 # A broken rule set at start-up: the activity stays, on the global settings.
+        try:
+            screen = clean_activity_screen(item.get("bar"))
+        except AppError as e:
+            if not tidy:
+                raise AppError(f"{name}: {e}") from None
+            screen = {}  # on the global focus screen
+        if screen:
+            entry["bar"] = screen
         ids.add(ident)
         names.add(name.casefold())
         out.append(entry)

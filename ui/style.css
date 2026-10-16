@@ -71,8 +71,8 @@ svg { display: block; }
 .hidden { display: none !important; }
 :focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 2px; }
 
-/* The state of the timer, set on <body data-phase="work|rest|paused|idle">.
-   Focus is Tomate, a break is Manteiga (with Terra text), a pause is Barro. Always shown with a word too. */
+/* The state of the timer, set on <body data-phase="work|rest|paused|idle|call">.
+   Focus (and a call) is Tomate, a break is Manteiga (with Terra text), a pause is Barro. Always shown with a word too. */
 body { --phase: var(--bz-tomate); --on-phase: #fff; }
 body[data-phase="rest"] { --phase: var(--bz-manteiga); --on-phase: var(--bz-terra); }
 body[data-phase="paused"] { --phase: var(--bz-barro); --on-phase: #fff; }
@@ -797,3 +797,28 @@ body.instant .modal, body.instant .scrim { transition: none; }
 .stat-tile .help { margin-top: 2px; line-height: 1.35; }
 .stat-streak { font-size: 13.5px; color: var(--muted); margin: -4px 0 12px; }
 .stat-streak b { color: var(--ink); }
+#appTimeBody.muted { opacity: .55; }
+#appTimeMore, #siteTimeMore { margin: -6px 0 12px; }
+
+/* BUSY Bar tab: the bar's screens (bar_screens.py). The preview is the bar's
+   72x16 picture, four times bigger, one LED per 4x4 block. */
+.bar-screens-title { margin-top: 22px !important; }
+#barScreenFields.muted { opacity: .55; }
+.screen-edit { display: grid; gap: 8px; padding: 12px 14px; margin: 8px 0; border-radius: var(--r-row); background: var(--surface); }
+.screen-edit .screen-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.screen-edit .screen-name { font-weight: 700; }
+.screen-edit .screen-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.screen-edit .screen-row .input { flex: 1; min-width: 160px; }
+.screen-edit select.input { width: auto; flex: 0 1 auto; }
+.bar-preview { width: 288px; max-width: 100%; aspect-ratio: 72 / 16; image-rendering: pixelated; border-radius: 6px; background: #000; display: block; }
+.bar-preview-note {
+  width: 288px; max-width: 100%; aspect-ratio: 72 / 16; border-radius: 6px; background: #000; color: #fff;
+  display: grid; place-items: center; font-family: var(--bz-font-display); font-weight: 700; font-size: 18px; letter-spacing: .04em;
+}
+.swatches { display: flex; gap: 6px; }
+.swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.swatch[aria-pressed="true"] { outline: 2px solid var(--ink); outline-offset: 2px; }
+.swatch:focus-visible { outline: 2px solid var(--bz-tomate); outline-offset: 2px; }
+.placeholders { display: flex; gap: 6px; flex-wrap: wrap; }
+.placeholders button { font: inherit; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 0; background: var(--surface-3); color: var(--ink); cursor: pointer; }
+.placeholders button:hover { filter: brightness(.96); }

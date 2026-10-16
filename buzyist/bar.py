@@ -5,6 +5,9 @@ there is no bar: the same snapshot calls either way.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import json
 import logging
 import threading
 from types import SimpleNamespace
@@ -12,12 +15,17 @@ from types import SimpleNamespace
 import httpx2
 from busylib import BusyBar, exceptions, types
 from busylib.features import timer_state
+from busylib.features.timer import THEMES_PATH
 
 from buzyist import paths
+from buzyist.bar_screens import OWN_THEME_PREFIX
 from buzyist.constants import APP, BAR_CYCLES_MIN, BAR_PROBE_S, USB_ADDR, AppError, now_ms
 from buzyist.storage import read_json, write_json
 
 log = logging.getLogger(APP)
+
+DRAW_APP = "buzyist"  # the application name our drawings go under (bar_display)
+DRAW_DIR = "/ext/user_assets/" + DRAW_APP  # where its pictures are
 
 
 class BarUnreachable(AppError):
@@ -219,7 +227,9 @@ class Bar:
         live = bar.busy_snapshot()
         mine = self.local.busy_snapshot()
         variant = mine.snapshot
-        running = isinstance(variant, types.BusySnapshotInterval) and not timer_state(mine).is_finished
+        running = isinstance(variant, types.BusySnapshotInfinite) or (
+            isinstance(variant, types.BusySnapshotInterval) and not timer_state(mine).is_finished
+        )
         # A timer still running here always goes back (a bar back from an
         # empty battery has forgotten it). With nothing running and nothing
         # done here, a bar that moved on by itself keeps what it has.
@@ -253,8 +263,11 @@ class Bar:
                         ),
                     }
                 )
+        elif isinstance(variant, types.BusySnapshotInfinite):
+            profile = bar.busy_profile("busy")  # a call: still open, on the bar's own card
+            variant = variant.model_copy(update={"card_id": profile.id, "busy_bar_settings": profile.busy_bar_settings})
         elif not isinstance(variant, types.BusySnapshotNotStarted):
-            return  # only the interval timers the app starts are carried back
+            return  # only the timers the app starts are carried back
         # Newer than both, so the bar takes it and the session sees it.
         self._write(bar, max(live, mine, key=lambda s: s.snapshot_timestamp_ms), variant)
 
@@ -289,6 +302,19 @@ class Bar:
                     is_autostart_enabled=autostart,
                 ),
                 busy_bar_settings=profile.busy_bar_settings,
+            )
+            return self._write(bar, live, variant)
+
+        return self.run(go)
+
+    def start_open(self) -> int:
+        """Start the busy card's open-ended (INFINITE) timer, for a call; returns its stamp."""
+
+        def go(bar: BusyBar) -> int:
+            profile = bar.busy_profile("busy")
+            live = bar.busy_snapshot()
+            variant = types.BusySnapshotInfinite(
+                type="INFINITE", card_id=profile.id, is_paused=False, busy_bar_settings=profile.busy_bar_settings
             )
             return self._write(bar, live, variant)
 
@@ -374,6 +400,158 @@ class Bar:
             )
 
         self.run(go)
+
+    # The front screen (bar_display.BarScreens). Only on a bar: on the local
+    # clock these do nothing, and none of them is ever carried back.
+
+    def card_theme(self) -> str:
+        """The busy card's own theme; "" on the local clock."""
+        return self.run(
+            lambda bar: "" if isinstance(bar, LocalClock) else bar.busy_profile("busy").busy_bar_settings.theme
+        )
+
+    def themes(self) -> list[str]:
+        """The themes this bar has (one folder each under THEMES_PATH), ours left out; the card's first."""
+
+        def go(bar: BusyBar) -> list[str]:
+            names = [e.name for e in bar.storage_list(THEMES_PATH).list if e.type == "dir"]
+            card = bar.busy_profile("busy").busy_bar_settings.theme
+            found = sorted(n for n in names if not n.startswith(OWN_THEME_PREFIX) and n != card)
+            return [card, *found] if card else found
+
+        return self.run(go, device=True)
+
+    def set_theme(self, theme: str, since: int) -> bool:
+        """
+        Show `theme` on the running timer, if it is one from `since` (a session's
+        stamp) on; False when there's nothing to change. The timer carries on
+        where it is (the time left now, as with a pause).
+        """
+
+        def go(bar: BusyBar) -> bool:
+            if isinstance(bar, LocalClock):
+                return False
+            live = bar.busy_snapshot()
+            variant = live.snapshot
+            if live.snapshot_timestamp_ms < since or not isinstance(
+                variant, (types.BusySnapshotInterval, types.BusySnapshotInfinite)
+            ):
+                return False
+            if variant.busy_bar_settings.theme == theme:
+                return False
+            update: dict = {"busy_bar_settings": variant.busy_bar_settings.model_copy(update={"theme": theme})}
+            now = now_ms()
+            stamp = max(now, live.snapshot_timestamp_ms + 1)
+            if isinstance(variant, types.BusySnapshotInterval):
+                state = timer_state(live)
+                if state.is_finished or state.interval is None:
+                    return False
+                # What is left at the new stamp, which may be a little ahead of now.
+                lag = 0 if state.is_paused else stamp - now
+                update["current_interval"] = state.interval
+                update["current_interval_time_total_ms"] = phase_ms(state.interval, variant.interval_settings)
+                update["current_interval_time_left_ms"] = max(0, (state.time_left_ms or 0) - lag)
+            bar.busy_snapshot_set(
+                types.BusySnapshot(snapshot=variant.model_copy(update=update), snapshot_timestamp_ms=stamp)
+            )
+            return True
+
+        return self.run(go)
+
+    # The bar keeps every picture it has shown by its path, for as long as it
+    # runs: a file written again under the same path still shows the old
+    # one, even after a delete. So a picture's file is named after its
+    # content (picture_name): a path always holds the same picture.
+
+    def put_theme(self, name: str, picture: bytes, previous: str = "") -> str:
+        """
+        Make `picture` (a 72x16 PNG) the background of our theme `name`; returns
+        its file name. `previous`, the file it had, is deleted.
+        """
+        file = picture_name(picture)
+
+        def go(bar: BusyBar) -> None:
+            if isinstance(bar, LocalClock):
+                return
+            folder = f"{THEMES_PATH}/{name}"
+            with contextlib.suppress(exceptions.BusyBarAPIError):  # there already
+                bar.storage_mkdir(folder)
+            _write_png(bar, f"{folder}/{file}", picture)
+            theme = {"bg_path": f"{folder}/{file}", "order": 999}  # listed last on the bar
+            bar.storage_write(f"{folder}/theme.json", json.dumps(theme).encode())
+            if previous and previous != file:
+                with contextlib.suppress(exceptions.BusyBarAPIError):
+                    bar.storage_remove(f"{folder}/{previous}")
+
+        self.run(go)
+        return file
+
+    def remove_themes(self, names) -> None:
+        """Delete these themes of ours from the bar, every file in them (those not there are skipped)."""
+
+        def go(bar: BusyBar) -> None:
+            if isinstance(bar, LocalClock):
+                return
+            for name in names:
+                folder = f"{THEMES_PATH}/{name}"
+                try:
+                    files = [e.name for e in bar.storage_list(folder).list]
+                except exceptions.BusyBarAPIError:
+                    continue
+                for path in [*(f"{folder}/{f}" for f in files), folder]:
+                    with contextlib.suppress(exceptions.BusyBarAPIError):
+                        bar.storage_remove(path)
+
+        self.run(go)
+
+    def draw_picture(self, picture: bytes, timeout_s: int, previous: str = "") -> str:
+        """
+        Show `picture` (a 72x16 PNG) on the whole front screen, for up to
+        `timeout_s`, with no timer running (a running one refuses drawings);
+        returns its file name, for clear_drawing. `previous`, the picture
+        drawn before, is deleted.
+        """
+        file = picture_name(picture)
+
+        def go(bar: BusyBar) -> None:
+            if isinstance(bar, LocalClock):
+                return
+            with contextlib.suppress(exceptions.BusyBarAPIError):
+                bar.storage_mkdir(DRAW_DIR)
+            _write_png(bar, f"{DRAW_DIR}/{file}", picture)
+            # An image's path is inside its application's folder (DRAW_DIR).
+            element = {"id": "screen", "type": "image", "path": file, "x": 0, "y": 0, "timeout": timeout_s}
+            bar.display_draw({"application_name": DRAW_APP, "elements": [element]})
+            if previous and previous != file:
+                with contextlib.suppress(exceptions.BusyBarAPIError):
+                    bar.storage_remove(f"{DRAW_DIR}/{previous}")
+
+        self.run(go)
+        return file
+
+    def clear_drawing(self, file: str = "") -> None:
+        """Take our drawing off the bar, and its picture `file` (draw_picture's)."""
+
+        def go(bar: BusyBar) -> None:
+            if isinstance(bar, LocalClock):
+                return
+            bar.display_clear(application_name=DRAW_APP)
+            if file:
+                with contextlib.suppress(exceptions.BusyBarAPIError):
+                    bar.storage_remove(f"{DRAW_DIR}/{file}")
+
+        self.run(go)
+
+
+def picture_name(picture: bytes) -> str:
+    """The file name a picture goes under on the bar: from its content (see put_theme)."""
+    return hashlib.sha256(picture).hexdigest()[:16] + ".png"
+
+
+def _write_png(bar: BusyBar, path: str, picture: bytes) -> None:
+    # Straight to the bar: storage_write re-encodes PNGs (busylib's
+    # converter) into files the bar refuses ("Bad Request").
+    bar._request("POST", "/api/storage/write", params={"path": path}, data=picture)
 
 
 def phase_ms(interval: int, settings: types.BusySnapshotIntervalSettings) -> int:

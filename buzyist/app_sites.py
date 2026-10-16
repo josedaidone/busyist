@@ -50,6 +50,9 @@ class SitesMixin:
             "limits": self.site_limits_status(enabled_only=True) if limits_on else [],
             "pass_minutes": PASS_SECONDS // 60,
             "blocks_today": self.blocks.today(),  # the popup's counts
+            # Measure the time on every website and send it as site_time (record_site_time).
+            "track_sites": bool(cfg.get("app_time_on")),
+            "in_focus": focus["active"],  # a work phase runs, blocking or not: splits that time
         }
         if self.is_sync_owner(instance):
             out["sync"] = self.sync_payload()
@@ -110,6 +113,12 @@ class SitesMixin:
                 if minute_now - 3 * 1440 <= minute <= minute_now + 1 and seconds > 0:
                     self.usage.add(rid, minute, seconds)
         self.usage.flush()
+
+    def record_site_time(self, sites) -> None:
+        """The extension's time on every website (see AppTime.add_sites), while app_time_on is set."""
+        if self.cfg.get("app_time_on"):
+            self.site_time.add_sites(sites)
+            self.site_time.flush()
 
     def grant_pass(self, rid) -> None:
         """The block page's "allow 2 more minutes": lift one rule for a short while."""

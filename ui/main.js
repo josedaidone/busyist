@@ -105,12 +105,16 @@ function timeLeft() {
   return t.paused ? t.left_ms : t.left_ms - (Date.now() - state.now);
 }
 
+// A call (phase "call") has no timer: it counts up from when it began.
+const callTime = (t) => t.elapsed_ms + (Date.now() - state.now);
+
 function renderTimer() {
   if (!state) return;
   const t = state.timer, s = state.session;
-  const phase = !t ? "idle" : t.paused ? "paused" : t.phase === "work" ? "work" : "rest";
+  const phase = !t ? "idle" : t.phase === "call" ? "call" : t.paused ? "paused" : t.phase === "work" ? "work" : "rest";
   document.body.dataset.phase = phase;
   const p = pomo || state.pomodoro;
+  if (phase === "call") return renderCall(t, s);
 
   // ring + time: the ring shows the time left and empties as it passes
   let left, total;
@@ -152,6 +156,25 @@ function renderTimer() {
   document.title = t ? `${clock(left)} · ${s ? s.task.content : "buZyist"}` : "buZyist";
 }
 
+// A call shows the time so far on a full ring, and no tomatoes.
+function renderCall(t, s) {
+  const so = clock(callTime(t));
+  $("time").textContent = so;
+  $("ringProgress").style.strokeDasharray = RING;
+  $("ringProgress").style.strokeDashoffset = 0;
+  $("timeLabel").textContent = "on a call";
+  $("timerBox").setAttribute("aria-label", `${so} on a call`);
+  $("phaseTag").textContent = "Call";
+  const dots = $("rounds");
+  if (dots.dataset.key !== "call") {
+    dots.dataset.key = "call";
+    dots.textContent = "";
+    dots.setAttribute("aria-label", "A call, with no tomatoes");
+  }
+  $("roundsText").textContent = "Ends when the call does · counted as focus";
+  document.title = `${so} · ${s ? s.task.content : "buZyist"}`;
+}
+
 let wasRunning = null;
 function renderCurrent() {
   const t = state.timer, s = state.session;
@@ -161,7 +184,8 @@ function renderCurrent() {
   box.classList.toggle("idle", !s);
   $("controls").classList.toggle("hidden", !t);
   if (s) {
-    $("curEyebrow").textContent = t
+    $("curEyebrow").textContent = t && t.phase === "call" ? `On a call · since ${s.started_at}`
+      : t
       ? (t.phase === "rest" ? `Break time. Since ${s.started_at}` : `${t.paused ? "Paused" : "Just this"} · since ${s.started_at}`)
       : "Wrapping up…";
     $("curTask").textContent = s.task.content;
@@ -199,6 +223,9 @@ function renderCurrent() {
   if (t || s) closeFreeList();
   // One Tomate button per screen: with a task list, its play buttons are the main action.
   $("startFree").classList.toggle("primary", !state.todoist);
+  // A call has no pause or skip: it ends with the call, or with Stop.
+  $("btnPause").classList.toggle("hidden", !!t && t.phase === "call");
+  $("btnSkip").classList.toggle("hidden", !!t && t.phase === "call");
   if (t) {
     $("pauseIcon").setAttribute("href", t.paused ? "#i-play" : "#i-pause");
     $("btnPause").title = t.paused ? "Resume" : "Pause";
@@ -705,7 +732,7 @@ function markSelection(scroll) {
 function markCurrentTask() {
   const id = state && state.session && state.session.task.id;
   const t = state && state.timer;
-  const word = !t ? "Wrapping up" : t.paused ? "Paused" : t.phase === "rest" ? "Break" : "In focus";
+  const word = !t ? "Wrapping up" : t.phase === "call" ? "On a call" : t.paused ? "Paused" : t.phase === "rest" ? "Break" : "In focus";
   const counts = (state && state.task_tomatoes) || {};
   for (const li of $("list").querySelectorAll(".task")) {
     // a session on one of its subtasks marks the row too
@@ -1287,9 +1314,61 @@ function showTab(name, focus) {
 // one stacked bar per day for 30 days (focus below, limits above), and the
 // most blocked sites.
 async function loadStats() {
-  const [f, r] = await Promise.all([api.focus_stats(), api.block_stats()]);
+  const [f, r, a] = await Promise.all([api.focus_stats(), api.block_stats(), api.app_time_stats()]);
   if (f.ok) renderFocusStats(f);
   if (r.ok) renderStats(r);
+  if (a.ok) renderAppTime(a);
+}
+
+// Saved at once too; the limiter thread starts or stops counting straight away.
+$("s_app_time_on").onchange = async () => {
+  const result = await api.save_settings(formValues(["app_time_on"]));
+  if (!result.ok) return toast(result.error, true);
+  loadStats();
+};
+
+// Time in every app (Api.app_time_stats, from app_time.json): totals, one
+// stacked bar per day (during focus below, outside above), the apps by time.
+let appTimeAll = false, siteTimeAll = false;  // "Show all" pressed
+$("appTimeMore").onclick = () => { appTimeAll = true; loadStats(); };
+$("siteTimeMore").onclick = () => { siteTimeAll = true; loadStats(); };
+function renderAppTime(s) {
+  $("appTimeBody").classList.toggle("muted", !s.on);
+  const tiles = [["Today", s.totals.today], ["Last 7 days", s.totals.week], [`Last ${s.span} days`, s.totals.span]];
+  $("appTimeTiles").replaceChildren(...tiles.map(([label, t]) => {
+    const tile = el("div", "stat-tile");
+    tile.append(el("div", "stat-label", label), el("div", "stat-num", duration(t.focus + t.other)),
+                el("div", "help", `${duration(t.focus)} during focus`));
+    return tile;
+  }));
+
+  barChart($("appTimeChart"), s.days, [["focus", "stat-f"], ["other", "stat-l"]],
+    `Time in apps per day over the last ${s.span} days: ${duration(s.totals.span.focus + s.totals.span.other)} in all.`,
+    { line: (d) => d.focus + d.other ? `${duration(d.focus)} during focus · ${duration(d.other)} outside` : "Nothing counted", max: duration });
+  $("appTimeFirst").textContent = s.days.length ? statDay(s.days[0].day) : "";
+
+  timeRows($("appTimeApps"), $("appTimeMore"), s.apps, appTimeAll, "apps", (a) => a.key + ".exe",
+    s.on ? "Nothing counted yet. Use an app for a minute and come back." : "Turn this on to see which apps get your time.");
+  timeRows($("siteTimeSites"), $("siteTimeMore"), s.sites || [], siteTimeAll, "websites", (a) => a.key,
+    !s.on ? "Turn this on to see which websites get your time."
+      : s.extension ? "Nothing counted yet. Browse for a minute and come back."
+        : "Websites are timed by the Chrome extension: set it up in the Websites tab.");
+}
+
+// The 8 rows with the most time (all of them once "Show all" was pressed).
+function timeRows(list, more, rows, all, noun, title, empty) {
+  const SHOWN = 8;
+  const shown = all ? rows : rows.slice(0, SHOWN);
+  list.replaceChildren(...(shown.length ? shown.map((a) => {
+    const row = el("div", "stat-site");
+    const share = a.span ? Math.round((100 * a.focus) / a.span) : 0;
+    row.append(el("span", "stat-host", a.name), el("span", "help", `${duration(a.today)} today · ${duration(a.week)} this week · ${share}% in focus`),
+               el("b", "", duration(a.span)));
+    row.title = title(a);
+    return row;
+  }) : [el("div", "help", empty)]));
+  more.classList.toggle("hidden", all || rows.length <= SHOWN);
+  more.textContent = `Show all ${rows.length} ${noun}`;
 }
 
 // Saved at once (not with Save), so the streak above changes as you click.
@@ -1425,6 +1504,9 @@ async function openSettings(tab) {
   $("addBlockedApp").value = "";
   renderBlockedApps();
   activityRows = (s.activities || []).map((a) => ({ ...a }));
+  callActivity = s.call_activity || "";
+  $("s_call_ignore").value = (s.call_ignore_apps || []).join(", ");
+  showCallFields();
   iconPicker = -1;
   blockScope = "";
   $("addActivity").value = "";
@@ -1448,6 +1530,9 @@ async function openSettings(tab) {
   $("extOldVersion").textContent = s.extension_version ? "version " + s.extension_version : "an older version";
   $("extNewVersion").textContent = s.extension_latest || "";
   renderExtension(s.extension_connected, s.extension_outdated);
+  barScreens = JSON.parse(JSON.stringify(s.bar_screens || {}));
+  renderBarScreens();
+  loadBarThemes();
   showBarFields();
   showTodoistFields();
   showPlanFields();
@@ -1551,7 +1636,169 @@ function showBarFields() {
   $("barFields").classList.toggle("hidden", !on);
   $("noBarHelp").classList.toggle("hidden", on);
 }
-$("s_use_busybar").onchange = showBarFields;
+$("s_use_busybar").onchange = () => { showBarFields(); loadBarThemes(); };
+
+// ------------------------------------------------------------ bar screens
+// What the bar's front screen shows during our sessions (BUSY Bar tab), as
+// edited here and saved with the rest: barScreens = {focus, call, done},
+// each {mode, theme, text, color}, and an activity's own focus screen in its
+// `bar` (none: Focus). clean_bar_screens in buzyist/bar_screens.py has the
+// last word; the previews come from Python (bar_display.render).
+const BAR_COLORS = {  // as SCREEN_COLORS in buzyist/bar_screens.py (a test checks): [background, text]
+  tomate: ["#D9361B", "#FFFFFF"],
+  molho: ["#A82A12", "#FFFFFF"],
+  manteiga: ["#F5B83D", "#000000"],
+  folha: ["#1E6B43", "#FFFFFF"],
+  broto: ["#4DB57A", "#000000"],
+  terra: ["#3A1410", "#FFF7F3"],
+  black: ["#000000", "#FFFFFF"],
+};
+const MAX_SCREEN_TEXT = 60;  // as in buzyist/bar_screens.py
+const OWN_MODES = [["card", "The card's"], ["theme", "A theme"], ["text", "My text"]];
+const SCREEN_EDITS = {
+  focus: { title: "Focus", modes: OWN_MODES, words: ["task", "activity", "round", "rounds"], minutes: 18, text: "{task}", color: "tomate" },
+  call: { title: "Call", modes: OWN_MODES, words: ["task", "activity", "apps"], minutes: 12, text: "CALL", color: "molho" },
+  done: { title: "End of session", modes: [["text", "My text"], ["off", "Off"]], words: ["task", "activity", "tomatoes", "minutes"], minutes: null, text: "DONE", color: "folha" },
+};
+let barScreens = {};
+let barThemes = [];  // the bar's own, the card's first; [] until read
+const prettyTheme = (t) => (t ? t[0].toUpperCase() + t.slice(1).replace(/_/g, " ") : "");
+
+async function loadBarThemes() {
+  const note = $("barThemesNote");
+  note.textContent = "";
+  if (!$("s_use_busybar").checked) return;
+  const result = await api.bar_themes();
+  if (!result.ok) {
+    note.textContent = `Couldn't read the bar's themes: ${result.error} The ones already picked stay.`;
+    return;
+  }
+  barThemes = result.themes;
+  renderBarScreens();
+}
+
+function showBarScreenFields() {
+  $("barScreenFields").classList.toggle("muted", !$("s_bar_screens_on").checked);
+}
+$("s_bar_screens_on").addEventListener("change", showBarScreenFields);
+
+function renderBarScreens() {
+  const box = $("barScreens");
+  box.replaceChildren(...Object.keys(SCREEN_EDITS).map((k) => screenEditor(barScreens, k, SCREEN_EDITS[k])));
+  // Calls count under callActivity, and have the Call screen above.
+  const per = $("barActivityScreens");
+  const rows = activityRows.filter((a) => a.id !== callActivity);
+  per.replaceChildren(...rows.map((a) => screenEditor(a, "bar", SCREEN_EDITS.focus, a.name.trim() || "Unnamed")));
+  if (!rows.length) per.append(el("div", "help", "No activities (Settings, General)."));
+  showBarScreenFields();
+}
+
+// One screen's editor: holder[key] is the screen ({mode, theme, text, color});
+// `name` (an activity's) adds "Same as Focus", which leaves holder[key] out.
+function screenEditor(holder, key, edit, name) {
+  const value = holder[key] || { mode: "" };
+  const title = name || edit.title;
+  const box = el("div", "screen-edit");
+  const head = el("div", "screen-head");
+  head.append(el("span", "screen-name", title));
+  const modes = name ? [["", "Same as Focus"], ...edit.modes] : edit.modes;
+  head.append(segButtons(`${title} on the bar`, modes, value.mode || "", (mode) => {
+    if (!mode) delete holder[key];
+    else {
+      const ownTheme = barThemes.find((t) => t === "on_call" && key === "call") || barThemes[1] || barThemes[0] || "";
+      holder[key] = { mode, theme: value.theme || (mode === "theme" ? ownTheme : ""), text: value.text || edit.text, color: value.color || edit.color };
+    }
+    renderBarScreens();
+  }));
+  box.append(head);
+  const mode = value.mode;
+  if (!mode) return box;
+  const note = el("div", "bar-preview-note");
+  if (mode === "theme") {
+    const pick = el("select", "input");
+    pick.setAttribute("aria-label", `Theme for ${title}`);
+    const themes = barThemes.includes(value.theme) || !value.theme ? barThemes : [value.theme, ...barThemes];
+    pick.replaceChildren(...themes.map((t) => new Option(prettyTheme(t), t)));
+    pick.value = value.theme;
+    pick.onchange = () => { value.theme = pick.value; note.textContent = prettyTheme(pick.value).toUpperCase(); };
+    const row = el("div", "screen-row");
+    row.append(pick);
+    box.append(row);
+  }
+  if (mode !== "text") {
+    note.textContent = { card: "BUSY · 24:58 LEFT", theme: prettyTheme(value.theme).toUpperCase() || "…", off: "09:41" }[mode];
+    box.append(note, el("div", "help", {
+      card: "The card's own screen, with the time left.",
+      theme: barThemes.length ? "The theme's picture, as the bar draws it." : "The bar's themes show here once it answers.",
+      off: "The bar goes back to its clock.",
+    }[mode]));
+    return box;
+  }
+  const row = el("div", "screen-row");
+  const input = el("input", "input slim");  // no name: formValues() leaves it alone
+  input.type = "text";
+  input.maxLength = MAX_SCREEN_TEXT;
+  input.spellcheck = false;
+  input.value = value.text;
+  input.setAttribute("aria-label", `Text for ${title}`);
+  const img = el("img", "bar-preview");
+  img.alt = `How the bar shows ${title}`;
+  let timer = 0;
+  const refresh = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => barPreview(img, input.value, value.color, edit.minutes), 120);
+  };
+  input.oninput = () => { value.text = input.value; refresh(); };
+  const swatches = el("div", "swatches");
+  swatches.setAttribute("role", "group");
+  swatches.setAttribute("aria-label", `Colour for ${title}`);
+  for (const [k, [back]] of Object.entries(BAR_COLORS)) {
+    const b = el("button", "swatch");
+    b.type = "button";
+    b.title = prettyTheme(k);
+    b.style.background = back;
+    b.setAttribute("aria-label", prettyTheme(k));
+    b.setAttribute("aria-pressed", k === value.color);
+    b.onclick = () => {
+      value.color = k;
+      for (const s of swatches.children) s.setAttribute("aria-pressed", s === b);
+      refresh();
+    };
+    swatches.append(b);
+  }
+  row.append(input, swatches);
+  const words = el("div", "placeholders");
+  for (const w of edit.words) {
+    const b = el("button", "", `{${w}}`);
+    b.type = "button";
+    b.title = `Insert {${w}}`;
+    b.onclick = () => {
+      const at = input.selectionStart ?? input.value.length;
+      input.setRangeText(`{${w}}`, at, input.selectionEnd ?? at, "end");
+      input.focus();
+      input.dispatchEvent(new Event("input"));
+    };
+    words.append(b);
+  }
+  box.append(row, words, img);
+  if (key === "done") box.append(el("div", "help", "Shown until you close the summary."));
+  barPreview(img, value.text, value.color, edit.minutes);
+  return box;
+}
+
+const previews = new Map();
+async function barPreview(img, text, color, minutes) {
+  const key = JSON.stringify([text, color, minutes]);
+  img.dataset.key = key;
+  let url = previews.get(key);
+  if (!url) {
+    const result = await api.bar_preview(text, color, minutes);
+    if (!result.ok) return;
+    url = result.url;
+    previews.set(key, url);
+  }
+  if (img.dataset.key === key) img.src = url;
+}
 
 // The apps kept away during focus, as edited here; saved with the rest.
 // The activities offered under "What are you working on?" (General tab):
@@ -1581,7 +1828,7 @@ function renderActivities() {
     name.maxLength = 30;
     name.spellcheck = false;
     name.setAttribute("aria-label", "Activity name");
-    name.oninput = () => { a.name = name.value; renderScopes(); };
+    name.oninput = () => { a.name = name.value; renderScopes(); renderCallActivity(); renderBarScreens(); };
 
     const move = (d) => {
       const j = i + d;
@@ -1629,7 +1876,30 @@ function renderActivities() {
   if (!activityRows.length) list.append(el("div", "help", "No activities: the field takes only what you type."));
   $("addActivity").disabled = $("addActivityBtn").disabled = activityRows.length >= MAX_ACTIVITIES;
   renderBlocking();  // the picker in Apps and Websites
+  renderCallActivity();
+  renderBarScreens();  // their screens in the BUSY Bar tab
 }
+
+// Calls (General): the activity they count under, from the list above. One
+// not in the list (removed) gives sessions on no activity, named "Call".
+let callActivity = "call";
+function renderCallActivity() {
+  const pick = $("s_call_activity");
+  const known = activityRows.some((a) => a.id === callActivity);
+  pick.replaceChildren(
+    ...activityRows.map((a) => new Option(a.name, a.id)),
+    ...(known ? [] : [new Option("No activity", callActivity)]),
+  );
+  pick.value = callActivity;
+}
+$("s_call_activity").onchange = () => { callActivity = $("s_call_activity").value; renderBarScreens(); };
+const callIgnore = () => $("s_call_ignore").value.split(/[,;]/).map((v) => v.trim()).filter(Boolean);
+// The programs running now, as under the Apps tab's input; several names, as in an app limit.
+suggestApps($("s_call_ignore"), { multi: true });
+function showCallFields() {
+  $("callFields").classList.toggle("muted", !$("s_call_detect").checked);
+}
+$("s_call_detect").addEventListener("change", showCallFields);
 
 function addActivity() {
   const input = $("addActivity");
@@ -2729,7 +2999,7 @@ $("saveSettings").onclick = async () => {
   addBlockedSite(); // same for a website typed but not yet added
   addActivity(); // and an activity
   if (limitDraft && !commitLimitDraft()) return; // a limit being edited counts too
-  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: LIMITS.site.rules, app_limits: LIMITS.app.rules, activities: activityRows, sync_owner: syncOwner });
+  const result = await api.save_settings({ ...formValues(), ...secretClears(), blocked_apps: blockedApps, blocked_sites: siteLists.block, allowed_sites: siteLists.allow, site_limits: LIMITS.site.rules, app_limits: LIMITS.app.rules, activities: activityRows, bar_screens: barScreens, call_activity: callActivity, call_ignore_apps: callIgnore(), sync_owner: syncOwner });
   if (!result.ok) return toast(result.error, true);
   closeSettings();
   toast("Settings saved");
