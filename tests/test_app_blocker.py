@@ -209,6 +209,15 @@ def test_an_app_opened_during_focus_is_asked_too_and_toasted(blocker, desktop, c
     assert blocker.notes[0][1].startswith("You're focusing until ")
 
 
+def test_an_app_started_in_the_background_is_ended_without_a_toast(blocker, desktop, clock):
+    tick(blocker, clock)  # focus begins, nothing open
+    for pid in (200, 201, 202):  # Windows starts it, windowless, for its notifications
+        desktop.processes = {pid: "Spotify.exe"}
+        tick(blocker, clock, 61)
+    assert desktop.terminated() == [200, 201, 202]
+    assert blocker.notes == []
+
+
 def test_never_this_process_nor_protected_programs(blocker, desktop, clock):
     # A config that slipped past the checks (edited by hand, say).
     blocker.app.cfg["blocked_apps"] = [
